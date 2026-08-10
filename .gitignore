@@ -3,22 +3,40 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.pyd
 .Python
 *.egg
 *.egg-info/
 .eggs/
 dist/
 build/
+wheels/
+share/python-wheels/
 *.manifest
+*.pyz
+pip-wheel-metadata/
+MANIFEST
 
-# Ambientes virtuais
+# Ambientes virtuais / gerenciadores
 .venv/
 venv/
 env/
 ENV/
+.env/
+.conda/
+__pypackages__/
 
-# PyInstaller (mantém o .spec; ignora pastas de saída)
+# Secrets e variáveis de ambiente
+.env
+.env.*
+!.env.example
+
+# PyInstaller (mantém RemoteOps.spec; ignora saídas de build)
 # build/ e dist/ já listados acima
+*.exe
+*.dll
+warn-*.txt
+*.pkg
 
 # IDE / Editor
 .idea/
@@ -26,36 +44,40 @@ ENV/
 *.swp
 *.swo
 *~
+*.sublime-project
+*.sublime-workspace
 
 # SO
 .DS_Store
+.DS_Store?
+._*
 Thumbs.db
-desktop.ini
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.stackdump
 
-# Logs do app
-exec_history.log
-*.log
-
-# Configuração local de hosts (use hosts.example.json como modelo)
+# Preferências e dados locais do app (não versionar)
 hosts.json
-
-# Preferências portáteis do aplicativo (não versionar)
 settings.ini
-
-# Modo portable
 portable.flag
-
-# Arquivos temporários
+logs/
+*.log
 *.tmp
 *.temp
 *.bak
+*.orig
+*.rej
 
-# Testes / cobertura
+# Testes / qualidade
 .pytest_cache/
+.tox/
+.nox/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 .ruff_cache/
 .mypy_cache/
-
-# Dados locais
-logs/
+.hypothesis/
+.cache/

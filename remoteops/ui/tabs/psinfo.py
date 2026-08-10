@@ -47,7 +47,6 @@ from remoteops.utils.psinfo import (
 )
 
 # Timeout padrão para PsInfo remoto (host offline/problemático não deve travar a UI).
-# Configurável via constante; documentado em documentation.md.
 PSINFO_TIMEOUT_SECONDS = 90.0
 
 
