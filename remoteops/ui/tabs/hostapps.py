@@ -78,6 +78,7 @@ class HostAppsTab(QWidget):
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         root = make_card_stack(self)
+        self._bottom_stretch_idx = None
 
         # Toolbar
         toolbar = QHBoxLayout()
@@ -208,6 +209,7 @@ class HostAppsTab(QWidget):
         lay = self.layout()
         if lay is None:
             return
+        open_cards = []
         for w, stretch in ((self.apps_card, 2), (self.log_output, 1)):
             idx = lay.indexOf(w)
             if idx < 0:
@@ -215,8 +217,21 @@ class HostAppsTab(QWidget):
             if w.is_collapsed:
                 lay.setStretch(idx, 0)
             else:
+                open_cards.append(w)
                 w.set_layout_stretch(stretch)
                 lay.setStretch(idx, stretch)
+
+        # Sem AlignTop: stretch final mantém cabeçalhos no topo ao recolher tudo.
+        need_tail = len(open_cards) == 0
+        if need_tail:
+            if getattr(self, "_bottom_stretch_idx", None) is None:
+                lay.addStretch(1)
+                self._bottom_stretch_idx = lay.count() - 1
+            else:
+                lay.setStretch(self._bottom_stretch_idx, 1)
+        elif getattr(self, "_bottom_stretch_idx", None) is not None:
+            lay.setStretch(self._bottom_stretch_idx, 0)
+
         lay.activate()
         self.updateGeometry()
 

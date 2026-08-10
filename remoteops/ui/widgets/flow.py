@@ -34,39 +34,51 @@ class FlowLayout(QLayout):
         return None
 
     def expandingDirections(self) -> Qt.Orientations:  # type: ignore[override]
-        # Nenhuma orientação de expansão (0 = sem flags)
         return Qt.Orientation(0)
 
     def hasHeightForWidth(self) -> bool:  # type: ignore[override]
         return True
 
     def heightForWidth(self, width: int) -> int:  # type: ignore[override]
-        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+        return self._do_layout(QRect(0, 0, max(0, width), 0), test_only=True)
 
     def setGeometry(self, rect: QRect) -> None:  # type: ignore[override]
         super().setGeometry(rect)
         self._do_layout(rect, test_only=False)
 
     def sizeHint(self) -> QSize:  # type: ignore[override]
-        return self.minimumSize()
+        """Altura real com quebra de linha na largura atual (não só 1 checkbox)."""
+        width = self._hint_width()
+        return QSize(width, self.heightForWidth(width))
 
     def minimumSize(self) -> QSize:  # type: ignore[override]
-        size = QSize()
+        """Largura ≥ item mais largo; altura = empilhamento nessa largura."""
+        max_item_w = 0
         for item in self._items:
-            size = size.expandedTo(item.minimumSize())
-        l, t, r, b = self.getContentsMargins()
-        size += QSize(l + r, t + b)
-        return size
+            max_item_w = max(max_item_w, item.sizeHint().width())
+        left, top, right, bottom = self.getContentsMargins()
+        width = max_item_w + left + right
+        return QSize(width, self.heightForWidth(width))
+
+    def _hint_width(self) -> int:
+        parent = self.parentWidget()
+        if parent is not None and parent.width() > 0:
+            return parent.width()
+        # Largura de uma única linha (preferida quando ainda não há geometria)
+        total = 0
+        for i, item in enumerate(self._items):
+            total += item.sizeHint().width()
+            if i:
+                total += self._h_spacing
+        left, _t, right, _b = self.getContentsMargins()
+        return max(1, total + left + right)
 
     def _do_layout(self, rect: QRect, test_only: bool) -> int:
-        x = rect.x()
-        y = rect.y()
-        line_height = 0
-
         left, top, right, bottom = self.getContentsMargins()
         effective_rect = rect.adjusted(left, top, -right, -bottom)
         x = effective_rect.x()
         y = effective_rect.y()
+        line_height = 0
 
         for item in self._items:
             w = item.sizeHint().width()
@@ -85,5 +97,6 @@ class FlowLayout(QLayout):
             x = next_x
             line_height = max(line_height, h)
 
+        if line_height == 0 and not self._items:
+            return top + bottom
         return (y + line_height - rect.y()) + bottom
-

@@ -295,7 +295,7 @@ class PsInfoTab(QWidget):
         self.results_layout = QVBoxLayout(self.results_root)
         self.results_layout.setContentsMargins(0, 0, 0, 0)
         self.results_layout.setSpacing(3)
-        self.results_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # Stretch final (não AlignTop): evita sobreposição ao recolher cards.
         self.results_layout.addStretch(1)
         root.addWidget(self.results_root, 1)
 

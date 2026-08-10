@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -640,6 +640,10 @@ class MainWindow(QMainWindow):
 
     def _on_form_layout_changed(self) -> None:
         """Formulário recolhido/expandido: abas encolhem e Preview/Log absorvem a sobra."""
+        # Após o layout dos cards estabilizar (inclui cards que nascem minimizados).
+        QTimer.singleShot(0, self._apply_form_layout_change)
+
+    def _apply_form_layout_change(self) -> None:
         self.tabs.sync_content_height()
         if self._main_layout is not None:
             self._main_layout.activate()

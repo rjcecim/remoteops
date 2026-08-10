@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QSizePolicy,
     QGridLayout, QToolButton,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from remoteops.ui.style import FONT_UI, SIZE_UI, CARD_GRID_VERTICAL_SPACING
@@ -46,20 +46,20 @@ def grid_in_card(card: "CardWidget") -> QGridLayout:
 
 def make_card_stack(parent: QWidget) -> QVBoxLayout:
     """
-    Layout padrão para empilhar cards: no topo, próximos uns dos outros.
-    Após adicionar os cards, chame ``finish_card_stack`` (exceto se algum
-    card for expansível e já absorver o espaço restante).
+    Layout padrão para empilhar cards: um abaixo do outro, sem vãos.
+
+    Não usa ``AlignTop`` — no Qt isso sobrepõe widgets ao recolher com
+    altura fixa. O empilhamento no topo vem do stretch final
+    (``finish_card_stack``) ou de um card expansível que absorve a sobra.
     """
     layout = QVBoxLayout(parent)
     layout.setContentsMargins(4, 4, 4, 4)
     layout.setSpacing(3)
-    layout.setAlignment(Qt.AlignmentFlag.AlignTop)
     return layout
 
 
 def finish_card_stack(layout: QVBoxLayout) -> None:
     """Absorve o espaço vertical sobrando abaixo dos cards (mantém o stack no topo)."""
-    layout.setAlignment(Qt.AlignmentFlag.AlignTop)
     layout.addStretch(1)
 
 
@@ -81,9 +81,10 @@ class CardWidget(QWidget):
         self._is_collapsible = False
         self._is_collapsed = False
         self._wants_expanding = False
-        self._layout_stretch = 1
+        # 0 = formulário (não estica). Cards expansíveis chamam set_layout_stretch.
+        self._layout_stretch = 0
         self._divider_spacing_idx: int | None = None
-        # Padrão: altura = conteúdo; cards ficam empilhados no topo do layout pai
+        # Padrão: altura = conteúdo; cards ficam empilhados sem se espalhar
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
 
         outer = QVBoxLayout(self)
@@ -203,6 +204,46 @@ class CardWidget(QWidget):
     def is_collapsed(self) -> bool:
         return bool(self._is_collapsed)
 
+    def _header_only_height(self) -> int:
+        """Altura só do cabeçalho (cards minimizados / padrão recolhido)."""
+        m = self._container_layout.contentsMargins()
+        header_h = max(self._header_widget.height(), self._header_widget.sizeHint().height())
+        # +2 ≈ borda do container
+        return header_h + m.top() + m.bottom() + 2
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        if self._is_collapsible and self._is_collapsed:
+            base = super().sizeHint()
+            return QSize(base.width(), self._header_only_height())
+        # Flags (FlowLayout): altura depende da largura — sizeHint “seco” subestima.
+        if self.hasHeightForWidth():
+            width = self.width() if self.width() > 0 else super().sizeHint().width()
+            return QSize(max(1, width), self.heightForWidth(width))
+        return super().sizeHint()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        if self._is_collapsible and self._is_collapsed:
+            base = super().minimumSizeHint()
+            return QSize(base.width(), self._header_only_height())
+        if self.hasHeightForWidth():
+            width = self.width() if self.width() > 0 else super().minimumSizeHint().width()
+            return QSize(max(1, width), self.heightForWidth(width))
+        return super().minimumSizeHint()
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        if self._is_collapsible and self._is_collapsed:
+            return False
+        lay = self.layout()
+        return bool(lay is not None and lay.hasHeightForWidth())
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        if self._is_collapsible and self._is_collapsed:
+            return self._header_only_height()
+        lay = self.layout()
+        if lay is not None and lay.hasHeightForWidth():
+            return lay.heightForWidth(max(1, width))
+        return super().sizeHint().height()
+
     def set_collapsed(self, collapsed: bool) -> None:
         self._is_collapsed = bool(collapsed)
         if not self._is_collapsible:
@@ -219,23 +260,21 @@ class CardWidget(QWidget):
         self._toggle_btn.setText("\uE70E" if self._is_collapsed else "\uE70D")
         self._toggle_btn.setToolTip("Expandir" if self._is_collapsed else "Ocultar")
 
+        # Nunca setFixedHeight: com teto da aba (ContentSizedTabWidget) isso
+        # comprime o layout e os cards se sobrepõem. Maximum + sizeHint bastam.
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(_QWIDGETSIZE_MAX)
+
         if self._is_collapsed:
-            # Só o cabeçalho no topo; o stretch final do layout pai absorve o resto
             self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
             self._container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
             self._content_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
             self._container_layout.setStretchFactor(self._content_widget, 0)
-            m = self._container_layout.contentsMargins()
-            h = self._header_widget.height() + m.top() + m.bottom() + 2
-            self.setFixedHeight(h)
             self._apply_parent_stretch(0)
         else:
-            self.setMinimumHeight(0)
-            self.setMaximumHeight(_QWIDGETSIZE_MAX)
             if self._wants_expanding:
                 self.set_expanding(True)
             else:
-                # Formulário: altura = conteúdo; não absorve stretch do layout pai
                 self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
                 self._container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
                 self._content_widget.setSizePolicy(
@@ -247,6 +286,7 @@ class CardWidget(QWidget):
         self.updateGeometry()
         parent = self.parentWidget()
         if parent is not None and parent.layout() is not None:
+            parent.layout().invalidate()
             parent.layout().activate()
             parent.updateGeometry()
         self.collapsedChanged.emit(self._is_collapsed)

@@ -16,9 +16,9 @@ class ContentSizedTabWidget(QTabWidget):
     PowerShell herdavam a altura do PsExec e a sobra ficava dentro da aba.
     Aqui a sobra vai para Pré-visualização e Log — igual à aba principal.
 
-    Em modo preenchimento (tela cheia), a aba pode crescer. Ao sair desse modo,
-    a altura é limitada ao sizeHint da página atual — senão o Qt mantém a
-    altura Expandida anterior e aparece um vão vazio abaixo do formulário.
+    Não usa ``setMaximumHeight`` como teto do formulário: isso clipava cards
+    (ex.: Conexão) ao recolher Flags. A política Maximum + sizeHint bastam;
+    o mínimo impede o layout de esmagar o formulário sobrepondo cards.
     """
 
     def __init__(self, parent=None):
@@ -31,8 +31,8 @@ class ContentSizedTabWidget(QTabWidget):
         """True = ocupar o espaço vertical (PsInfo/Configurações/…); False = altura do conteúdo."""
         self._fill_available = bool(fill)
         self.setMinimumHeight(0)
+        self.setMaximumHeight(_QWIDGETSIZE_MAX)
         if self._fill_available:
-            self.setMaximumHeight(_QWIDGETSIZE_MAX)
             self.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
             )
@@ -43,19 +43,55 @@ class ContentSizedTabWidget(QTabWidget):
             self.sync_content_height()
 
     def sync_content_height(self) -> None:
-        """Recalcula o teto de altura após trocar aba ou recolher/expandir cards."""
+        """Recalcula geometria após trocar aba ou recolher/expandir cards."""
         if self._fill_available:
             return
-        # Liberar teto antigo antes de medir — senão o sizeHint fica engessado.
+        # Libera qualquer teto antigo (não recoloca setMaximumHeight).
         self.setMinimumHeight(0)
         self.setMaximumHeight(_QWIDGETSIZE_MAX)
+
+        page = self.currentWidget()
+        if page is not None:
+            lay = page.layout()
+            if lay is not None:
+                lay.invalidate()
+                lay.activate()
+            page.updateGeometry()
         self.updateGeometry()
-        self.setMaximumHeight(max(1, self.sizeHint().height()))
+
+        # Impede o layout pai de comprimir a aba abaixo do formulário real
+        # (causa sobreposição Conexão ↔ Autenticação ao recolher Flags).
+        self.setMinimumHeight(max(1, self._content_height()))
+
+    def _content_height(self) -> int:
+        page = self.currentWidget()
+        chrome = self._chrome_height()
+        if page is None:
+            return max(1, chrome)
+        lay = page.layout()
+        width = max(page.width(), self.width(), 1)
+        if lay is not None:
+            if hasattr(lay, "hasHeightForWidth") and lay.hasHeightForWidth():
+                page_h = lay.heightForWidth(width)
+            else:
+                page_h = 0
+            page_h = max(
+                page_h,
+                lay.totalSizeHint().height(),
+                lay.totalMinimumSize().height(),
+                page.sizeHint().height(),
+                page.minimumSizeHint().height(),
+            )
+        else:
+            page_h = max(page.sizeHint().height(), page.minimumSizeHint().height())
+        # +4 evita clipar a última linha do card superior (ex.: Conexão) por arredondamento
+        return page_h + chrome + 4
 
     def _on_current_changed(self, _index: int = 0) -> None:
         if not self._fill_available:
             self.sync_content_height()
         else:
+            self.setMinimumHeight(0)
             self.updateGeometry()
         parent = self.parentWidget()
         if parent is not None and parent.layout() is not None:
@@ -75,16 +111,25 @@ class ContentSizedTabWidget(QTabWidget):
 
     def sizeHint(self) -> QSize:  # noqa: N802
         hint = super().sizeHint()
-        page = self.currentWidget()
-        if page is None:
-            return hint
-        return QSize(hint.width(), page.sizeHint().height() + self._chrome_height())
+        return QSize(hint.width(), self._content_height())
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         hint = super().minimumSizeHint()
+        return QSize(hint.width(), self._content_height())
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
         page = self.currentWidget()
         if page is None:
-            return hint
-        return QSize(
-            hint.width(), page.minimumSizeHint().height() + self._chrome_height()
-        )
+            return False
+        lay = page.layout()
+        return bool(lay is not None and lay.hasHeightForWidth())
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        page = self.currentWidget()
+        chrome = self._chrome_height()
+        if page is None:
+            return chrome
+        lay = page.layout()
+        if lay is not None and lay.hasHeightForWidth():
+            return lay.heightForWidth(max(1, width)) + chrome
+        return self._content_height()

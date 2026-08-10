@@ -17,7 +17,6 @@ class PowerShellTab(QWidget):
 
         # ── Card Opções ───────────────────────────────────────────────────────
         card_opts = CardWidget("\uE115", self.tr("Opções"))  # Engrenagem = opções de execução
-        card_opts.set_collapsible(True, collapsed=False)
         g1 = grid_in_card(card_opts)
         row = 0
 
@@ -50,7 +49,6 @@ class PowerShellTab(QWidget):
 
         # ── Card Comando ───────────────────────────────────────────────────────
         card_cmd = CardWidget("\uE768", self.tr("Comando"))  # Play = executar comando (igual ao card Comando da aba CMD)
-        card_cmd.set_collapsible(True, collapsed=False)
         g2 = grid_in_card(card_cmd)
 
         self.command_edit = QLineEdit()
@@ -65,12 +63,15 @@ class PowerShellTab(QWidget):
 
         self._form_cards = (card_opts, card_cmd)
         for card in self._form_cards:
+            card.set_collapsible(True, collapsed=False)
             card.collapsedChanged.connect(self._on_form_card_collapsed)
 
     def _on_form_card_collapsed(self, _collapsed: bool = False) -> None:
+        lay = self.layout()
+        if lay is not None:
+            lay.invalidate()
+            lay.activate()
         self.updateGeometry()
-        if self.layout() is not None:
-            self.layout().activate()
         self.formLayoutChanged.emit()
 
     def set_command_fields_enabled(self, enabled: bool):

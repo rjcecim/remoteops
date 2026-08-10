@@ -156,7 +156,6 @@ class PsExecTab(QWidget):
 
         # ── Card 1 — Conexão ─────────────────────────────────────────────────
         card1 = CardWidget("\uEA18", self.tr("Conexão"))
-        card1.set_collapsible(True, collapsed=False)
         g1 = _grid_in_card(card1)
 
         # Host remoto
@@ -220,7 +219,6 @@ class PsExecTab(QWidget):
 
         # ── Card 2 — Autenticação ─────────────────────────────────────────────
         card2 = CardWidget("\uE8D7", self.tr("Autenticação"))
-        card2.set_collapsible(True, collapsed=True)
         g2 = _grid_in_card(card2)
 
         user_container, self.user_edit = _line_edit_with_clear_icon(password=False)
@@ -238,7 +236,6 @@ class PsExecTab(QWidget):
 
         # ── Card 3 — Privilégios e Sessão ─────────────────────────────────────
         card3 = CardWidget("\uE8D4", self.tr("Privilégios e Sessão"))
-        card3.set_collapsible(True, collapsed=False)
         g3 = _grid_in_card(card3)
 
         # Elevação
@@ -293,7 +290,6 @@ class PsExecTab(QWidget):
 
         # ── Card 4 — Desempenho ───────────────────────────────────────────────
         card4 = CardWidget("\uE950", self.tr("Desempenho"))
-        card4.set_collapsible(True, collapsed=True)
         g4 = _grid_in_card(card4)
 
         # Prioridade
@@ -341,7 +337,6 @@ class PsExecTab(QWidget):
 
         # ── Card 5 — Flags e Argumentos ──────────────────────────────────────
         card5 = CardWidget("\uE115", self.tr("Flags e Argumentos"))
-        card5.set_collapsible(True, collapsed=False)
         g5 = _grid_in_card(card5)
 
         # Timeout
@@ -413,15 +408,20 @@ class PsExecTab(QWidget):
         self.update_priority_tooltip()
         self.update_affinity_for_group()
 
-        # Recolher/expandir formulário libera altura para Preview/Log na janela
+        # Collapsible só depois do conteúdo no layout — senão o padrão
+        # minimizado (Autenticação / Desempenho) nasce com altura errada.
         self._form_cards = (card1, card2, card3, card4, card5)
-        for card in self._form_cards:
+        _collapsed_default = (False, True, False, True, False)
+        for card, start_collapsed in zip(self._form_cards, _collapsed_default):
+            card.set_collapsible(True, collapsed=start_collapsed)
             card.collapsedChanged.connect(self._on_form_card_collapsed)
 
     def _on_form_card_collapsed(self, _collapsed: bool = False) -> None:
+        lay = self.layout()
+        if lay is not None:
+            lay.invalidate()
+            lay.activate()
         self.updateGeometry()
-        if self.layout() is not None:
-            self.layout().activate()
         self.formLayoutChanged.emit()
 
     # ── slots ─────────────────────────────────────────────────────────────────
