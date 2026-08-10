@@ -6,7 +6,7 @@ import multiprocessing
 import sys
 import traceback
 
-from PyQt6.QtCore import QCoreApplication
+from PyQt6.QtCore import QCoreApplication, Qt
 from PyQt6.QtWidgets import QApplication
 
 from remoteops.ui.branding import (
@@ -54,7 +54,6 @@ def run(argv: list[str] | None = None) -> int:
         app.setWindowIcon(icon)
 
     window = MainWindow()
-    enable_mica_for_widget(window)
 
     sys.stdout = StreamToLog(window.log_output.append_log)
     sys.stderr = StreamToLog(window.log_output.append_log)
@@ -64,5 +63,13 @@ def run(argv: list[str] | None = None) -> int:
         window.log_output.append_log(redact_command_text("".join(lines)))
 
     sys.excepthook = excepthook
+
+    # Evita abrir minimizado/sem foco no Windows (comum se winId()/Mica
+    # for aplicado antes do primeiro show).
+    window.setWindowState(Qt.WindowState.WindowNoState)
     window.show()
+    window.showNormal()
+    window.raise_()
+    window.activateWindow()
+    enable_mica_for_widget(window)
     return int(app.exec())
