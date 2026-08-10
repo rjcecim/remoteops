@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "remoteops"
+dynamic = ["version"]
+description = "Operações remotas Windows: PsExec, inventário, pesquisa, desinstalação, Robocopy e RustDesk"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "rjcecim" }]
+dependencies = [
+    "PyQt6>=6.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4",
+]
+build = [
+    "Pillow>=10.0",
+    "pyinstaller>=6.0",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "remoteops.core.version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["remoteops*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = ["build", "dist", ".venv", "scripts/_extract_main_window.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",
+    "E741",
+]

@@ -1,0 +1,43 @@
+{
+  "applications": [
+    {
+      "displayName": "IObit Driver Booster",
+      "publisher": "IObit",
+      "match": [
+        "Driver Booster"
+      ],
+      "uninstallArgs": "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART",
+      "installerType": "Inno Setup",
+      "requiresReboot": false,
+      "requiresElevation": true,
+      "architecture": "x64"
+    },
+    {
+      "displayName": "PDF24 Creator",
+      "publishers": [
+        "geek software GmbH",
+        "PDF24.org"
+      ],
+      "match": [
+        "PDF24 Creator"
+      ],
+      "uninstallArgs": "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART",
+      "installerType": "Inno Setup",
+      "requiresReboot": false,
+      "requiresElevation": true,
+      "architecture": "x64"
+    },
+    {
+      "displayName": "WinRAR",
+      "publisher": "win.rar GmbH",
+      "match": [
+        "WinRAR"
+      ],
+      "uninstallArgs": "/S",
+      "installerType": "Custom",
+      "requiresReboot": false,
+      "requiresElevation": true,
+      "architecture": "x64"
+    }
+  ]
+}

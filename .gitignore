@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+*.manifest
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+
+# PyInstaller (mantém o .spec; ignora pastas de saída)
+# build/ e dist/ já listados acima
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# SO
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs do app
+exec_history.log
+*.log
+
+# Configuração local de hosts (use hosts.example.json como modelo)
+hosts.json
+
+# Preferências portáteis do aplicativo (não versionar)
+settings.ini
+
+# Modo portable
+portable.flag
+
+# Arquivos temporários
+*.tmp
+*.temp
+*.bak
+
+# Testes / cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# Dados locais
+logs/
