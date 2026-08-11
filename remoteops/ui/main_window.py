@@ -644,12 +644,15 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._apply_form_layout_change)
 
     def _apply_form_layout_change(self) -> None:
+        frozen = self.size()
         self.tabs.sync_content_height()
         if self._main_layout is not None:
             self._main_layout.activate()
         if self.centralWidget() is not None:
             self.centralWidget().updateGeometry()
         self._redistribute_expandable_space()
+        if self.size() != frozen:
+            self.resize(frozen)
 
     def _redistribute_expandable_space(self, _collapsed: bool = False) -> None:
         """
@@ -736,7 +739,11 @@ class MainWindow(QMainWindow):
         """
         Abas de inventário/pesquisa/configurações ocupam a janela;
         preview, log e Run ficam ocultos.
+
+        Mantém o tamanho da janela — esconder Preview/Log não deve
+        redimensionar o app (nem ao abrir PsInfo).
         """
+        frozen = self.size()
         current = self.tabs.currentWidget()
         is_fullscreen = (
             (self.psinfo_tab is not None and current == self.psinfo_tab)
@@ -750,6 +757,8 @@ class MainWindow(QMainWindow):
         self.stop_button.setVisible(not is_fullscreen)
         self.restart_button.setVisible(not is_fullscreen)
         self._redistribute_expandable_space()
+        if self.size() != frozen:
+            self.resize(frozen)
 
     def _build_brand_header(self) -> QWidget:
         row = QWidget()

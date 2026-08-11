@@ -36,6 +36,7 @@ class ContentSizedTabWidget(QTabWidget):
             self.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
             )
+            self.updateGeometry()
         else:
             self.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
@@ -46,7 +47,8 @@ class ContentSizedTabWidget(QTabWidget):
         """Recalcula geometria após trocar aba ou recolher/expandir cards."""
         if self._fill_available:
             return
-        # Libera qualquer teto antigo (não recoloca setMaximumHeight).
+        # Sem setMinimumHeight rígido: isso empurrava o tamanho da janela
+        # ao abrir PsInfo/Configurações. minimumSizeHint basta para o layout.
         self.setMinimumHeight(0)
         self.setMaximumHeight(_QWIDGETSIZE_MAX)
 
@@ -58,10 +60,6 @@ class ContentSizedTabWidget(QTabWidget):
                 lay.activate()
             page.updateGeometry()
         self.updateGeometry()
-
-        # Impede o layout pai de comprimir a aba abaixo do formulário real
-        # (causa sobreposição Conexão ↔ Autenticação ao recolher Flags).
-        self.setMinimumHeight(max(1, self._content_height()))
 
     def _content_height(self) -> int:
         page = self.currentWidget()
@@ -111,10 +109,15 @@ class ContentSizedTabWidget(QTabWidget):
 
     def sizeHint(self) -> QSize:  # noqa: N802
         hint = super().sizeHint()
+        if self._fill_available:
+            # Não ditar altura da janela em modo tela cheia (PsInfo, etc.).
+            return QSize(hint.width(), max(hint.height(), 1))
         return QSize(hint.width(), self._content_height())
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         hint = super().minimumSizeHint()
+        if self._fill_available:
+            return QSize(hint.width(), 0)
         return QSize(hint.width(), self._content_height())
 
     def hasHeightForWidth(self) -> bool:  # noqa: N802
