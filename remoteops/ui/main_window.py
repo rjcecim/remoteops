@@ -36,6 +36,7 @@ from remoteops.ui.tabs.psexec import PsExecTab
 from remoteops.ui.tabs.psinfo import PsInfoTab
 from remoteops.ui.tabs.robocopy import RobocopyTab
 from remoteops.ui.tabs.settings import SettingsTab
+from remoteops.ui.tabs.winget import WinGetTab
 from remoteops.ui.widgets.content_tab_widget import ContentSizedTabWidget
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.mdl2_tab_bar import Mdl2TabBar
@@ -81,6 +82,7 @@ class MainWindow(QMainWindow):
         self.psexec_tab = PsExecTab(log_output=self.log_output)
         self.psinfo_tab = None
         self.hostapps_tab = None
+        self.winget_tab = None
         self.appsearch_tab = None
         self.settings_tab = None
         self.msi_tab = MsiTab()
@@ -147,6 +149,7 @@ class MainWindow(QMainWindow):
         self.file_selector.settingsRequested.connect(self.open_settings_tab)
         self.psexec_tab.host_edit.textChanged.connect(self.update_command)
         self.psexec_tab.openHostAppsRequested.connect(self.open_hostapps_tab)
+        self.psexec_tab.openWinGetRequested.connect(self.open_winget_tab)
         self.psexec_tab.openPsInfoRequested.connect(self.open_psinfo_tab)
         self.psexec_tab.openRustDeskRequested.connect(self.on_rustdesk_clicked)
         self.psexec_tab.formLayoutChanged.connect(self._on_form_layout_changed)
@@ -469,6 +472,40 @@ class MainWindow(QMainWindow):
         self.hostapps_tab.run_inventory()
         self._update_psinfo_mode_ui()
 
+    def open_winget_tab(self) -> None:
+        """Abre aba WinGet (pacotes remotos) reutilizando host/creds do PsExec."""
+        host = self.psexec_tab.host_edit.text().strip()
+        if not host:
+            self.log_output.append_log(
+                self.tr("[WINGET] Preencha o Host remoto antes de abrir o WinGet.")
+            )
+            return
+
+        if self.winget_tab is not None:
+            idx = self.tabs.indexOf(self.winget_tab)
+            if idx != -1:
+                self.tabs.setCurrentIndex(idx)
+                self._update_psinfo_mode_ui()
+                return
+
+        self.winget_tab = WinGetTab(
+            host_source=self.psexec_tab.host_edit,
+            creds_provider=lambda: (
+                (self.psexec_tab.user_edit.text() or "").strip(),
+                self.psexec_tab.pass_edit.text() or "",
+            ),
+        )
+        self.tabs.addTab(self.winget_tab, self.tr("WinGet"))
+        idx = self.tabs.indexOf(self.winget_tab)
+        bar = self.tabs.tabBar()
+        if isinstance(bar, Mdl2TabBar):
+            bar.set_tab_meta(idx, "\uE7B8", closable=True)
+        else:
+            bar.setTabData(idx, "\uE7B8")
+        self._refresh_tab_bar_layout()
+        self.tabs.setCurrentIndex(idx)
+        self._update_psinfo_mode_ui()
+
     def open_appsearch_tab(self) -> None:
         """Cria a aba Pesquisa de Aplicativos sob demanda e foca nela."""
         if self.appsearch_tab is not None:
@@ -498,6 +535,8 @@ class MainWindow(QMainWindow):
             return
         if widget is self.hostapps_tab:
             self._close_hostapps_tab()
+        elif widget is self.winget_tab:
+            self._close_winget_tab()
         elif widget is self.appsearch_tab:
             self._close_appsearch_tab()
         elif widget is self.settings_tab:
@@ -515,6 +554,22 @@ class MainWindow(QMainWindow):
             pass
         self.hostapps_tab.deleteLater()
         self.hostapps_tab = None
+        self._update_psinfo_mode_ui()
+        self._last_tab_widget = self.tabs.currentWidget()
+        self._refresh_tab_bar_layout()
+
+    def _close_winget_tab(self) -> None:
+        if self.winget_tab is None:
+            return
+        idx = self.tabs.indexOf(self.winget_tab)
+        if idx != -1:
+            self.tabs.removeTab(idx)
+        try:
+            self.winget_tab.shutdown()
+        except Exception:
+            pass
+        self.winget_tab.deleteLater()
+        self.winget_tab = None
         self._update_psinfo_mode_ui()
         self._last_tab_widget = self.tabs.currentWidget()
         self._refresh_tab_bar_layout()
@@ -675,6 +730,10 @@ class MainWindow(QMainWindow):
             self.hostapps_tab is not None
             and self.tabs.currentWidget() == self.hostapps_tab
         )
+        is_winget = (
+            self.winget_tab is not None
+            and self.tabs.currentWidget() == self.winget_tab
+        )
         is_appsearch = (
             self.appsearch_tab is not None
             and self.tabs.currentWidget() == self.appsearch_tab
@@ -683,7 +742,7 @@ class MainWindow(QMainWindow):
             self.settings_tab is not None
             and self.tabs.currentWidget() == self.settings_tab
         )
-        is_fullscreen_tab = is_psinfo or is_hostapps or is_appsearch or is_settings
+        is_fullscreen_tab = is_psinfo or is_hostapps or is_winget or is_appsearch or is_settings
 
         tabs_idx = lay.indexOf(self.tabs)
         if is_fullscreen_tab:
@@ -748,6 +807,7 @@ class MainWindow(QMainWindow):
         is_fullscreen = (
             (self.psinfo_tab is not None and current == self.psinfo_tab)
             or (self.hostapps_tab is not None and current == self.hostapps_tab)
+            or (self.winget_tab is not None and current == self.winget_tab)
             or (self.appsearch_tab is not None and current == self.appsearch_tab)
             or (self.settings_tab is not None and current == self.settings_tab)
         )
@@ -1186,6 +1246,7 @@ class MainWindow(QMainWindow):
         for tab in (
             getattr(self, "appsearch_tab", None),
             getattr(self, "hostapps_tab", None),
+            getattr(self, "winget_tab", None),
             getattr(self, "psinfo_tab", None),
         ):
             if tab is not None:

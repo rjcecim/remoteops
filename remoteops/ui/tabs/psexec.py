@@ -135,6 +135,7 @@ def _line_edit_with_clear_icon(password: bool = False):
 
 class PsExecTab(QWidget):
     openHostAppsRequested = pyqtSignal()
+    openWinGetRequested = pyqtSignal()
     openPsInfoRequested = pyqtSignal()
     openRustDeskRequested = pyqtSignal()
     formLayoutChanged = pyqtSignal()
@@ -170,6 +171,11 @@ class PsExecTab(QWidget):
             "\uE71D", self.tr("Listar aplicativos do host (Remote Registry)")
         )
         self.hostapps_button.clicked.connect(self.openHostAppsRequested.emit)
+        # \uE7B8 = Package — WinGet (gerenciador de pacotes)
+        self.winget_button = make_icon_button(
+            "\uE7B8", self.tr("WinGet — pacotes remotos (winget)")
+        )
+        self.winget_button.clicked.connect(self.openWinGetRequested.emit)
         self.psinfo_button = make_icon_button("\uE946", self.tr("Abrir PsInfo (inventário)"))
         self.psinfo_button.clicked.connect(self.openPsInfoRequested.emit)
         # \uE8B7 (Copy) já usado em Robocopy; aqui usamos \uE774 (Link) como ação de conexão
@@ -177,6 +183,7 @@ class PsExecTab(QWidget):
         self.rustdesk_button.clicked.connect(self.openRustDeskRequested.emit)
         host_row.addWidget(host_clear_container)
         host_row.addWidget(self.hostapps_button)
+        host_row.addWidget(self.winget_button)
         host_row.addWidget(self.psinfo_button)
         host_row.addWidget(self.rustdesk_button)
         host_container = QWidget()
