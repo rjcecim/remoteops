@@ -139,10 +139,12 @@ class PsExecTab(QWidget):
     openPsInfoRequested = pyqtSignal()
     openRustDeskRequested = pyqtSignal()
     formLayoutChanged = pyqtSignal()
+    hostOnlineChanged = pyqtSignal(bool)
 
     def __init__(self, parent=None, log_output=None):
         super().__init__(parent)
         self.log_output = log_output
+        self._host_online = False
         self._host_status_worker: Optional[_HostStatusWorker] = None
         self._host_status_wanted = ""
         self._host_status_timer = QTimer(self)
@@ -208,7 +210,7 @@ class PsExecTab(QWidget):
         status_container.setLayout(status_row)
         status_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         _add_row(g1, 1, self.tr("Status"), status_container)
-        self._set_host_status("idle")
+        self._set_host_status("idle")  # desabilita ações até o host ficar Online
         self.host_edit.textChanged.connect(self._on_host_text_changed)
 
         # Comando remoto
@@ -478,6 +480,22 @@ class PsExecTab(QWidget):
         if 0 <= idx < len(self._priority_tooltips):
             self.priority_combo.setToolTip(self._priority_tooltips[idx])
 
+    @property
+    def is_host_online(self) -> bool:
+        return bool(self._host_online)
+
+    def _host_action_buttons(self):
+        return (
+            self.hostapps_button,
+            self.winget_button,
+            self.psinfo_button,
+            self.rustdesk_button,
+        )
+
+    def _update_host_action_buttons(self, online: bool) -> None:
+        for btn in self._host_action_buttons():
+            btn.setEnabled(online)
+
     def _set_host_status(self, state: str, text: str | None = None) -> None:
         color = _STATUS_COLORS.get(state, _STATUS_COLORS["idle"])
         self.host_status_dot.set_color(color)
@@ -492,6 +510,12 @@ class PsExecTab(QWidget):
         self.host_status_label.setText(caption)
         self.host_status_dot.setToolTip(caption)
         self.host_status_label.setToolTip(caption)
+
+        online = state == "online"
+        self._update_host_action_buttons(online)
+        if self._host_online != online:
+            self._host_online = online
+            self.hostOnlineChanged.emit(online)
 
     def _on_host_text_changed(self, _text: str = "") -> None:
         host = normalize_host(self.host_edit.text())

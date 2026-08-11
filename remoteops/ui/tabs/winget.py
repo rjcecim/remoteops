@@ -66,6 +66,8 @@ class WinGetTab(QWidget):
 
         self._root_layout = make_card_stack(self)
         self._collapsible_cards: list[CardWidget] = []
+        self._bottom_stretch_idx: int | None = None
+        self._page_stretch_idx: dict[int, int] = {}
         self._progress = None
         self._exec_log = None
 
@@ -120,7 +122,11 @@ class WinGetTab(QWidget):
         return card
 
     def _redistribute_card_space(self) -> None:
-        """Recalcula stretch: cards expansíveis abertos dividem o espaço livre da janela."""
+        """
+        Divide o espaço entre abas/console abertos.
+        Com expansíveis recolhidos, stretch final mantém os cabeçalhos no topo
+        (mesmo padrão de Listar Apps / Pesquisa / janela principal).
+        """
         layout = getattr(self, "_root_layout", None)
         if layout is None:
             return
@@ -131,11 +137,12 @@ class WinGetTab(QWidget):
         log_open = log_output is not None and not log_output.is_collapsed
         # Abas crescem se o card da aba atual estiver expandido (ou se não houver card).
         tabs_open = True
+        page_card = None
         if tabs is not None:
             page = tabs.currentWidget()
             if page is not None:
-                card = page.findChild(CardWidget)
-                if card is not None and card.is_collapsed:
+                page_card = page.findChild(CardWidget)
+                if page_card is not None and page_card.is_collapsed:
                     tabs_open = False
 
         if log_open and tabs_open:
@@ -148,7 +155,9 @@ class WinGetTab(QWidget):
             tabs_stretch, log_stretch = 0, 0
 
         if tabs is not None:
-            layout.setStretchFactor(tabs, tabs_stretch)
+            tabs_idx = layout.indexOf(tabs)
+            if tabs_idx >= 0:
+                layout.setStretch(tabs_idx, tabs_stretch)
             bar_h = max(28, tabs.tabBar().sizeHint().height())
             tabs.setMinimumHeight(bar_h if not tabs_open else 120)
             tabs.setSizePolicy(
@@ -156,20 +165,66 @@ class WinGetTab(QWidget):
                 QSizePolicy.Policy.Maximum if not tabs_open else QSizePolicy.Policy.Expanding,
             )
             if not tabs_open:
-                page = tabs.currentWidget()
                 card_h = 36
-                if page is not None:
-                    card = page.findChild(CardWidget)
-                    if card is not None:
-                        card_h = max(32, card.sizeHint().height())
+                if page_card is not None:
+                    card_h = max(32, page_card.sizeHint().height())
                 tabs.setMaximumHeight(bar_h + card_h + 4)
             else:
                 tabs.setMaximumHeight(16777215)
 
+            # Dentro da página: card aberto absorve; recolhido → cabeçalho no topo.
+            self._redistribute_tab_page(tabs.currentWidget(), page_card)
+
         if log_output is not None:
-            layout.setStretchFactor(log_output, log_stretch)
+            log_idx = layout.indexOf(log_output)
+            if log_idx >= 0:
+                if log_stretch > 0:
+                    log_output.set_layout_stretch(log_stretch)
+                layout.setStretch(log_idx, log_stretch)
+
+        # Sem AlignTop: stretch final mantém cabeçalhos no topo ao recolher tudo.
+        need_tail = tabs_stretch == 0 and log_stretch == 0
+        if need_tail:
+            if self._bottom_stretch_idx is None:
+                layout.addStretch(1)
+                self._bottom_stretch_idx = layout.count() - 1
+            else:
+                layout.setStretch(self._bottom_stretch_idx, 1)
+        elif self._bottom_stretch_idx is not None:
+            layout.setStretch(self._bottom_stretch_idx, 0)
 
         layout.activate()
+        self.updateGeometry()
+
+    def _redistribute_tab_page(self, page: QWidget | None, card: CardWidget | None) -> None:
+        """Empilha o card da subaba no topo quando recolhido (stretch final na página)."""
+        if page is None:
+            return
+        lay = page.layout()
+        if lay is None:
+            return
+
+        if card is not None:
+            idx = lay.indexOf(card)
+            if idx >= 0:
+                if card.is_collapsed:
+                    lay.setStretch(idx, 0)
+                else:
+                    card.set_layout_stretch(1)
+                    lay.setStretch(idx, 1)
+
+        # Stretch final da página (mesmo padrão das outras abas).
+        page_id = id(page)
+        tail_idx = self._page_stretch_idx.get(page_id)
+        need_tail = card is None or card.is_collapsed
+        if need_tail:
+            if tail_idx is None:
+                lay.addStretch(1)
+                self._page_stretch_idx[page_id] = lay.count() - 1
+            else:
+                lay.setStretch(tail_idx, 1)
+        elif tail_idx is not None:
+            lay.setStretch(tail_idx, 0)
 
     def _reset_progress_ui(self) -> None:
         if self._exec_log is not None:

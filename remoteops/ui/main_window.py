@@ -134,8 +134,9 @@ class MainWindow(QMainWindow):
             self.executor, log_fn=self.log_output.append_log
         )
         self._execution_service.set_button_callbacks(
-            self.run_button.setEnabled, self.stop_button.setEnabled
+            self._set_run_button_enabled, self.stop_button.setEnabled
         )
+        self.run_button.setEnabled(False)  # só habilita com host Online
         self._uninstall_service = RemoteUninstallService()
         self._rustdesk_service = RustDeskService()
         self._rustdesk_collecting = False
@@ -152,6 +153,7 @@ class MainWindow(QMainWindow):
         self.psexec_tab.openWinGetRequested.connect(self.open_winget_tab)
         self.psexec_tab.openPsInfoRequested.connect(self.open_psinfo_tab)
         self.psexec_tab.openRustDeskRequested.connect(self.on_rustdesk_clicked)
+        self.psexec_tab.hostOnlineChanged.connect(self._on_host_online_changed)
         self.psexec_tab.formLayoutChanged.connect(self._on_form_layout_changed)
         self.powershell_tab.formLayoutChanged.connect(self._on_form_layout_changed)
         self.cmd_tab.formLayoutChanged.connect(self._on_form_layout_changed)
@@ -212,6 +214,20 @@ class MainWindow(QMainWindow):
         self.update_command()
         self._update_psinfo_mode_ui()
         self._last_tab_widget = self.tabs.currentWidget()
+
+    def _set_run_button_enabled(self, enabled: bool) -> None:
+        """Habilita Executar só se o host estiver Online (e o caller pediu enable)."""
+        if not enabled:
+            self.run_button.setEnabled(False)
+            return
+        self.run_button.setEnabled(bool(self.psexec_tab.is_host_online))
+
+    def _on_host_online_changed(self, online: bool) -> None:
+        # Em execução o Parar fica ativo — não reabilitar Executar no meio do processo.
+        if self.stop_button.isEnabled():
+            self.run_button.setEnabled(False)
+            return
+        self.run_button.setEnabled(bool(online))
 
     def _current_creds(self) -> CredentialContext:
         return CredentialContext(
@@ -1176,18 +1192,23 @@ class MainWindow(QMainWindow):
         append_history(text, passwords=passwords)
 
     def on_run(self):
+        if not self.psexec_tab.is_host_online:
+            self.log_output.append_log(
+                self.tr("[HOST] Host remoto precisa estar Online para executar.")
+            )
+            return
         self.update_command()
         # Credencial efêmera: coletada só na execução; limpa após o lançamento.
         creds = self._current_creds()
 
         self.log_output.clear_log()
-        self.run_button.setEnabled(False)
+        self._set_run_button_enabled(False)
         self.stop_button.setEnabled(True)
 
         plan = self.build_specs_for_execution()
         if not plan:
             self.log_output.append_log(self.tr("Nenhum comando para executar."))
-            self.run_button.setEnabled(True)
+            self._set_run_button_enabled(True)
             self.stop_button.setEnabled(False)
             creds.clear()
             return
@@ -1198,14 +1219,14 @@ class MainWindow(QMainWindow):
             )
             # Mensagem de status já vai ao log via log_fn do serviço
             if not result.robocopy_started and not result.ok:
-                self.run_button.setEnabled(True)
+                self._set_run_button_enabled(True)
                 self.stop_button.setEnabled(False)
         finally:
             creds.clear()
 
     def on_stop(self):
         self.executor.stop()
-        self.run_button.setEnabled(True)
+        self._set_run_button_enabled(True)
         self.stop_button.setEnabled(False)
         self.log_output.append_log(
             self.tr(
@@ -1216,8 +1237,8 @@ class MainWindow(QMainWindow):
         )
 
     def on_process_finished(self, exit_code):
-        self.run_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self._set_run_button_enabled(True)
         self.log_output.append_log(self.tr(f"Processo finalizado com código {exit_code}"))
 
     def on_remote_cmd_changed(self, text):
