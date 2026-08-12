@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from remoteops.winget.constants import EXEC_ACTIONS, MARKER_PCT_RE, REALTIME_LOG_PREFIX, SPINNER_LINES
+from remoteops.ui.winget.controllers.progress_controller import ProgressController
+from remoteops.winget.clixml import is_clixml_log_noise
+from remoteops.winget.constants import (
+    EXEC_ACTIONS,
+    MARKER_PCT_RE,
+    REALTIME_LOG_PREFIX,
+    SPINNER_LINES,
+)
 from remoteops.winget.winget_output import (
     is_winget_download_progress,
     is_winget_download_start,
@@ -12,7 +19,6 @@ from remoteops.winget.winget_output import (
     normalize_winget_line,
     parse_package_header,
 )
-from remoteops.ui.winget.controllers.progress_controller import ProgressController
 
 
 class ExecLogRouter:
@@ -55,6 +61,9 @@ class ExecLogRouter:
                 self._progress.on_percent(int(pct_m.group("pct")))
             except Exception:
                 pass
+            return None
+
+        if is_clixml_log_noise(text):
             return None
 
         if is_winget_download_progress(text) or is_winget_table_chrome(text):

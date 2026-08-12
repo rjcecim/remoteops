@@ -15,7 +15,12 @@ import uuid
 from datetime import datetime
 from typing import Callable
 
-from .clixml import clixml_to_text
+from .clixml import (
+    build_clixml_diagnostics,
+    contains_raw_clixml,
+    looks_like_clixml,
+    parse_clixml,
+)
 from .constants import CREATE_NO_WINDOW, EXEC_ACTIONS, PSEXEC_ACTION_TIMEOUT_S, REALTIME_LOG_PREFIX
 from .diagnostics import save_last_psexec_log
 from .json_utils import loads_json_best_effort
@@ -65,8 +70,12 @@ def _run_and_capture(
     stderr_lines: list[str] = []
     processor = make_line_processor(log_cb=log_cb, progress_cb=progress_cb)
 
-    t_out = threading.Thread(target=read_stream, args=(proc.stdout, stdout_lines, False, processor), daemon=True)
-    t_err = threading.Thread(target=read_stream, args=(proc.stderr, stderr_lines, True, processor), daemon=True)
+    t_out = threading.Thread(
+        target=read_stream, args=(proc.stdout, stdout_lines, False, processor), daemon=True
+    )
+    t_err = threading.Thread(
+        target=read_stream, args=(proc.stderr, stderr_lines, True, processor), daemon=True
+    )
     t_out.start()
     t_err.start()
 
@@ -89,7 +98,10 @@ def _run_and_capture(
         except subprocess.TimeoutExpired:
             if time.monotonic() >= deadline:
                 timed_out = True
-                _emit(log_cb, f"[{_now_hms()}] Timeout do PsExec após {PSEXEC_ACTION_TIMEOUT_S}s. Encerrando...")
+                _emit(
+                    log_cb,
+                    f"[{_now_hms()}] Timeout do PsExec após {PSEXEC_ACTION_TIMEOUT_S}s. Encerrando...",
+                )
                 try:
                     proc.kill()
                 except Exception:
@@ -117,13 +129,15 @@ def _fallback_exec_payload(
     ids: list[str],
     exit_code: int,
     combined_text: str,
+    diagnostics: dict | None = None,
 ) -> dict:
     results: list[dict] = []
-    if ids:
-        for pkg_id in ids:
-            results.append({"Id": str(pkg_id), "ExitCode": int(exit_code), "Output": combined_text})
-    else:
-        results.append({"Id": "", "ExitCode": int(exit_code), "Output": combined_text})
+    ids_list = list(ids) if ids else [""]
+    for pkg_id in ids_list:
+        item = {"Id": str(pkg_id), "ExitCode": int(exit_code), "Output": combined_text}
+        if diagnostics:
+            item["Diagnostics"] = diagnostics
+        results.append(item)
     return {
         "Ok": False,
         "Action": action,
@@ -161,10 +175,22 @@ def _payload_or_raise(
 
     if payload is None:
         combined_raw = "\n".join([x for x in (stdout, stderr) if x]).strip()
-        combined = clixml_to_text(combined_raw)
+        parsed = parse_clixml(combined_raw)
+        combined = parsed.plain_text
+        if contains_raw_clixml(combined):
+            combined = "Não foi possível interpretar a saída CLIXML do PowerShell."
         act = (action or "").lower()
         if act in EXEC_ACTIONS:
-            return _fallback_exec_payload(action=act, ids=ids, exit_code=exit_code, combined_text=combined)
+            diagnostics = (
+                build_clixml_diagnostics(parsed) if looks_like_clixml(combined_raw) else None
+            )
+            return _fallback_exec_payload(
+                action=act,
+                ids=ids,
+                exit_code=exit_code,
+                combined_text=combined,
+                diagnostics=diagnostics,
+            )
         if exit_code != 0:
             hint = psexec_hint(
                 exit_code,
@@ -175,7 +201,7 @@ def _payload_or_raise(
             raise RuntimeError(hint)
         raise RuntimeError(
             "Não foi possível interpretar o retorno do host remoto como JSON.\n\n"
-            + (combined or combined_raw or stdout or stderr)
+            + (combined or stdout or stderr)
         )
 
     if not payload.get("Ok", False):
@@ -201,7 +227,9 @@ def run_remote_winget(
 ) -> dict:
     """Executa ``winget`` no host remoto via PsExec+PowerShell e devolve o dict JSON."""
     svc_name = "WINGETRM" + uuid.uuid4().hex[:6].upper()
-    remote_path, unc_admin, unc_c, remote_log_path, unc_admin_log, unc_c_log = build_remote_paths(host, svc_name)
+    remote_path, unc_admin, unc_c, remote_log_path, unc_admin_log, unc_c_log = build_remote_paths(
+        host, svc_name
+    )
 
     script = build_remote_script(
         action=action,

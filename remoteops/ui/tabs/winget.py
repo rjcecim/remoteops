@@ -22,9 +22,9 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
-    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -47,9 +47,9 @@ from remoteops.ui.winget.table_style import (
 )
 from remoteops.ui.winget.workers.winget_worker import WinGetWorker
 from remoteops.utils.pstools import get_pstools_dir, resolve_pstools_tool
-from remoteops.winget.constants import is_winget_success_exit, result_exit_code
-from remoteops.winget.winget_output import filter_winget_log_lines, summarize_winget_output
-
+from remoteops.winget.clixml import clixml_to_text, looks_like_clixml, summarize_one_line
+from remoteops.winget.constants import is_winget_success_exit
+from remoteops.winget.winget_output import format_exec_result_line, summarize_winget_output
 
 
 class WinGetTab(QWidget):
@@ -83,6 +83,8 @@ class WinGetTab(QWidget):
 
         self._worker: WinGetWorker | None = None
         self._last_host: str | None = None
+        if self._host_source is not None:
+            self._host_source.textChanged.connect(self._refresh_live_preview)
         self._redistribute_card_space()
 
     def _get_host(self) -> str:
@@ -306,8 +308,12 @@ class WinGetTab(QWidget):
         self._tab_idx_upgrades = idx_up
         self._tab_idx_search = idx_s
         self._tab_idx_installed = idx_i
-        tabs.currentChanged.connect(lambda _i: self._redistribute_card_space())
+        tabs.currentChanged.connect(self._on_winget_subtab_changed)
         return tabs
+
+    def _on_winget_subtab_changed(self, _index: int) -> None:
+        self._redistribute_card_space()
+        self._refresh_live_preview()
 
     def _on_list_from_info(self) -> None:
         # Mesmo comportamento do botão “Consultar”, mas sempre troca para a aba Atualizações.
@@ -365,7 +371,7 @@ class WinGetTab(QWidget):
         top.setSpacing(8)
 
         self.chk_all = QCheckBox("Marcar tudo")
-        self.chk_all.stateChanged.connect(self._toggle_all)
+        self.chk_all.toggled.connect(self._toggle_all)
         self.lbl_count = QLabel("0 itens")
         self.lbl_count.setStyleSheet("opacity: 0.75;")
         # \uE8FD = Refresh — mesmo ícone de "Atualizar lista" em Instalados
@@ -397,6 +403,7 @@ class WinGetTab(QWidget):
         self.search_query = QLineEdit()
         self.search_query.setPlaceholderText("Ex: chrome, zoom, winrar...")
         self.search_query.returnPressed.connect(self._on_search)
+        self.search_query.textChanged.connect(self._refresh_live_preview)
         self.btn_search = icon_button("\uE721", "Buscar pacotes (winget search)")
         self.btn_search.clicked.connect(self._on_search)
 
@@ -421,7 +428,7 @@ class WinGetTab(QWidget):
         apply_flat_list_table_style(self.search_table, object_name="wingetTblSearch")
 
         self.search_mark_all = QCheckBox("Marcar tudo")
-        self.search_mark_all.stateChanged.connect(self._toggle_all_search)
+        self.search_mark_all.toggled.connect(self._toggle_all_search)
         self.search_count = QLabel("0 itens")
         self.search_count.setStyleSheet("opacity: 0.75;")
         self.btn_search_install_sel = icon_button("\uE896", "Instalar selecionados (winget install --id ...)", size=ICON_SIZE_TOP)
@@ -449,7 +456,7 @@ class WinGetTab(QWidget):
         g = grid_in_card(card)
 
         self.inst_mark_all = QCheckBox("Marcar tudo")
-        self.inst_mark_all.stateChanged.connect(self._toggle_all_installed)
+        self.inst_mark_all.toggled.connect(self._toggle_all_installed)
         self.inst_count = QLabel("0 itens")
         self.inst_count.setStyleSheet("opacity: 0.75;")
         # \uE8FD = ViewList — listar pacotes instalados
@@ -575,21 +582,21 @@ class WinGetTab(QWidget):
                 self._refresh_search_bulk_buttons()
             if hasattr(self, "btn_inst_uninstall_sel"):
                 self._refresh_installed_bulk_buttons()
+            self._refresh_live_preview()
 
     def _on_cancel_operation(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             self._worker.request_cancel()
             self._append_log("[INFO] Cancelamento solicitado…")
 
-    def _toggle_all(self, state: int) -> None:
-        check = state == 2
+    def _toggle_all(self, checked: bool) -> None:
         for row in range(self.table.rowCount()):
             chk = self._row_checkbox(row)
             if chk:
                 chk.blockSignals(True)
-                chk.setChecked(check)
+                chk.setChecked(bool(checked))
                 chk.blockSignals(False)
-        self._refresh_upgrades_bulk_buttons()
+        self._on_upgrades_selection_changed()
 
     def _get_selected_ids(self) -> list[str]:
         ids: list[str] = []
@@ -601,23 +608,94 @@ class WinGetTab(QWidget):
                     ids.append(item.text().strip())
         return ids
 
+    def _all_upgrades_selected(self) -> bool:
+        """True quando todos os itens da lista de atualizações estão marcados."""
+        n = self.table.rowCount()
+        if n <= 0:
+            return False
+        for row in range(n):
+            chk = self._row_checkbox(row)
+            if chk is None or not chk.isChecked():
+                return False
+        return True
+
+    def _sync_upgrades_mark_all(self) -> None:
+        if not hasattr(self, "chk_all"):
+            return
+        all_on = self._all_upgrades_selected()
+        if self.chk_all.isChecked() == all_on:
+            return
+        self.chk_all.blockSignals(True)
+        self.chk_all.setChecked(all_on)
+        self.chk_all.blockSignals(False)
+
+    def _preview_pending_upgrade(self) -> None:
+        if not hasattr(self, "table") or self.table.rowCount() <= 0:
+            return
+        ids = self._get_selected_ids()
+        if ids and not self._all_upgrades_selected():
+            self._set_preview(action="upgrade", ids=ids, query="")
+        else:
+            self._set_preview(action="upgrade_all", ids=[], query="")
+
+    def _preview_pending_search(self) -> None:
+        if not hasattr(self, "search_table"):
+            return
+        ids = self._get_selected_search_ids()
+        query = ""
+        if hasattr(self, "search_query"):
+            query = (self.search_query.text() or "").strip()
+        if ids:
+            self._set_preview(action="install", ids=ids, query=query)
+        elif query:
+            self._set_preview(action="search", ids=[], query=query)
+
+    def _preview_pending_uninstall(self) -> None:
+        if not hasattr(self, "inst_table"):
+            return
+        ids = self._get_selected_installed_ids()
+        if ids:
+            self._set_preview(action="uninstall", ids=ids, query="")
+        elif self.inst_table.rowCount() > 0:
+            self._set_preview(action="installed", ids=[], query="")
+
+    def _refresh_live_preview(self, *_args) -> None:
+        """Atualiza a pré-visualização conforme a aba e a marcação atuais."""
+        tabs = getattr(self, "_tabs", None)
+        if tabs is None:
+            return
+        idx = tabs.currentIndex()
+        if idx == getattr(self, "_tab_idx_upgrades", -1):
+            self._preview_pending_upgrade()
+        elif idx == getattr(self, "_tab_idx_search", -1):
+            self._preview_pending_search()
+        elif idx == getattr(self, "_tab_idx_installed", -1):
+            self._preview_pending_uninstall()
+
+    def _on_upgrades_selection_changed(self) -> None:
+        self._refresh_upgrades_bulk_buttons()
+        self._preview_pending_upgrade()
+
+    def _on_search_selection_changed(self) -> None:
+        self._refresh_search_bulk_buttons()
+        self._preview_pending_search()
+
+    def _on_installed_selection_changed(self) -> None:
+        self._refresh_installed_bulk_buttons()
+        self._preview_pending_uninstall()
+
     def _row_checkbox(self, row: int) -> QCheckBox | None:
-        w = self.table.cellWidget(row, 0)
-        if isinstance(w, QCheckBox):
-            return w
-        if isinstance(w, QWidget):
-            return w.findChild(QCheckBox)
-        return None
+        return self._checkbox_in_cell(self.table, row)
 
     def _refresh_upgrades_bulk_buttons(self) -> None:
         ids = self._get_selected_ids()
-        sel = len(ids) > 0
         any_rows = self.table.rowCount() > 0
         self.btn_upg.setEnabled(any_rows)
-        if sel:
+        if ids and not self._all_upgrades_selected():
             self.btn_upg.setToolTip(f"Atualizar {len(ids)} selecionado(s) (winget upgrade --id ...)")
         else:
             self.btn_upg.setToolTip("Atualizar todos (winget upgrade --all)")
+        self._sync_upgrades_mark_all()
 
     def _refresh_search_bulk_buttons(self) -> None:
         any_rows = self.search_table.rowCount() > 0
@@ -629,33 +707,38 @@ class WinGetTab(QWidget):
         sel = len(self._get_selected_installed_ids()) > 0
         self.btn_inst_uninstall_sel.setEnabled(any_rows and sel)
 
-    def _toggle_all_search(self, state: int) -> None:
-        check = state == 2
+    def _toggle_all_search(self, checked: bool) -> None:
         for row in range(self.search_table.rowCount()):
             chk = self._row_checkbox_search(row)
             if chk:
                 chk.blockSignals(True)
-                chk.setChecked(check)
+                chk.setChecked(bool(checked))
                 chk.blockSignals(False)
-        self._refresh_search_bulk_buttons()
+        self._on_search_selection_changed()
 
-    def _toggle_all_installed(self, state: int) -> None:
-        check = state == 2
+    def _toggle_all_installed(self, checked: bool) -> None:
         for row in range(self.inst_table.rowCount()):
             chk = self._row_checkbox_installed(row)
             if chk:
                 chk.blockSignals(True)
-                chk.setChecked(check)
+                chk.setChecked(bool(checked))
                 chk.blockSignals(False)
-        self._refresh_installed_bulk_buttons()
+        self._on_installed_selection_changed()
 
-    def _row_checkbox_installed(self, row: int) -> QCheckBox | None:
-        w = self.inst_table.cellWidget(row, 0)
+    def _checkbox_in_cell(self, table: QTableWidget, row: int) -> QCheckBox | None:
+        w = table.cellWidget(row, 0)
+        if w is None:
+            return None
+        chk = getattr(w, "_row_chk", None)
+        if isinstance(chk, QCheckBox):
+            return chk
         if isinstance(w, QCheckBox):
             return w
-        if isinstance(w, QWidget):
-            return w.findChild(QCheckBox)
-        return None
+        found = w.findChild(QCheckBox)
+        return found if isinstance(found, QCheckBox) else None
+
+    def _row_checkbox_installed(self, row: int) -> QCheckBox | None:
+        return self._checkbox_in_cell(self.inst_table, row)
 
     def _get_selected_installed_ids(self) -> list[str]:
         ids: list[str] = []
@@ -668,12 +751,7 @@ class WinGetTab(QWidget):
         return ids
 
     def _row_checkbox_search(self, row: int) -> QCheckBox | None:
-        w = self.search_table.cellWidget(row, 0)
-        if isinstance(w, QCheckBox):
-            return w
-        if isinstance(w, QWidget):
-            return w.findChild(QCheckBox)
-        return None
+        return self._checkbox_in_cell(self.search_table, row)
 
     def _get_selected_search_ids(self) -> list[str]:
         ids: list[str] = []
@@ -777,14 +855,16 @@ class WinGetTab(QWidget):
         if self.table.rowCount() <= 0:
             return
         ids = self._get_selected_ids()
-        if ids:
+        # --all quando nada está marcado, quando "Marcar tudo" está ativo,
+        # ou quando o usuário marcou todos os itens um a um.
+        if ids and not self._all_upgrades_selected():
             self._start_worker(
                 action="upgrade",
                 ids=ids,
                 log_header=f"--- ATUALIZAÇÃO (selecionados: {len(ids)}) ---",
             )
-        else:
-            self._start_worker(action="upgrade_all", ids=[], log_header="--- ATUALIZAÇÃO (todas / --all) ---")
+            return
+        self._start_worker(action="upgrade_all", ids=[], log_header="--- ATUALIZAÇÃO (todas / --all) ---")
 
     def _on_uninstall_installed_selected(self) -> None:
         ids = self._get_selected_installed_ids()
@@ -810,7 +890,10 @@ class WinGetTab(QWidget):
 
     def _on_worker_error(self, msg: str) -> None:
         # Uma única linha no log — sem QMessageBox.
-        one_line = " ".join((msg or "").split())
+        text = msg or ""
+        if looks_like_clixml(text):
+            text = clixml_to_text(text)
+        one_line = summarize_one_line(text)
         self._append_log(f"[ERRO] {one_line}")
         if one_line == "Operação cancelada pelo usuário.":
             self._reset_progress_ui()
@@ -840,10 +923,10 @@ class WinGetTab(QWidget):
         )
         tips: list[str] = []
         for r in fails[:3]:
-            pkg_id = str(r.get("Id") or "")
-            hint = summarize_winget_output(str(r.get("Output") or ""))
-            if pkg_id and hint:
-                tips.append(f"{pkg_id}: {hint}")
+            line = format_exec_result_line(r)
+            if line:
+                # O prefixo [ERRO]/[AVISO] já vai no status; aqui só o recorte humano.
+                tips.append(line.split(" ", 1)[-1] if " " in line else line)
         if tips:
             summary += " Dicas: " + "; ".join(tips) + "."
         if not overall_ok:
@@ -883,13 +966,10 @@ class WinGetTab(QWidget):
         elif action in ("install", "upgrade", "upgrade_all", "uninstall"):
             results = payload.get("Results") or []
             status_prefix, summary = self._exec_result_summary(str(action), payload)
-            if not self._exec_log.saw_realtime_output:
-                for r in results:
-                    for line in filter_winget_log_lines(str(r.get("Output") or "")):
-                        self._append_log(line)
             for r in results:
-                ec = result_exit_code(r.get("ExitCode"), if_missing=0)
-                self._append_log(f"- {r.get('Id')} (exit={ec})")
+                line = format_exec_result_line(r)
+                if line:
+                    self._append_log(line)
             self._append_log(f"{status_prefix} {summary}")
             self._progress.complete_exec(item_count=len(results))
         else:
@@ -903,15 +983,17 @@ class WinGetTab(QWidget):
             log_header=f"--- INSTALADOS {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---",
         )
 
-    def _make_checkbox_cell(self, on_state_changed) -> QWidget:
+    def _make_checkbox_cell(self, on_changed) -> QWidget:
         chk = QCheckBox()
-        chk.stateChanged.connect(on_state_changed)
+        chk.setObjectName("rowChk")
         container = QWidget()
+        container._row_chk = chk
         lay = QHBoxLayout(container)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(chk)
+        chk.toggled.connect(lambda _checked: on_changed())
         return container
 
     def _text_item(self, value: object) -> QTableWidgetItem:
@@ -928,7 +1010,7 @@ class WinGetTab(QWidget):
             row = self.inst_table.rowCount()
             self.inst_table.insertRow(row)
 
-            chk_container = self._make_checkbox_cell(lambda _s: self._refresh_installed_bulk_buttons())
+            chk_container = self._make_checkbox_cell(self._on_installed_selection_changed)
             self.inst_table.setCellWidget(row, 0, chk_container)
 
             self.inst_table.setItem(row, 1, self._text_item(p.get("Name", "")))
@@ -939,8 +1021,11 @@ class WinGetTab(QWidget):
 
         self.inst_table.setSortingEnabled(True)
         self.inst_count.setText(f"{self.inst_table.rowCount()} itens")
+        self.inst_mark_all.blockSignals(True)
         self.inst_mark_all.setChecked(False)
+        self.inst_mark_all.blockSignals(False)
         self._refresh_installed_bulk_buttons()
+        self._preview_pending_uninstall()
 
     def _load_search_results(self, results: list[dict]) -> None:
         self.search_table.setSortingEnabled(False)
@@ -949,7 +1034,7 @@ class WinGetTab(QWidget):
             row = self.search_table.rowCount()
             self.search_table.insertRow(row)
 
-            chk_container = self._make_checkbox_cell(lambda _s: self._refresh_search_bulk_buttons())
+            chk_container = self._make_checkbox_cell(self._on_search_selection_changed)
             self.search_table.setCellWidget(row, 0, chk_container)
 
             self.search_table.setItem(row, 1, self._text_item(r.get("Name", "")))
@@ -960,8 +1045,11 @@ class WinGetTab(QWidget):
 
         self.search_table.setSortingEnabled(True)
         self.search_count.setText(f"{self.search_table.rowCount()} itens")
+        self.search_mark_all.blockSignals(True)
         self.search_mark_all.setChecked(False)
+        self.search_mark_all.blockSignals(False)
         self._refresh_search_bulk_buttons()
+        self._preview_pending_search()
 
     def _on_item_started(self, idx: int, total: int, package_id: str) -> None:
         if self._exec_log.should_skip_item_started(package_id):
@@ -988,7 +1076,7 @@ class WinGetTab(QWidget):
             row = self.table.rowCount()
             self.table.insertRow(row)
 
-            chk_container = self._make_checkbox_cell(lambda _s: self._refresh_upgrades_bulk_buttons())
+            chk_container = self._make_checkbox_cell(self._on_upgrades_selection_changed)
             self.table.setCellWidget(row, 0, chk_container)
 
             self.table.setItem(row, 1, self._text_item(u.get("Name", "")))
@@ -999,6 +1087,9 @@ class WinGetTab(QWidget):
 
         self.table.setSortingEnabled(True)
         self.lbl_count.setText(f"{self.table.rowCount()} itens")
+        self.chk_all.blockSignals(True)
         self.chk_all.setChecked(False)
+        self.chk_all.blockSignals(False)
         self._refresh_upgrades_bulk_buttons()
+        self._preview_pending_upgrade()
 

@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import re
 
-from .constants import ANSI_RE, PROGRESS_PCT_RE, PROGRESS_RE, SPINNER_LINES
+from .clixml import clixml_to_text, contains_raw_clixml, looks_like_clixml, summarize_one_line
+from .constants import (
+    ANSI_RE,
+    PROGRESS_PCT_RE,
+    PROGRESS_RE,
+    SPINNER_LINES,
+    WINGET_SOFT_SUCCESS_EXIT_CODES,
+    is_winget_success_exit,
+    result_exit_code,
+)
 
 _BLOCK_CHARS = "█▒░▓▌▐■□▪▫"
 _BLOCK_CLASS = rf"[\s{_BLOCK_CHARS}\u2580-\u259f\u25a0-\u25ff]*"
@@ -36,7 +45,9 @@ def is_winget_download_progress(line: str) -> bool:
         return True
     if PROGRESS_PCT_RE.match(stripped):
         return True
-    if re.match(rf"^{_BLOCK_CLASS}[0-9.,]+\s*(KB|MB|GB)\s*/\s*[0-9.,]+\s*(KB|MB|GB)\s*$", stripped, re.I):
+    if re.match(
+        rf"^{_BLOCK_CLASS}[0-9.,]+\s*(KB|MB|GB)\s*/\s*[0-9.,]+\s*(KB|MB|GB)\s*$", stripped, re.I
+    ):
         return True
     if re.match(rf"^{_BLOCK_CLASS}\d{{1,3}}%\s*$", stripped):
         return True
@@ -63,11 +74,7 @@ def is_winget_table_chrome(line: str) -> bool:
         return False
     if " id" not in low and not low.startswith("id"):
         return False
-    return (
-        "version" in low
-        or "versão" in low
-        or "versao" in low
-    )
+    return "version" in low or "versão" in low or "versao" in low
 
 
 _INSTALL_START_RE = re.compile(
@@ -77,7 +84,7 @@ _INSTALL_START_RE = re.compile(
     r"|verified installer hash"
     r"|starting (?:install|installation)"
     r"|installing\b"
-    r"|iniciando a instala"          # "Iniciando a instalação do pacote..."
+    r"|iniciando a instala"  # "Iniciando a instalação do pacote..."
     r"|instalando\b"
     r"|hash do instalador"
     r")",
@@ -168,20 +175,85 @@ def summarize_winget_output(output: str) -> str:
     """Extrai uma linha útil da saída do winget (ignora spinners e ANSI)."""
     if not output:
         return ""
+    text = output
+    if looks_like_clixml(text) or contains_raw_clixml(text):
+        text = clixml_to_text(text)
+    if contains_raw_clixml(text):
+        return ""
     lines: list[str] = []
-    for line in output.splitlines():
+    for line in text.splitlines():
         cleaned = normalize_winget_line(line)
         if not cleaned or cleaned in SPINNER_LINES:
             continue
+        if looks_like_clixml(cleaned) or contains_raw_clixml(cleaned):
+            continue
         lines.append(cleaned)
+    chosen = ""
     for ln in lines:
         if _ITEM_COMPLETE_RE.search(ln):
-            return ln
-    for ln in lines:
-        low = ln.lower()
-        if "failed" in low or "not found" in low or "falha" in low:
-            return ln
-    return lines[0] if lines else ""
+            chosen = ln
+            break
+    if not chosen:
+        for ln in lines:
+            low = ln.lower()
+            if "failed" in low or "not found" in low or "falha" in low:
+                chosen = ln
+                break
+    if not chosen:
+        chosen = lines[0] if lines else ""
+    return summarize_one_line(chosen)
+
+
+def _status_prefix_for_result(result: dict) -> str:
+    diag = result.get("Diagnostics") if isinstance(result.get("Diagnostics"), dict) else {}
+    stream = str((diag or {}).get("Stream") or "").strip()
+    stream_l = stream.lower()
+    if stream_l == "error":
+        return "[ERRO]"
+    if stream_l == "warning":
+        return "[AVISO]"
+    if stream_l in {"information", "info"}:
+        return "[INFO]"
+    if stream_l == "verbose":
+        return "[VERBOSE]"
+    if stream_l == "debug":
+        return "[DEBUG]"
+    exit_code = result_exit_code(result.get("ExitCode"), if_missing=1)
+    if is_winget_success_exit(exit_code, if_missing=1):
+        if exit_code in WINGET_SOFT_SUCCESS_EXIT_CODES:
+            return "[AVISO]"
+        return "[OK]"
+    return "[ERRO]"
+
+
+def _hint_for_result(result: dict) -> str:
+    output = str(result.get("Output") or "")
+    hint = summarize_winget_output(output)
+    if hint:
+        return hint
+    diag = result.get("Diagnostics") if isinstance(result.get("Diagnostics"), dict) else {}
+    if not diag:
+        return ""
+    for key in ("Exception", "Category", "ErrorId"):
+        value = summarize_one_line(str(diag.get(key) or ""))
+        if value:
+            return value
+    return ""
+
+
+def format_exec_result_line(result: dict) -> str:
+    """Uma linha humana: ``[ERRO] Id: resumo`` — sem XML, stack ou metadados crus."""
+    if not isinstance(result, dict):
+        return ""
+    pkg_id = str(result.get("Id") or "").strip() or "pacote"
+    prefix = _status_prefix_for_result(result)
+    hint = _hint_for_result(result)
+    exit_code = result_exit_code(result.get("ExitCode"), if_missing=0)
+    if hint:
+        return f"{prefix} {pkg_id}: {hint}"
+    if prefix == "[OK]":
+        return f"{prefix} {pkg_id}: concluído com sucesso."
+    return f"{prefix} {pkg_id}: falhou (exit={exit_code})."
 
 
 def filter_winget_log_lines(lines: list[str] | str) -> list[str]:
