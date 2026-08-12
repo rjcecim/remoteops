@@ -261,7 +261,7 @@ class CommandExecutionService:
         return LaunchResult(
             ok=True,
             display_command=spec.display_command,
-            message="Execução iniciada via ConPTY; saída no console de saída.",
+            message="Execução iniciada via ConPTY; digite no console de saída (Enter envia, Ctrl+C interrompe).",
             status=OperationStatus.STARTED,
             remote_monitored=True,
         )

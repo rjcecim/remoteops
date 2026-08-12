@@ -305,7 +305,9 @@ class AppSearchTab(QWidget):
         filter_row.setContentsMargins(0, 0, 0, 0)
         filter_row.setSpacing(8)
         self.filter_edit = QLineEdit()
-        self.filter_edit.setPlaceholderText(self.tr("Buscar aplicativo..."))
+        self.filter_edit.setPlaceholderText(
+            self.tr("Buscar aplicativo... (vários termos com ;)")
+        )
         self.filter_count_lbl = QLabel("")
         self.filter_count_lbl.setStyleSheet("color: palette(windowText); opacity: 0.75;")
         filter_row.addWidget(self.filter_edit)
@@ -745,10 +747,15 @@ class AppSearchTab(QWidget):
         )
 
     def _apply_results_filter(self) -> None:
-        """Filtra a tabela de resultados (mesmo padrão do PsInfo: nome/editor/versão/tipo + computador)."""
+        """Filtra a tabela de resultados (mesmo padrão do PsInfo: nome/editor/versão/tipo + computador).
+
+        Aceita vários termos separados por `;` — a linha fica visível se corresponder
+        a qualquer termo (OR).
+        """
         if not self._ui_alive():
             return
-        q = (self.filter_edit.text() or "").strip().lower()
+        raw = (self.filter_edit.text() or "").strip().lower()
+        terms = [t.strip() for t in raw.split(";") if t.strip()] if raw else []
         total = self.table.rowCount()
         visible = 0
         for r in range(total):
@@ -757,7 +764,7 @@ class AppSearchTab(QWidget):
                 it = self.table.item(r, c)
                 parts.append(it.text() if it else "")
             text = " ".join(parts).lower()
-            ok = (q in text) if q else True
+            ok = (not terms) or any(term in text for term in terms)
             self.table.setRowHidden(r, not ok)
             if ok:
                 visible += 1

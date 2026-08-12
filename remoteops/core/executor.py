@@ -57,6 +57,7 @@ def _emit_conpty_text(
     prefix: str,
     on_line,
     carry: List[str],
+    on_partial=None,
 ) -> None:
     """Converte pedaços ConPTY em linhas para o log (mantém leftover parcial)."""
     if not text:
@@ -72,6 +73,9 @@ def _emit_conpty_text(
         if not line.strip():
             continue
         on_line(f"{prefix}{line}" if prefix else line)
+    if on_partial is not None:
+        partial = carry[0] if carry else ""
+        on_partial(f"{prefix}{partial}" if (prefix and partial) else partial)
 
 
 class Executor(QObject):
@@ -89,6 +93,8 @@ class Executor(QObject):
 
     outputReceived = pyqtSignal(str)
     errorReceived = pyqtSignal(str)
+    partialOutput = pyqtSignal(str)  # prompt / linha incompleta do ConPTY
+    interactiveChanged = pyqtSignal(bool)  # sessão ConPTY aceita teclado
     finished = pyqtSignal(int)
     resultReady = pyqtSignal(object)  # ExecutionResult
 
@@ -98,11 +104,13 @@ class Executor(QObject):
         self.future: Optional[Future] = None
         self.process: Optional[subprocess.Popen] = None
         self._conpty_terminate = None
+        self._conpty_write = None
         self._cancel_requested = False
         self._last_result: Optional[ExecutionResult] = None
         self._passwords: List[str] = []
         self._run_generation = 0
         self._lock = threading.Lock()
+        self._interactive = False
 
     def run(
         self,
@@ -116,6 +124,7 @@ class Executor(QObject):
         with self._lock:
             self._cancel_requested = False
             self._conpty_terminate = None
+            self._conpty_write = None
             self._run_generation += 1
             generation = self._run_generation
             self._passwords = [p for p in (passwords or []) if p]
@@ -123,6 +132,32 @@ class Executor(QObject):
                 self._run_command, command, timeout, generation, bool(use_conpty)
             )
         QTimer.singleShot(100, lambda: self._check_future(generation))
+
+    def send_input(self, text: str) -> bool:
+        """Envia uma linha (Enter) ao ConPTY ativo. Retorna False se não houver sessão."""
+        payload = text if text.endswith("\r") else f"{text}\r"
+        return self._write_conpty(payload)
+
+    def send_control(self, code: str = "\x03") -> bool:
+        """Envia controle ao ConPTY (padrão: Ctrl+C)."""
+        return self._write_conpty(code)
+
+    def _write_conpty(self, data: str) -> bool:
+        with self._lock:
+            write = self._conpty_write
+        if write is None:
+            return False
+        try:
+            return bool(write(data))
+        except Exception:
+            return False
+
+    def _set_interactive(self, active: bool) -> None:
+        with self._lock:
+            if self._interactive == active:
+                return
+            self._interactive = active
+        self.interactiveChanged.emit(active)
 
     def _normalize_argv(
         self, command: Union[str, CommandSpec, Sequence[str]]
@@ -304,6 +339,8 @@ class Executor(QObject):
                 if generation == self._run_generation:
                     self._last_result = result
                     self._conpty_terminate = None
+                    self._conpty_write = None
+            self._set_interactive(False)
 
     def _run_conpty(
         self,
@@ -342,6 +379,9 @@ class Executor(QObject):
                 result.remote_may_continue = True
                 return result.finalize()
             self._conpty_terminate = session.terminate
+            self._conpty_write = session.write_input
+
+        self._set_interactive(True)
 
         carry: List[str] = []
 
@@ -350,12 +390,17 @@ class Executor(QObject):
             stdout_acc.append(safe_line)
             self.outputReceived.emit(safe_line)
 
+        def on_partial(text: str) -> None:
+            safe = redact_command_text(text, passwords=self._passwords)
+            self.partialOutput.emit(safe)
+
         def on_chunk(chunk: str) -> None:
             _emit_conpty_text(
                 chunk,
                 prefix=prefix,
                 on_line=on_line,
                 carry=carry,
+                on_partial=on_partial,
             )
 
         try:
@@ -368,10 +413,13 @@ class Executor(QObject):
         finally:
             if carry and carry[0].strip():
                 on_line(f"{prefix}{carry[0]}" if prefix else carry[0])
-            session.close()
+            self.partialOutput.emit("")
             with self._lock:
                 if generation == self._run_generation:
                     self._conpty_terminate = None
+                    self._conpty_write = None
+            self._set_interactive(False)
+            session.close()
 
         result.stdout = "\n".join(stdout_acc)
         result.return_code = conpty_result.return_code
@@ -426,6 +474,7 @@ class Executor(QObject):
             proc = self.process
             fut = self.future
             terminate_conpty = self._conpty_terminate
+            self._conpty_write = None
         if terminate_conpty is not None:
             try:
                 terminate_conpty()
@@ -442,6 +491,7 @@ class Executor(QObject):
                 pass
         if fut is not None and not fut.running() and not fut.done():
             fut.cancel()
+        self._set_interactive(False)
 
     @property
     def last_result(self) -> Optional[ExecutionResult]:

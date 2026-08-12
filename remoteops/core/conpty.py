@@ -14,7 +14,7 @@ import threading
 import time
 from ctypes import wintypes
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence, Union
 
 # VT/ANSI comum emitido pelo ConPTY — remove para o QTextEdit.
 # Inclui CSI (?25h, 2J, H…), OSC (]0;title BEL) e códigos de 1 byte.
@@ -185,6 +185,15 @@ kernel32.ReadFile.argtypes = [
 ]
 kernel32.ReadFile.restype = wintypes.BOOL
 
+kernel32.WriteFile.argtypes = [
+    wintypes.HANDLE,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+    ctypes.c_void_p,
+]
+kernel32.WriteFile.restype = wintypes.BOOL
+
 kernel32.PeekNamedPipe.argtypes = [
     wintypes.HANDLE,
     ctypes.c_void_p,
@@ -244,6 +253,24 @@ class ConPtySession:
         self._attr_buf = None
         self._h_out_read: Optional[wintypes.HANDLE] = None
         self._h_in_write: Optional[wintypes.HANDLE] = None
+        self._io_lock = threading.Lock()
+
+    def write_input(self, data: Union[bytes, str]) -> bool:
+        """Envia bytes/texto ao stdin do ConPTY (teclado da sessão interativa)."""
+        if isinstance(data, str):
+            data = data.encode("utf-8", errors="replace")
+        if not data:
+            return True
+        with self._io_lock:
+            handle = self._h_in_write
+            if not handle:
+                return False
+            written = wintypes.DWORD(0)
+            arr = (ctypes.c_char * len(data)).from_buffer_copy(data)
+            ok = kernel32.WriteFile(
+                handle, arr, len(data), ctypes.byref(written), None
+            )
+            return bool(ok)
 
     def start(self) -> None:
         # Espelha o sample EchoCon da Microsoft:
@@ -463,9 +490,10 @@ class ConPtySession:
             time.sleep(0.5)
             _flush_new()
         finally:
-            if self._h_in_write is not None:
-                _close_handle(self._h_in_write)
-                self._h_in_write = None
+            with self._io_lock:
+                if self._h_in_write is not None:
+                    _close_handle(self._h_in_write)
+                    self._h_in_write = None
             if self._hpc is not None:
                 try:
                     kernel32.ClosePseudoConsole(self._hpc)
@@ -499,9 +527,10 @@ class ConPtySession:
                 pass
 
     def close(self) -> None:
-        if self._h_in_write is not None:
-            _close_handle(self._h_in_write)
-            self._h_in_write = None
+        with self._io_lock:
+            if self._h_in_write is not None:
+                _close_handle(self._h_in_write)
+                self._h_in_write = None
         if self._hpc is not None:
             try:
                 kernel32.ClosePseudoConsole(self._hpc)

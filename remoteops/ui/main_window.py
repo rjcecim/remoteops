@@ -205,6 +205,10 @@ class MainWindow(QMainWindow):
         self.restart_button.clicked.connect(self.on_restart)
         self.executor.outputReceived.connect(self.log_output.append_log)
         self.executor.errorReceived.connect(self.log_output.append_log)
+        self.executor.partialOutput.connect(self.log_output.set_partial_line)
+        self.executor.interactiveChanged.connect(self.log_output.set_interactive)
+        self.log_output.inputSubmitted.connect(self.executor.send_input)
+        self.log_output.interruptRequested.connect(self.executor.send_control)
         self.executor.finished.connect(self.on_process_finished)
         self.tabs.currentChanged.connect(self._on_tab_changed)
         
@@ -1224,8 +1228,15 @@ class MainWindow(QMainWindow):
         finally:
             creds.clear()
 
+    def on_process_finished(self, exit_code):
+        self.stop_button.setEnabled(False)
+        self._set_run_button_enabled(True)
+        self.log_output.set_interactive(False)
+        self.log_output.append_log(self.tr(f"Processo finalizado com código {exit_code}"))
+
     def on_stop(self):
         self.executor.stop()
+        self.log_output.set_interactive(False)
         self._set_run_button_enabled(True)
         self.stop_button.setEnabled(False)
         self.log_output.append_log(
@@ -1235,11 +1246,6 @@ class MainWindow(QMainWindow):
                 "o processo remoto pode continuar em execução."
             )
         )
-
-    def on_process_finished(self, exit_code):
-        self.stop_button.setEnabled(False)
-        self._set_run_button_enabled(True)
-        self.log_output.append_log(self.tr(f"Processo finalizado com código {exit_code}"))
 
     def on_remote_cmd_changed(self, text):
         # Evita loop de atualização
