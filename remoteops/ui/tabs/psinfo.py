@@ -383,7 +383,7 @@ class PsInfoTab(QWidget):
         w.abort()
         if w.isRunning():
             # PsInfo subprocess; espera limitada.
-            w.wait(max(3000, int(REMOTE_REGISTRY_TIMEOUT_SECONDS * 1000)))
+            w.wait(max(3000, int(PSINFO_TIMEOUT_SECONDS * 1000)))
         if w.isRunning():
             w.finished.connect(w.deleteLater)
         else:

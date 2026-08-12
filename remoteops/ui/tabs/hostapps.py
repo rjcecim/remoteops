@@ -31,7 +31,7 @@ from remoteops.utils.psinfo import (
     describe_uninstall,
 )
 from remoteops.utils.remote_registry_query import (
-    REMOTE_REGISTRY_TIMEOUT_SECONDS,
+    get_remote_registry_timeout,
     query_remote_installed_apps,
 )
 
@@ -51,7 +51,7 @@ class _HostAppsWorker(QThread):
     def run(self) -> None:
         status = query_remote_installed_apps(
             self.host,
-            timeout=REMOTE_REGISTRY_TIMEOUT_SECONDS,
+            timeout=get_remote_registry_timeout(),
             should_cancel=lambda: self._abort,
         )
         if self._abort or status.error_kind == "cancelled":
@@ -289,7 +289,7 @@ class HostAppsTab(QWidget):
         self.log_output.append_log(
             self.tr(
                 f"[APPS] Consultando aplicativos em {host} via Remote Registry "
-                f"(timeout {int(REMOTE_REGISTRY_TIMEOUT_SECONDS)}s)..."
+                f"(timeout {int(get_remote_registry_timeout())}s)..."
             )
         )
 

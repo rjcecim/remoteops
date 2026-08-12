@@ -51,6 +51,13 @@ from remoteops.utils.search_settings import (
     set_search_hosts_path,
     set_search_max_workers,
 )
+from remoteops.utils.remote_registry_query import (
+    MAX_REMOTE_REGISTRY_TIMEOUT_SECONDS,
+    MIN_REMOTE_REGISTRY_TIMEOUT_SECONDS,
+    REMOTE_REGISTRY_TIMEOUT_SECONDS,
+    get_remote_registry_timeout,
+    set_remote_registry_timeout,
+)
 
 from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
 from remoteops.ui.widgets.status_dot import StatusDot as _StatusDot
@@ -351,6 +358,45 @@ class SettingsTab(QWidget):
                 "conexões simultâneas. A alteração será aplicada na próxima pesquisa."
             ),
         )
+
+        timeout_row = QHBoxLayout()
+        timeout_row.setSpacing(4)
+        timeout_row.setContentsMargins(0, 0, 0, 0)
+        self.rr_timeout_spin = QSpinBox()
+        self.rr_timeout_spin.setRange(
+            int(MIN_REMOTE_REGISTRY_TIMEOUT_SECONDS),
+            int(MAX_REMOTE_REGISTRY_TIMEOUT_SECONDS),
+        )
+        self.rr_timeout_spin.setSuffix(self.tr(" s"))
+        self.rr_timeout_spin.setToolTip(
+            self.tr(
+                "Tempo máximo por computador na consulta Remote Registry "
+                f"(padrão {int(REMOTE_REGISTRY_TIMEOUT_SECONDS)} s)."
+            )
+        )
+        self.rr_timeout_spin.blockSignals(True)
+        self.rr_timeout_spin.setValue(int(get_remote_registry_timeout()))
+        self.rr_timeout_spin.blockSignals(False)
+        self.rr_timeout_spin.valueChanged.connect(self._on_rr_timeout_changed)
+        self.rr_timeout_reset_btn = make_icon_button(
+            "\uE777",
+            self.tr(f"Restaurar padrão ({int(REMOTE_REGISTRY_TIMEOUT_SECONDS)} s)"),
+        )
+        self.rr_timeout_reset_btn.clicked.connect(self._reset_rr_timeout)
+        timeout_row.addWidget(self.rr_timeout_spin)
+        timeout_row.addWidget(self.rr_timeout_reset_btn)
+        timeout_row.addStretch()
+        timeout_wrap = QWidget()
+        timeout_wrap.setLayout(timeout_row)
+        add_row(g3, 4, self.tr("Timeout Remote Registry"), timeout_wrap)
+        _add_caption(
+            g3,
+            5,
+            self.tr(
+                "Limite por host ao enumerar aplicativos (Pesquisa, Aplicativos do host "
+                "e inventário via registro remoto). Vale na próxima consulta."
+            ),
+        )
         root.addWidget(card_search)
 
         # ── Card 5 — Sobre ────────────────────────────────────────────────────
@@ -382,6 +428,9 @@ class SettingsTab(QWidget):
         self.search_workers_spin.blockSignals(True)
         self.search_workers_spin.setValue(get_search_max_workers())
         self.search_workers_spin.blockSignals(False)
+        self.rr_timeout_spin.blockSignals(True)
+        self.rr_timeout_spin.setValue(int(get_remote_registry_timeout()))
+        self.rr_timeout_spin.blockSignals(False)
 
     def _refresh_hosts_ui(self) -> None:
         path, origin = resolve_configured_hosts_path()
@@ -439,6 +488,25 @@ class SettingsTab(QWidget):
         self.search_workers_spin.blockSignals(True)
         self.search_workers_spin.setValue(normalized)
         self.search_workers_spin.blockSignals(False)
+
+    def _on_rr_timeout_changed(self, value: int) -> None:
+        try:
+            set_remote_registry_timeout(value)
+        except SettingsWriteError as exc:
+            self._show_settings_save_error(exc)
+            self.rr_timeout_spin.blockSignals(True)
+            self.rr_timeout_spin.setValue(int(get_remote_registry_timeout()))
+            self.rr_timeout_spin.blockSignals(False)
+
+    def _reset_rr_timeout(self) -> None:
+        try:
+            normalized = set_remote_registry_timeout(REMOTE_REGISTRY_TIMEOUT_SECONDS)
+        except SettingsWriteError as exc:
+            self._show_settings_save_error(exc)
+            return
+        self.rr_timeout_spin.blockSignals(True)
+        self.rr_timeout_spin.setValue(int(normalized))
+        self.rr_timeout_spin.blockSignals(False)
 
     def _apply_hosts_status(self, state: str, text: str) -> None:
         color = _STATUS_COLORS.get(state, _STATUS_COLORS["idle"])

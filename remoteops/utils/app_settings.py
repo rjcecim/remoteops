@@ -19,6 +19,7 @@ KEY_PSTOOLS_DIR = "tools/pstools_dir"
 KEY_SEARCH_MAX_WORKERS = "search/max_workers"
 KEY_SEARCH_HOSTS_PATH = "search/hosts_path"
 KEY_LOGS_FILE_ENABLED = "logs/file_logging_enabled"
+KEY_REMOTE_REGISTRY_TIMEOUT = "timeouts/remote_registry_seconds"
 
 
 class SettingsWriteError(OSError):
@@ -74,6 +75,7 @@ def _collect_current_settings() -> Dict[str, Any]:
     """Monta o snapshot das preferências atuais (imports locais evitam ciclos)."""
     from remoteops.utils.app_logging import is_file_logging_enabled
     from remoteops.utils.pstools import get_pstools_dir
+    from remoteops.utils.remote_registry_query import get_remote_registry_timeout
     from remoteops.utils.search_settings import get_search_hosts_path, get_search_max_workers
 
     return {
@@ -81,6 +83,7 @@ def _collect_current_settings() -> Dict[str, Any]:
         KEY_SEARCH_MAX_WORKERS: int(get_search_max_workers()),
         KEY_SEARCH_HOSTS_PATH: get_search_hosts_path(),
         KEY_LOGS_FILE_ENABLED: bool(is_file_logging_enabled()),
+        KEY_REMOTE_REGISTRY_TIMEOUT: float(get_remote_registry_timeout()),
     }
 
 

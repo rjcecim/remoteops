@@ -43,7 +43,7 @@ from remoteops.utils.psinfo import (
 from remoteops.utils.app_catalog import resolve_uninstall_extras
 from remoteops.utils.hosts import load_hosts_file, save_hosts_file
 from remoteops.utils.remote_registry_query import (
-    REMOTE_REGISTRY_TIMEOUT_SECONDS,
+    get_remote_registry_timeout,
     run_remote_inventory_batch,
 )
 from remoteops.utils.search_settings import (
@@ -102,7 +102,7 @@ class _AppSearchWorker(QThread):
         max_workers: int = 8,
         *,
         generation: int = 0,
-        timeout: float = REMOTE_REGISTRY_TIMEOUT_SECONDS,
+        timeout: Optional[float] = None,
     ):
         super().__init__()
         self.hosts = list(hosts)
@@ -113,7 +113,7 @@ class _AppSearchWorker(QThread):
             n = 8
         self.max_workers = max(MIN_SEARCH_MAX_WORKERS, min(MAX_SEARCH_MAX_WORKERS, n))
         self.generation = int(generation)
-        self.timeout = float(timeout) if timeout else REMOTE_REGISTRY_TIMEOUT_SECONDS
+        self.timeout = float(timeout) if timeout else get_remote_registry_timeout()
         self._abort = False
 
     def abort(self) -> None:
@@ -493,7 +493,7 @@ class AppSearchTab(QWidget):
         w.abort()
         if w.isRunning():
             # Aguarda o lote encerrar processos filhos (terminate + join).
-            w.wait(max(3000, int(REMOTE_REGISTRY_TIMEOUT_SECONDS * 1000) // 3))
+            w.wait(max(3000, int(get_remote_registry_timeout() * 1000) // 3))
         if w.isRunning():
             w.finished.connect(w.deleteLater)
         else:
@@ -597,12 +597,13 @@ class AppSearchTab(QWidget):
 
         configured_workers = get_search_max_workers()
         effective_workers = min(configured_workers, len(hosts))
+        rr_timeout = get_remote_registry_timeout()
         self._worker = _AppSearchWorker(
             hosts,
             query,
             max_workers=effective_workers,
             generation=generation,
-            timeout=REMOTE_REGISTRY_TIMEOUT_SECONDS,
+            timeout=rr_timeout,
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.hitsFound.connect(self._on_hits_found)
@@ -616,7 +617,7 @@ class AppSearchTab(QWidget):
             self.tr(
                 f"[PESQUISA] Buscando '{query}' em {len(hosts)} host(s) "
                 f"({effective_workers} consultas simultâneas, "
-                f"timeout {int(REMOTE_REGISTRY_TIMEOUT_SECONDS)}s/host)..."
+                f"timeout {int(rr_timeout)}s/host)..."
             )
         )
 

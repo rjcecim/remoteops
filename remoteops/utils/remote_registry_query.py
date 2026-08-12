@@ -22,13 +22,69 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from remoteops.utils.psinfo import HostInventoryStatus, InstalledApp, list_remote_installed_apps_status
+from remoteops.utils.app_settings import (
+    KEY_REMOTE_REGISTRY_TIMEOUT,
+    load_setting,
+    save_portable_settings,
+)
 
 # Timeout individual cobrindo ConnectRegistry + enumeração 64/32 + dedup + IPC.
 REMOTE_REGISTRY_TIMEOUT_SECONDS = 15.0
+MIN_REMOTE_REGISTRY_TIMEOUT_SECONDS = 5.0
+MAX_REMOTE_REGISTRY_TIMEOUT_SECONDS = 300.0
 # Tempo extra após terminate/kill para join do filho.
 PROCESS_JOIN_TIMEOUT_SECONDS = 2.0
 # Intervalo de poll do Pipe / flag de cancelamento (não é o timeout do host).
 _POLL_INTERVAL_SECONDS = 0.2
+
+_runtime_timeout: Optional[float] = None
+
+
+def normalize_remote_registry_timeout(value) -> float:
+    """Normaliza timeout em segundos; inválidos → padrão; limita min/max."""
+    try:
+        if value is None or value is False or value is True:
+            return float(REMOTE_REGISTRY_TIMEOUT_SECONDS)
+        if isinstance(value, str) and not value.strip():
+            return float(REMOTE_REGISTRY_TIMEOUT_SECONDS)
+        n = float(value)
+    except (TypeError, ValueError):
+        return float(REMOTE_REGISTRY_TIMEOUT_SECONDS)
+    if n < MIN_REMOTE_REGISTRY_TIMEOUT_SECONDS:
+        return float(MIN_REMOTE_REGISTRY_TIMEOUT_SECONDS)
+    if n > MAX_REMOTE_REGISTRY_TIMEOUT_SECONDS:
+        return float(MAX_REMOTE_REGISTRY_TIMEOUT_SECONDS)
+    return float(n)
+
+
+def get_remote_registry_timeout() -> float:
+    """Timeout por host do Remote Registry (persistido; padrão 15s)."""
+    global _runtime_timeout
+    if _runtime_timeout is None:
+        raw = load_setting(KEY_REMOTE_REGISTRY_TIMEOUT, REMOTE_REGISTRY_TIMEOUT_SECONDS)
+        _runtime_timeout = normalize_remote_registry_timeout(raw)
+    return float(_runtime_timeout)
+
+
+def set_remote_registry_timeout(value: float) -> float:
+    """Define e persiste o timeout do Remote Registry (snapshot completo)."""
+    global _runtime_timeout
+    normalized = normalize_remote_registry_timeout(value)
+    save_portable_settings({KEY_REMOTE_REGISTRY_TIMEOUT: float(normalized)})
+    _runtime_timeout = normalized
+    return normalized
+
+
+def _resolve_timeout(timeout: Optional[float]) -> float:
+    if timeout is None:
+        return get_remote_registry_timeout()
+    try:
+        n = float(timeout)
+    except (TypeError, ValueError):
+        return get_remote_registry_timeout()
+    if n <= 0:
+        return get_remote_registry_timeout()
+    return n
 
 
 def _app_to_dict(app: InstalledApp) -> dict:
@@ -197,7 +253,7 @@ class _ActiveQuery:
 def query_remote_installed_apps(
     host: str,
     *,
-    timeout: float = REMOTE_REGISTRY_TIMEOUT_SECONDS,
+    timeout: Optional[float] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
 ) -> HostInventoryStatus:
     """
@@ -215,12 +271,7 @@ def query_remote_installed_apps(
             stage="validate",
         )
 
-    try:
-        timeout_s = float(timeout)
-    except (TypeError, ValueError):
-        timeout_s = REMOTE_REGISTRY_TIMEOUT_SECONDS
-    if timeout_s <= 0:
-        timeout_s = REMOTE_REGISTRY_TIMEOUT_SECONDS
+    timeout_s = _resolve_timeout(timeout)
 
     if should_cancel and should_cancel():
         return _make_status(
@@ -326,7 +377,7 @@ def run_remote_inventory_batch(
     hosts: Sequence[str],
     *,
     max_workers: int,
-    timeout: float = REMOTE_REGISTRY_TIMEOUT_SECONDS,
+    timeout: Optional[float] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
 ) -> Iterator[HostInventoryStatus]:
     """
@@ -344,12 +395,7 @@ def run_remote_inventory_batch(
     except (TypeError, ValueError):
         workers = 1
 
-    try:
-        timeout_s = float(timeout)
-    except (TypeError, ValueError):
-        timeout_s = REMOTE_REGISTRY_TIMEOUT_SECONDS
-    if timeout_s <= 0:
-        timeout_s = REMOTE_REGISTRY_TIMEOUT_SECONDS
+    timeout_s = _resolve_timeout(timeout)
 
     ctx = multiprocessing.get_context("spawn")
     # job_id -> ActiveQuery (permite o mesmo hostname mais de uma vez na lista)
