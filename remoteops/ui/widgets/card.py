@@ -361,6 +361,10 @@ class CardWidget(QWidget):
                 background: palette(light);
                 border-radius: 4px;
             }
+            QToolButton#cardDownload:disabled {
+                color: palette(mid);
+                background: transparent;
+            }
             QFrame#cardDivider {
                 color: palette(mid);
                 background-color: palette(mid);

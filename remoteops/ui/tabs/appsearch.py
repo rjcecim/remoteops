@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QToolButton,
     QAbstractItemView,
+    QFileDialog,
     QMessageBox,
 )
 
@@ -40,7 +41,7 @@ from remoteops.utils.psinfo import (
     describe_uninstall,
 )
 from remoteops.utils.app_catalog import resolve_uninstall_extras
-from remoteops.utils.hosts import load_hosts_file
+from remoteops.utils.hosts import load_hosts_file, save_hosts_file
 from remoteops.utils.remote_registry_query import (
     REMOTE_REGISTRY_TIMEOUT_SECONDS,
     run_remote_inventory_batch,
@@ -286,6 +287,14 @@ class AppSearchTab(QWidget):
         self.results_card.set_collapsible(True, collapsed=False)
         self.results_card.set_expanding(True)
         self.results_card.set_layout_stretch(2)
+        self.results_card.set_downloadable(True)
+        self._results_download_btn = self.results_card.findChild(QToolButton, "cardDownload")
+        if self._results_download_btn is not None:
+            self._results_download_btn.setToolTip(
+                self.tr("Exportar computadores dos resultados como hosts.json")
+            )
+            self._results_download_btn.setEnabled(False)
+        self.results_card.downloadRequested.connect(self._export_results_hosts_json)
         results_card = self.results_card
 
         self.summary_lbl = QLabel("")
@@ -753,6 +762,14 @@ class AppSearchTab(QWidget):
             if ok:
                 visible += 1
         self.filter_count_lbl.setText(self.tr(f"{visible}/{total}") if total else "")
+        self._sync_results_download_button()
+
+    def _sync_results_download_button(self) -> None:
+        """Download só habilitado quando há computador visível para exportar."""
+        btn = getattr(self, "_results_download_btn", None)
+        if btn is None or sip.isdeleted(btn):
+            return
+        btn.setEnabled(bool(self._collect_result_hosts()))
 
     def _update_summary(self, final: bool = False, interrupted: bool = False) -> None:
         query = getattr(self, "_active_query", "") or ""
@@ -877,6 +894,68 @@ class AppSearchTab(QWidget):
                         app_obj, resolve_uninstall_extras(app_obj, extras_manual)
                     )
                 )
+
+    def _collect_result_hosts(self) -> List[str]:
+        """Hosts únicos dos resultados visíveis (respeita o filtro da tabela)."""
+        hosts: List[str] = []
+        seen: set[str] = set()
+        for r in range(self.table.rowCount()):
+            if self.table.isRowHidden(r):
+                continue
+            it = self.table.item(r, 0)
+            h = (it.text() if it else "").strip().strip("\\")
+            if not h:
+                continue
+            key = h.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            hosts.append(h)
+        return hosts
+
+    def _export_results_hosts_json(self) -> None:
+        """Gera hosts.json no formato {\"hosts\": [...]} a partir dos resultados."""
+        if not self._ui_alive():
+            return
+        hosts = self._collect_result_hosts()
+        if not hosts:
+            QMessageBox.information(
+                self,
+                self.tr("Exportar hosts.json"),
+                self.tr(
+                    "Não há computadores nos resultados para exportar.\n"
+                    "Execute uma pesquisa (e ajuste o filtro, se houver)."
+                ),
+            )
+            return
+
+        query = (getattr(self, "_active_query", "") or "").strip()
+        safe_q = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in query)[:40]
+        default_name = f"hosts_{safe_q}.json" if safe_q else "hosts.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            self.tr("Salvar hosts.json"),
+            default_name,
+            self.tr("JSON (*.json)"),
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+
+        try:
+            saved = save_hosts_file(path, hosts)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                self.tr("Exportar hosts.json"),
+                self.tr(f"Não foi possível salvar o arquivo:\n{exc}"),
+            )
+            return
+
+        self.log_output.append_log(
+            self.tr(f"[PESQUISA] hosts.json exportado: {path} ({len(saved)} host(s))")
+        )
 
     def _on_uninstall_clicked(self, hit: SearchHit) -> None:
         if not self._ui_alive():

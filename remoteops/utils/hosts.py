@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 from remoteops.paths import project_root
 
@@ -30,6 +30,14 @@ def load_hosts_file(path: str) -> List[str]:
     hosts_raw = data["hosts"]
     if not isinstance(hosts_raw, list):
         raise ValueError('Arquivo inválido: "hosts" deve ser uma lista.')
+    out = normalize_hosts_list(hosts_raw)
+    if not out:
+        raise ValueError("Nenhum host válido encontrado no arquivo.")
+    return out
+
+
+def normalize_hosts_list(hosts_raw: Iterable) -> List[str]:
+    """Deduplica e valida nomes de host (mesmo critério de load_hosts_file)."""
     out: List[str] = []
     seen: set[str] = set()
     for item in hosts_raw:
@@ -44,8 +52,22 @@ def load_hosts_file(path: str) -> List[str]:
             continue
         seen.add(key)
         out.append(h)
+    return out
+
+
+def save_hosts_file(path: str, hosts: List[str]) -> List[str]:
+    """
+    Grava hosts.json no formato conhecido:
+    {\"hosts\": [\"HOST1\", \"HOST2\", ...]}
+    Retorna a lista normalizada gravada.
+    """
+    out = normalize_hosts_list(hosts)
     if not out:
-        raise ValueError("Nenhum host válido encontrado no arquivo.")
+        raise ValueError("Nenhum host válido para gravar.")
+    payload = {"hosts": out}
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
     return out
 
 
