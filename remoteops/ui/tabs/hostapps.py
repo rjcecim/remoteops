@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import csv
+import datetime
+import os
 from typing import List, Optional
 
 from PyQt6 import sip
@@ -9,10 +12,12 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -101,6 +106,14 @@ class HostAppsTab(QWidget):
         self.apps_card.set_collapsible(True, collapsed=False)
         self.apps_card.set_expanding(True)
         self.apps_card.set_layout_stretch(2)
+        self.apps_card.set_downloadable(True)
+        self._apps_download_btn = self.apps_card.findChild(QToolButton, "cardDownload")
+        if self._apps_download_btn is not None:
+            self._apps_download_btn.setToolTip(
+                self.tr("Baixar CSV dos aplicativos (respeita o filtro)")
+            )
+            self._apps_download_btn.setEnabled(False)
+        self.apps_card.downloadRequested.connect(self._export_apps_csv)
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
@@ -430,6 +443,71 @@ class HostAppsTab(QWidget):
             if ok:
                 visible += 1
         self.count_lbl.setText(self.tr(f"{visible}/{total}"))
+        self._sync_apps_download_button()
+
+    def _sync_apps_download_button(self) -> None:
+        btn = getattr(self, "_apps_download_btn", None)
+        if btn is None or sip.isdeleted(btn):
+            return
+        btn.setEnabled(bool(self._collect_visible_apps()))
+
+    def _collect_visible_apps(self) -> List[tuple[str, str, str, str]]:
+        """Linhas visíveis da tabela: Nome, Editor, Versão, Tipo."""
+        rows: List[tuple[str, str, str, str]] = []
+        for r in range(self.table.rowCount()):
+            if self.table.isRowHidden(r):
+                continue
+            cells = []
+            for c in range(4):
+                it = self.table.item(r, c)
+                cells.append((it.text() if it else "").strip())
+            if any(cells):
+                rows.append((cells[0], cells[1], cells[2], cells[3]))
+        return rows
+
+    def _export_apps_csv(self) -> None:
+        rows = self._collect_visible_apps()
+        if not rows:
+            QMessageBox.information(
+                self,
+                self.tr("Aplicativos"),
+                self.tr(
+                    "Não há aplicativos visíveis para exportar.\n"
+                    "Atualize a lista e ajuste o filtro, se houver."
+                ),
+            )
+            return
+        host = (self._get_host() or "host").strip().strip("\\") or "host"
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_host = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in host)
+        default_name = f"apps_{safe_host}_{stamp}.csv"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            self.tr("Salvar aplicativos"),
+            default_name,
+            self.tr("CSV (*.csv)"),
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                w = csv.writer(f, delimiter=";")
+                w.writerow(["Host", "Nome", "Editor", "Versao", "Tipo"])
+                for name, publisher, version, kind in rows:
+                    w.writerow([host, name, publisher, version, kind])
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                self.tr("Aplicativos"),
+                self.tr(f"Não foi possível salvar o arquivo:\n{exc}"),
+            )
+            return
+        self.log_output.append_log(
+            self.tr(f"[APPS] CSV exportado: {path} ({len(rows)} aplicativo(s))")
+        )
+        self._status_lbl.setText(
+            self.tr(f"CSV salvo: {os.path.basename(path)} ({len(rows)} app(s))")
+        )
 
     def _current_extras(self) -> str:
         return (self.extras_edit.text() or "").strip()
