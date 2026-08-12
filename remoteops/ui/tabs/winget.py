@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QHBoxLayout,
     QLabel,
@@ -332,7 +333,15 @@ class WinGetTab(QWidget):
         card.content_layout.addLayout(v)
         self.preview.setPlainText("Selecione uma ação (Atualizar/Instalar/Desinstalar) para ver o comando.")
         card.set_collapsible(True, collapsed=False)
+        card.set_copyable(True)
+        card.copyRequested.connect(self._copy_preview_to_clipboard)
         return card
+
+    def _copy_preview_to_clipboard(self) -> None:
+        text = (self.preview.toPlainText() or "").strip()
+        if not text:
+            return
+        QApplication.clipboard().setText(text)
 
     def _build_upgrades_card(self) -> CardWidget:
         card = CardWidget("\uE8A7", "Atualizações disponíveis")

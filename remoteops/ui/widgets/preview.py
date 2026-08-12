@@ -1,4 +1,5 @@
-from PyQt6.QtWidgets import QPlainTextEdit, QSizePolicy
+from PyQt6.QtWidgets import QPlainTextEdit, QSizePolicy, QApplication
+from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QFont
 
 from remoteops.ui.style import FONT_MONO, SIZE_MONO
@@ -14,6 +15,8 @@ class CommandPreviewWidget(CardWidget):
         self.set_layout_stretch(1)
         self.set_expanding(True)
         self.set_collapsible(True, collapsed=False)
+        self.set_copyable(True)
+        self.copyRequested.connect(self._copy_to_clipboard)
 
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
@@ -30,3 +33,16 @@ class CommandPreviewWidget(CardWidget):
 
     def get_command(self):
         return self.preview.toPlainText()
+
+    def _copy_to_clipboard(self) -> None:
+        text = (self.get_command() or "").strip()
+        if not text:
+            return
+        QApplication.clipboard().setText(text)
+        self._copy_btn.setToolTip(self.tr("Copiado!"))
+        QTimer.singleShot(
+            1500,
+            lambda: self._copy_btn.setToolTip(
+                self.tr("Copiar para a área de transferência")
+            ),
+        )

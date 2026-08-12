@@ -74,6 +74,7 @@ class CardWidget(QWidget):
 
     collapsedChanged = pyqtSignal(bool)
     downloadRequested = pyqtSignal()
+    copyRequested = pyqtSignal()
 
     def __init__(self, icon_char: str, title: str, parent=None):
         super().__init__(parent)
@@ -136,6 +137,18 @@ class CardWidget(QWidget):
         self._download_btn.clicked.connect(self.downloadRequested.emit)
         self._download_btn.hide()
 
+        self._copy_btn = QToolButton()
+        self._copy_btn.setObjectName("cardCopy")
+        self._copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._copy_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._copy_btn.setAutoRaise(True)
+        self._copy_btn.setFixedSize(22, 22)
+        self._copy_btn.setFont(QFont("Segoe MDL2 Assets", 10))
+        self._copy_btn.setText("\uE8C8")  # Copy
+        self._copy_btn.setToolTip("Copiar para a área de transferência")
+        self._copy_btn.clicked.connect(self.copyRequested.emit)
+        self._copy_btn.hide()
+
         self._toggle_btn = QToolButton()
         self._toggle_btn.setObjectName("cardToggle")
         self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -150,6 +163,7 @@ class CardWidget(QWidget):
         header.addWidget(self._title_label)
         header.addStretch()
         header.addWidget(self._download_btn)
+        header.addWidget(self._copy_btn)
         header.addWidget(self._toggle_btn)
 
         self._container_layout.addWidget(self._header_widget)
@@ -180,6 +194,9 @@ class CardWidget(QWidget):
 
     def set_downloadable(self, downloadable: bool = True) -> None:
         self._download_btn.setVisible(bool(downloadable))
+
+    def set_copyable(self, copyable: bool = True) -> None:
+        self._copy_btn.setVisible(bool(copyable))
 
     def set_expanding(self, expanding: bool = True) -> None:
         """Faz o card (e a área de conteúdo) ocupar o espaço vertical restante."""
@@ -364,6 +381,15 @@ class CardWidget(QWidget):
             QToolButton#cardDownload:disabled {
                 color: palette(mid);
                 background: transparent;
+            }
+            QToolButton#cardCopy {
+                border: none;
+                background: transparent;
+                color: palette(highlight);
+            }
+            QToolButton#cardCopy:hover {
+                background: palette(light);
+                border-radius: 4px;
             }
             QFrame#cardDivider {
                 color: palette(mid);
