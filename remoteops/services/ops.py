@@ -112,6 +112,18 @@ class CommandExecutionService:
         self._log = log_fn or (lambda _m: None)
         self._run_enabled_cb: Optional[Callable[[bool], None]] = None
         self._stop_enabled_cb: Optional[Callable[[bool], None]] = None
+        # Robocopy terminou, mas o PsExec do plano ainda vai (ou acabou de) começar.
+        self._awaiting_followup = False
+        self._plan_cancelled = False
+
+    @property
+    def awaiting_followup(self) -> bool:
+        return bool(self._awaiting_followup)
+
+    def cancel_plan(self) -> None:
+        """Impede o PsExec encadeado após Robocopy se o usuário pediu parada."""
+        self._plan_cancelled = True
+        self._awaiting_followup = False
 
     def set_button_callbacks(
         self,
@@ -141,6 +153,9 @@ class CommandExecutionService:
                 status=OperationStatus.FAILED,
             )
 
+        self._plan_cancelled = False
+        self._awaiting_followup = False
+
         displays = [s.sanitized_display(passwords) for s in plan]
         full_display = "\n".join(d for d in displays if d)
         self._log(f"[DEBUG] Comando completo: {full_display}")
@@ -164,11 +179,16 @@ class CommandExecutionService:
                     pass
                 from remoteops.core.models import is_robocopy_success
 
+                if self._plan_cancelled:
+                    self._awaiting_followup = False
+                    return
+
                 if is_robocopy_success(exit_code):
                     self._log(
                         f"Robocopy OK (código {exit_code}). Iniciando PsExec (ConPTY)..."
                     )
                     launch = self._launch_psexec_conpty(px, password=password)
+                    self._awaiting_followup = False
                     self._log(launch.message)
                     if not launch.ok:
                         if self._run_enabled_cb:
@@ -176,6 +196,7 @@ class CommandExecutionService:
                         if self._stop_enabled_cb:
                             self._stop_enabled_cb(False)
                 else:
+                    self._awaiting_followup = False
                     self._log(
                         f"Robocopy falhou (código {exit_code}). "
                         "PsExec nao sera executado."
@@ -185,6 +206,7 @@ class CommandExecutionService:
                     if self._stop_enabled_cb:
                         self._stop_enabled_cb(False)
 
+            self._awaiting_followup = True
             self.executor.finished.connect(after_robocopy)
             self.executor.run(rc, passwords=passwords, use_conpty=False)
             return LaunchResult(

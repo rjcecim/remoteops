@@ -112,6 +112,22 @@ class Executor(QObject):
         self._lock = threading.Lock()
         self._interactive = False
 
+    @property
+    def is_busy(self) -> bool:
+        """True enquanto há processo/ConPTY/future desta execução."""
+        with self._lock:
+            fut = self.future
+            interactive = self._interactive
+            terminate = self._conpty_terminate
+            proc = self.process
+        if fut is not None and not fut.done():
+            return True
+        if interactive or terminate is not None:
+            return True
+        if proc is not None and proc.poll() is None:
+            return True
+        return False
+
     def run(
         self,
         command: Union[str, CommandSpec, Sequence[str]],

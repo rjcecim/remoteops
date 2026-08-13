@@ -38,6 +38,21 @@
       "requiresReboot": false,
       "requiresElevation": true,
       "architecture": "x64"
+    },
+    {
+      "displayName": "Trellix Agent",
+      "publishers": [
+        "Trellix",
+        "McAfee"
+      ],
+      "match": [
+        "Trellix Agent"
+      ],
+      "uninstallArgs": "/forceuninstall",
+      "installerType": "Custom",
+      "requiresReboot": false,
+      "requiresElevation": true,
+      "architecture": "x64"
     }
   ]
 }

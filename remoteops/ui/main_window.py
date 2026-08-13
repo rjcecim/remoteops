@@ -1201,6 +1201,18 @@ class MainWindow(QMainWindow):
                 self.tr("[HOST] Host remoto precisa estar Online para executar.")
             )
             return
+        if (
+            self.stop_button.isEnabled()
+            or self.executor.is_busy
+            or self._execution_service.awaiting_followup
+        ):
+            self.log_output.append_log(
+                self.tr(
+                    "Um comando ainda está em execução. "
+                    "Aguarde terminar antes de iniciar outro."
+                )
+            )
+            return
         self.update_command()
         # Credencial efêmera: coletada só na execução; limpa após o lançamento.
         creds = self._current_creds()
@@ -1229,12 +1241,16 @@ class MainWindow(QMainWindow):
             creds.clear()
 
     def on_process_finished(self, exit_code):
+        # Robocopy de um .ps1/.bat termina antes do PsExec: não liberar a UI.
+        if self._execution_service.awaiting_followup or self.executor.is_busy:
+            return
         self.stop_button.setEnabled(False)
         self._set_run_button_enabled(True)
         self.log_output.set_interactive(False)
         self.log_output.append_log(self.tr(f"Processo finalizado com código {exit_code}"))
 
     def on_stop(self):
+        self._execution_service.cancel_plan()
         self.executor.stop()
         self.log_output.set_interactive(False)
         self._set_run_button_enabled(True)
