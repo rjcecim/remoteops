@@ -8,6 +8,9 @@ import subprocess
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 PSEXEC_ACTION_TIMEOUT_S = 30 * 60  # 30 minutos
+REMOTE_CANCEL_GRACE_S = 12.0
+# CreateProcessW: lpCommandLine máximo é 32767 caracteres. Folga para quoting.
+CREATEPROCESS_CMDLINE_MAX = 32000
 
 EXEC_ACTIONS = {"install", "upgrade", "upgrade_all", "uninstall"}
 MULTI_ITEM_EXEC_ACTIONS = {"install", "upgrade", "uninstall"}

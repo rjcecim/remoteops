@@ -12,6 +12,8 @@ namespace WingetRM {
   public class ConPtyRunner {
     const int EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
     const int STARTF_USESTDHANDLES = 0x00000100;
+    const int CREATE_SUSPENDED = 0x00000004;
+    const uint WAIT_OBJECT_0 = 0;
     static readonly IntPtr PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = (IntPtr)0x00020016;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -34,6 +36,39 @@ namespace WingetRM {
 
     [StructLayout(LayoutKind.Sequential)]
     struct PROCESS_INFORMATION { public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+      public long PerProcessUserTimeLimit;
+      public long PerJobUserTimeLimit;
+      public uint LimitFlags;
+      public UIntPtr MinimumWorkingSetSize;
+      public UIntPtr MaximumWorkingSetSize;
+      public uint ActiveProcessLimit;
+      public IntPtr Affinity;
+      public uint PriorityClass;
+      public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct IO_COUNTERS {
+      public ulong ReadOperationCount;
+      public ulong WriteOperationCount;
+      public ulong OtherOperationCount;
+      public ulong ReadTransferCount;
+      public ulong WriteTransferCount;
+      public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+      public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+      public IO_COUNTERS IoInfo;
+      public UIntPtr ProcessMemoryLimit;
+      public UIntPtr JobMemoryLimit;
+      public UIntPtr PeakProcessMemoryUsed;
+      public UIntPtr PeakJobMemoryUsed;
+    }
 
     [DllImport("kernel32.dll", SetLastError=true)]
     static extern int CreatePseudoConsole(COORD size, SafeFileHandle hInput, SafeFileHandle hOutput, uint dwFlags, out IntPtr phPC);
@@ -61,17 +96,27 @@ namespace WingetRM {
     static extern bool GetHandleInformation(IntPtr hObject, out uint lpdwFlags);
     [DllImport("kernel32.dll", SetLastError=true)]
     static extern bool SetHandleInformation(IntPtr hObject, uint dwMask, uint dwFlags);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern uint ResumeThread(IntPtr hThread);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool TerminateJobObject(IntPtr hJob, uint uExitCode);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool SetInformationJobObject(IntPtr hJob, int JobObjectInfoClass, IntPtr lpJobObjectInfo, uint cbJobObjectInfoLength);
 
     const int STD_INPUT_HANDLE = -10;
     const int STD_OUTPUT_HANDLE = -11;
     const int STD_ERROR_HANDLE = -12;
     const uint HANDLE_FLAG_INHERIT = 0x00000001;
+    const int JobObjectExtendedLimitInformation = 9;
+    const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    const uint STILL_ACTIVE = 259;
 
-    // Impede que o conhost.exe criado por CreatePseudoConsole herde os handles
-    // padrão do processo pai (sob PsExec, esses handles são os pipes do PSEXESVC).
-    // Sem isso, o conhost herda o pipe do PsExec e, ao ser encerrado por
-    // ClosePseudoConsole, quebra a comunicação do PsExec (ERROR_INVALID_HANDLE=6).
-    // Retorna os flags originais para posterior restauração.
     static uint[] ClearStdHandleInherit() {
       int[] ids = new int[] { STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE };
       uint[] saved = new uint[] { uint.MaxValue, uint.MaxValue, uint.MaxValue };
@@ -102,8 +147,52 @@ namespace WingetRM {
       }
     }
 
-    public List<string> Lines = new List<string>();
+    static void SafeDispose(SafeFileHandle h) {
+      if (h == null) return;
+      try { if (!h.IsClosed) h.Dispose(); } catch {}
+    }
+
+    static void SafeClose(IntPtr h) {
+      if (h == IntPtr.Zero) return;
+      try { CloseHandle(h); } catch {}
+    }
+
+    static bool EnableKillOnJobClose(IntPtr hJob) {
+      if (hJob == IntPtr.Zero) return false;
+      JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+      info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+      int size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+      IntPtr buf = Marshal.AllocHGlobal(size);
+      try {
+        Marshal.StructureToPtr(info, buf, false);
+        return SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, buf, (uint)size);
+      } catch {
+        return false;
+      } finally {
+        Marshal.FreeHGlobal(buf);
+      }
+    }
+
+    static void KillJobOrProcess(IntPtr hJob, IntPtr hProcess) {
+      if (hJob != IntPtr.Zero) {
+        try { if (TerminateJobObject(hJob, 1)) return; } catch {}
+      }
+      if (hProcess != IntPtr.Zero) {
+        try { TerminateProcess(hProcess, 1); } catch {}
+      }
+    }
+
+    static bool CancelRequested(string cancelPath) {
+      if (string.IsNullOrEmpty(cancelPath)) return false;
+      try { return File.Exists(cancelPath); } catch { return false; }
+    }
+
+    readonly object _sync = new object();
+    readonly List<string> _lines = new List<string>();
     public int ExitCode = 0;
+    public bool ProcessStarted = false;
+    public bool Cancelled = false;
+    public bool TimedOut = false;
 
     string _logPath;
     int _lastPct = -1;
@@ -113,19 +202,17 @@ namespace WingetRM {
     static readonly Regex OscRe = new Regex("\u001b\\][^\u0007\u001b]*(\u0007|\u001b\\\\)");
     static readonly Regex OtherEscRe = new Regex("\u001b[@-Z\\\\-_=>]");
     static readonly Regex CtrlRe = new Regex("[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]");
-    // OSC 9;4 = protocolo de barra de progresso (ConEmu/Windows Terminal):
-    // ESC ] 9 ; 4 ; <estado> ; <pct> (BEL | ST). estado 1=normal, 2=erro, 3=indeterminado.
-    // O winget emite a % EXATA do download por aqui -> fonte mais confiável que o texto.
     static readonly Regex Osc94Re = new Regex("\u001b\\]9;4;([0-9]);([0-9]+)(?:\u0007|\u001b\\\\)");
-    // Linhas puramente visuais do progresso (barra de blocos, spinner, "X MB / Y MB",
-    // ou só "NN%"): não vão para o log nem para o JSON — a % real vai pelo marcador.
-    // Inclui mojibake típico de UTF-8 lido como Latin-1 (â–ˆ) e U+FFFD.
     static readonly Regex VisualNoiseRe = new Regex(
       "^[\\s\\-\\\\|/\u2500-\u257f\u2580-\u259f\u25a0-\u25ff]*$" +
       "|[0-9][0-9.,]*\\s*(KB|MB|GB|TB|B)\\s*/\\s*[0-9][0-9.,]*\\s*(KB|MB|GB|TB|B)" +
       "|^[\\s\u2500-\u259f]*[0-9]{1,3}%$" +
       "|â[\u0080-\u00ff]{1,3}|Ã[\u0080-\u00bf]|\ufffd",
       RegexOptions.IgnoreCase);
+
+    public List<string> GetLines() {
+      lock (_sync) { return new List<string>(_lines); }
+    }
 
     void WriteLog(string s) {
       if (!string.IsNullOrEmpty(_logPath)) {
@@ -136,8 +223,8 @@ namespace WingetRM {
     void EmitLine(string line) {
       if (line == null) return;
       string s = line.TrimEnd();
-      if (s.Length > 0 && VisualNoiseRe.IsMatch(s)) return;  // descarta ruído visual do progresso
-      Lines.Add(s);
+      if (s.Length > 0 && VisualNoiseRe.IsMatch(s)) return;
+      lock (_sync) { _lines.Add(s); }
       WriteLog(s);
     }
 
@@ -147,8 +234,6 @@ namespace WingetRM {
         int pct = int.Parse(m.Groups[2].Value);
         if ((st == 1 || st == 2) && pct >= 0 && pct <= 100 && pct != _lastPct) {
           _lastPct = pct;
-          // Marcador dedicado: o cliente sempre o consome para mover a barra e
-          // nunca o exibe no log (não depende de heurística de "NN%").
           WriteLog("__WINGETRM_PCT__" + pct.ToString());
         }
       }
@@ -156,10 +241,7 @@ namespace WingetRM {
 
     void ProcessChunk(string chunk) {
       if (string.IsNullOrEmpty(chunk)) return;
-      // Extrai a % exata da sequência OSC 9;4 antes de remover os escapes.
       ExtractProgress(chunk);
-      // Sequências que apagam/reposicionam a linha marcam um novo "frame" do
-      // progresso -> tratamos como quebra de linha para isolar cada atualização.
       string s = EraseRe.Replace(chunk, "\n");
       s = s.Replace("\r", "\n");
       s = OscRe.Replace(s, "");
@@ -178,81 +260,187 @@ namespace WingetRM {
       _pending.Append(acc);
     }
 
-    public int Run(string commandLine, string logPath, short width, short height) {
+    public int Run(string commandLine, string logPath, short width, short height, string cancelPath, int timeoutMs) {
       _logPath = logPath;
-      SafeFileHandle inRead, inWrite, outRead, outWrite;
-      if (!CreatePipe(out inRead, out inWrite, IntPtr.Zero, 0)) throw new Win32Exception(Marshal.GetLastWin32Error(), "CreatePipe(in)");
-      if (!CreatePipe(out outRead, out outWrite, IntPtr.Zero, 0)) throw new Win32Exception(Marshal.GetLastWin32Error(), "CreatePipe(out)");
+      ProcessStarted = false;
+      Cancelled = false;
+      TimedOut = false;
+      ExitCode = 0;
+      lock (_sync) { _lines.Clear(); }
+      _pending.Length = 0;
+      _lastPct = -1;
 
-      // Evita que o conhost do pseudo-console herde os pipes do PsExec.
-      uint[] savedInherit = ClearStdHandleInherit();
+      SafeFileHandle inRead = null;
+      SafeFileHandle inWrite = null;
+      SafeFileHandle outRead = null;
+      SafeFileHandle outWrite = null;
+      uint[] savedInherit = null;
+      bool inheritCleared = false;
+      IntPtr hPC = IntPtr.Zero;
+      IntPtr attrList = IntPtr.Zero;
+      bool attrListInit = false;
+      PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
+      bool piValid = false;
+      IntPtr hJob = IntPtr.Zero;
+      Thread readerThread = null;
+      SafeFileHandle readerHandle = null;
 
-      COORD size; size.X = width; size.Y = height;
-      IntPtr hPC;
-      int hr = CreatePseudoConsole(size, inRead, outWrite, 0, out hPC);
-      if (hr != 0) { RestoreStdHandleInherit(savedInherit); throw new Win32Exception(hr, "CreatePseudoConsole"); }
+      try {
+        if (!CreatePipe(out inRead, out inWrite, IntPtr.Zero, 0))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "CreatePipe(in)");
+        if (!CreatePipe(out outRead, out outWrite, IntPtr.Zero, 0))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "CreatePipe(out)");
 
-      var siEx = new STARTUPINFOEX();
-      siEx.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
-      // CRÍTICO: sob PsExec o stdout do PowerShell já está redirecionado (pipe).
-      // Sem STARTF_USESTDHANDLES + handles nulos, o winget herda esses handles em
-      // vez de conectar ao pseudo-console -> nenhum progresso é emitido.
-      siEx.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-      siEx.StartupInfo.hStdInput = IntPtr.Zero;
-      siEx.StartupInfo.hStdOutput = IntPtr.Zero;
-      siEx.StartupInfo.hStdError = IntPtr.Zero;
-      IntPtr lpSize = IntPtr.Zero;
-      InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref lpSize);
-      siEx.lpAttributeList = Marshal.AllocHGlobal(lpSize);
-      if (!InitializeProcThreadAttributeList(siEx.lpAttributeList, 1, 0, ref lpSize)) throw new Win32Exception(Marshal.GetLastWin32Error(), "InitializeProcThreadAttributeList");
-      if (!UpdateProcThreadAttribute(siEx.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hPC, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error(), "UpdateProcThreadAttribute");
+        savedInherit = ClearStdHandleInherit();
+        inheritCleared = true;
 
-      PROCESS_INFORMATION pi;
-      bool ok = CreateProcess(null, commandLine, IntPtr.Zero, IntPtr.Zero, false, EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, null, ref siEx, out pi);
-      int createErr = ok ? 0 : Marshal.GetLastWin32Error();
+        COORD size;
+        size.X = width;
+        size.Y = height;
+        int hr = CreatePseudoConsole(size, inRead, outWrite, 0, out hPC);
+        if (hr != 0) throw new Win32Exception(hr, "CreatePseudoConsole");
 
-      // Já lançamos o winget (bInheritHandles=false) e o conhost já foi criado por
-      // CreatePseudoConsole: podemos devolver a herança dos handles do pai.
-      RestoreStdHandleInherit(savedInherit);
+        STARTUPINFOEX siEx = new STARTUPINFOEX();
+        siEx.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+        siEx.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        siEx.StartupInfo.hStdInput = IntPtr.Zero;
+        siEx.StartupInfo.hStdOutput = IntPtr.Zero;
+        siEx.StartupInfo.hStdError = IntPtr.Zero;
+        IntPtr lpSize = IntPtr.Zero;
+        InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref lpSize);
+        attrList = Marshal.AllocHGlobal(lpSize);
+        siEx.lpAttributeList = attrList;
+        if (!InitializeProcThreadAttributeList(siEx.lpAttributeList, 1, 0, ref lpSize))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "InitializeProcThreadAttributeList");
+        attrListInit = true;
+        if (!UpdateProcThreadAttribute(siEx.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hPC, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero))
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "UpdateProcThreadAttribute");
 
-      if (!ok) throw new Win32Exception(createErr, "CreateProcess");
+        uint flags = (uint)(EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED);
+        bool ok = CreateProcess(null, commandLine, IntPtr.Zero, IntPtr.Zero, false, flags, IntPtr.Zero, null, ref siEx, out pi);
+        int createErr = ok ? 0 : Marshal.GetLastWin32Error();
+        if (!ok) throw new Win32Exception(createErr, "CreateProcess");
+        piValid = true;
+        ProcessStarted = true;
 
-      // Fecha os lados que pertencem ao ConPTY/filho.
-      outWrite.Dispose();
-      inRead.Dispose();
+        hJob = CreateJobObject(IntPtr.Zero, null);
+        if (hJob != IntPtr.Zero) {
+          EnableKillOnJobClose(hJob);
+          try { AssignProcessToJobObject(hJob, pi.hProcess); } catch {}
+        }
+        ResumeThread(pi.hThread);
 
-      var readerThread = new Thread(delegate() {
+        RestoreStdHandleInherit(savedInherit);
+        inheritCleared = false;
+
+        SafeDispose(outWrite);
+        outWrite = null;
+        SafeDispose(inRead);
+        inRead = null;
+
+        readerHandle = outRead;
+        outRead = null;
+        readerThread = new Thread(delegate() {
+          try {
+            using (FileStream fs = new FileStream(readerHandle, FileAccess.Read)) {
+              byte[] buffer = new byte[4096];
+              Decoder decoder = Encoding.UTF8.GetDecoder();
+              char[] chars = new char[8192];
+              int read;
+              while ((read = fs.Read(buffer, 0, buffer.Length)) > 0) {
+                int cc = decoder.GetChars(buffer, 0, read, chars, 0);
+                if (cc > 0) ProcessChunk(new string(chars, 0, cc));
+              }
+            }
+          } catch {}
+        });
+        readerThread.IsBackground = true;
         try {
-          using (var fs = new FileStream(outRead, FileAccess.Read)) {
-            byte[] buffer = new byte[4096];
-            var decoder = Encoding.UTF8.GetDecoder();
-            char[] chars = new char[8192];
-            int read;
-            while ((read = fs.Read(buffer, 0, buffer.Length)) > 0) {
-              int cc = decoder.GetChars(buffer, 0, read, chars, 0);
-              if (cc > 0) ProcessChunk(new string(chars, 0, cc));
+          readerThread.Start();
+        } catch {
+          SafeDispose(readerHandle);
+          readerHandle = null;
+          readerThread = null;
+          throw;
+        }
+
+        uint pollMs = 250;
+        long elapsed = 0;
+        while (true) {
+          uint wr = WaitForSingleObject(pi.hProcess, pollMs);
+          if (wr == WAIT_OBJECT_0) break;
+          if (CancelRequested(cancelPath)) {
+            Cancelled = true;
+            KillJobOrProcess(hJob, pi.hProcess);
+            WaitForSingleObject(pi.hProcess, 4000);
+            break;
+          }
+          if (timeoutMs > 0) {
+            elapsed += pollMs;
+            if (elapsed >= timeoutMs) {
+              TimedOut = true;
+              KillJobOrProcess(hJob, pi.hProcess);
+              WaitForSingleObject(pi.hProcess, 4000);
+              break;
             }
           }
+        }
+
+        uint code;
+        if (GetExitCodeProcess(pi.hProcess, out code)) ExitCode = (int)code;
+        if (Cancelled) ExitCode = unchecked((int)0xC000013A);
+        else if (TimedOut) ExitCode = -2;
+        return ExitCode;
+      }
+      finally {
+        if (inheritCleared) RestoreStdHandleInherit(savedInherit);
+
+        // Fecha o PTY para gerar EOF no pipe de saída e drenar até o canal encerrar.
+        if (hPC != IntPtr.Zero) {
+          try { ClosePseudoConsole(hPC); } catch {}
+          hPC = IntPtr.Zero;
+        }
+
+        if (readerThread != null) {
+          // Encerramento normal: drena até EOF (doc Microsoft: manter a saída
+          // do pseudoconsole drenada inclusive durante o fechamento).
+          // Cancel/timeout: espera mais curta e força EOF no handle de leitura.
+          int drainMs = (Cancelled || TimedOut) ? 5000 : 120000;
+          if (!readerThread.Join(drainMs)) {
+            SafeDispose(readerHandle);
+            readerHandle = null;
+            int restMs = (Cancelled || TimedOut) ? 2000 : 15000;
+            readerThread.Join(restMs);
+          }
+        }
+        try {
+          if (_pending.Length > 0) EmitLine(_pending.ToString());
         } catch {}
-      });
-      readerThread.IsBackground = true;
-      readerThread.Start();
 
-      WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
-      uint code;
-      if (GetExitCodeProcess(pi.hProcess, out code)) ExitCode = (int)code;
+        if (attrListInit && attrList != IntPtr.Zero) {
+          try { DeleteProcThreadAttributeList(attrList); } catch {}
+        }
+        if (attrList != IntPtr.Zero) {
+          try { Marshal.FreeHGlobal(attrList); } catch {}
+        }
 
-      // Fecha o ConPTY: libera o write side interno -> EOF na thread de leitura.
-      ClosePseudoConsole(hPC);
-      readerThread.Join(5000);
-      if (_pending.Length > 0) EmitLine(_pending.ToString());
+        if (piValid) {
+          uint live = 0;
+          try {
+            if (GetExitCodeProcess(pi.hProcess, out live) && live == STILL_ACTIVE)
+              KillJobOrProcess(hJob, pi.hProcess);
+          } catch {}
+          SafeClose(pi.hThread);
+          SafeClose(pi.hProcess);
+        }
+        SafeClose(hJob);
 
-      DeleteProcThreadAttributeList(siEx.lpAttributeList);
-      Marshal.FreeHGlobal(siEx.lpAttributeList);
-      CloseHandle(pi.hThread);
-      CloseHandle(pi.hProcess);
-      try { inWrite.Dispose(); } catch {}
-      return ExitCode;
+        SafeDispose(readerHandle);
+        SafeDispose(inRead);
+        SafeDispose(inWrite);
+        SafeDispose(outRead);
+        SafeDispose(outWrite);
+      }
     }
   }
 }

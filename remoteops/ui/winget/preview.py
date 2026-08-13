@@ -84,6 +84,6 @@ def build_preview_text(
             psexec_parts += ["-p", '"********"']
     else:
         psexec_parts += ["-s"]
-    psexec_line = " ".join(psexec_parts) + " powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand <...>"
+    psexec_line = " ".join(psexec_parts) + " powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command <...>"
 
     return "PsExec:\n" + psexec_line + "\n\nWinget remoto:\n" + winget_cmd

@@ -6,19 +6,52 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 
-def build_remote_paths(host: str, svc_name: str) -> tuple[str, str, str, str, str, str]:
-    """Retorna os caminhos do JSON e do log incremental remoto."""
+class RemoteArtifacts(NamedTuple):
+    """Caminhos locais-no-host e UNC para JSON, log e cancelamento."""
+
+    json_path: str
+    json_admin: str
+    json_c: str
+    log_path: str
+    log_admin: str
+    log_c: str
+    cancel_path: str
+    cancel_admin: str
+    cancel_c: str
+
+
+def build_remote_paths(host: str, svc_name: str) -> RemoteArtifacts:
+    """Retorna os caminhos do JSON, do log incremental e do sinal de cancel."""
+    host = host.strip()
     base_remote = f"C:\\Windows\\Temp\\{svc_name}"
-    remote_json = base_remote + ".json"
-    remote_log = base_remote + ".log"
-    unc_admin_json = f"\\\\{host.strip()}\\ADMIN$\\Temp\\{svc_name}.json"
-    unc_c_json = f"\\\\{host.strip()}\\C$\\Windows\\Temp\\{svc_name}.json"
-    unc_admin_log = f"\\\\{host.strip()}\\ADMIN$\\Temp\\{svc_name}.log"
-    unc_c_log = f"\\\\{host.strip()}\\C$\\Windows\\Temp\\{svc_name}.log"
-    return remote_json, unc_admin_json, unc_c_json, remote_log, unc_admin_log, unc_c_log
+    return RemoteArtifacts(
+        json_path=base_remote + ".json",
+        json_admin=f"\\\\{host}\\ADMIN$\\Temp\\{svc_name}.json",
+        json_c=f"\\\\{host}\\C$\\Windows\\Temp\\{svc_name}.json",
+        log_path=base_remote + ".log",
+        log_admin=f"\\\\{host}\\ADMIN$\\Temp\\{svc_name}.log",
+        log_c=f"\\\\{host}\\C$\\Windows\\Temp\\{svc_name}.log",
+        cancel_path=base_remote + ".cancel",
+        cancel_admin=f"\\\\{host}\\ADMIN$\\Temp\\{svc_name}.cancel",
+        cancel_c=f"\\\\{host}\\C$\\Windows\\Temp\\{svc_name}.cancel",
+    )
+
+
+def signal_remote_cancel(*paths: str) -> list[str]:
+    """Cria o arquivo de cancelamento no host via UNC. Devolve os caminhos gravados."""
+    written: list[str] = []
+    for p in paths:
+        if not p:
+            continue
+        try:
+            Path(p).write_text("1", encoding="utf-8")
+            written.append(p)
+        except Exception:
+            continue
+    return written
 
 
 def delete_remote_artifact(*paths: str) -> None:

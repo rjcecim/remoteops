@@ -36,6 +36,18 @@ def normalize_winget_line(line: str) -> str:
     return text.strip()
 
 
+# WinGet redesenha espera/status com \\r: "   - Waiting for another install..."
+_SPINNER_STATUS_RE = re.compile(r"^[-\\|\/]\s+\S")
+
+
+def is_winget_spinner_status(line: str) -> bool:
+    """True para linha de spinner+texto (espera de outro install, etc.)."""
+    stripped = normalize_winget_line(line)
+    if not stripped or stripped in SPINNER_LINES:
+        return False
+    return bool(_SPINNER_STATUS_RE.match(stripped))
+
+
 def is_winget_download_progress(line: str) -> bool:
     """True para barras de download do winget (caracteres de bloco / % / tamanho)."""
     stripped = normalize_winget_line(line)

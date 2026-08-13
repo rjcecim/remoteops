@@ -23,7 +23,7 @@ def build_psexec_args(
     username: str,
     password: str,
     svc_name: str,
-    encoded_ps: str,
+    ps_command: str,
 ) -> list[str]:
     """Retorna a lista de argumentos para invocar o PsExec com PowerShell remoto."""
     exe = _resolve_psexec_exe(psexec_path)
@@ -56,8 +56,8 @@ def build_psexec_args(
         "-NonInteractive",
         "-ExecutionPolicy",
         "Bypass",
-        "-EncodedCommand",
-        encoded_ps,
+        "-Command",
+        ps_command,
     ]
     return args
 

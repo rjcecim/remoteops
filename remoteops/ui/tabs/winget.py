@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable, Optional, Tuple
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -49,7 +49,11 @@ from remoteops.ui.winget.workers.winget_worker import WinGetWorker
 from remoteops.utils.pstools import get_pstools_dir, resolve_pstools_tool
 from remoteops.winget.clixml import clixml_to_text, looks_like_clixml, summarize_one_line
 from remoteops.winget.constants import is_winget_success_exit
-from remoteops.winget.winget_output import format_exec_result_line, summarize_winget_output
+from remoteops.winget.winget_output import (
+    format_exec_result_line,
+    is_winget_spinner_status,
+    summarize_winget_output,
+)
 
 
 class WinGetTab(QWidget):
@@ -404,6 +408,7 @@ class WinGetTab(QWidget):
         self.search_query.setPlaceholderText("Ex: chrome, zoom, winrar...")
         self.search_query.returnPressed.connect(self._on_search)
         self.search_query.textChanged.connect(self._refresh_live_preview)
+        self.search_query.installEventFilter(self)
         self.btn_search = icon_button("\uE721", "Buscar pacotes (winget search)")
         self.btn_search.clicked.connect(self._on_search)
 
@@ -520,7 +525,27 @@ class WinGetTab(QWidget):
         add_row(g, 3, "Progresso total", self.pb_total)
 
         self.btn_cancel = QPushButton("Cancelar")
-        self.btn_cancel.setToolTip("Interrompe a operação remota em andamento (encerra o PsExec local)")
+        self.btn_cancel.setToolTip(
+            "Interrompe a operação no host remoto (sinal de cancelamento) e, se preciso, o PsExec local"
+        )
+        self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_cancel.setStyleSheet(
+            """
+            QPushButton {
+                border: 1px solid palette(mid);
+                border-radius: 4px;
+                background: palette(button);
+                color: palette(highlight);
+                padding: 4px 12px;
+            }
+            QPushButton:hover {
+                background: palette(light);
+                border-color: palette(highlight);
+            }
+            QPushButton:pressed { background: palette(dark); }
+            QPushButton:disabled { color: palette(mid); }
+            """
+        )
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self._on_cancel_operation)
         cancel_row = QWidget()
@@ -541,10 +566,17 @@ class WinGetTab(QWidget):
         card.set_collapsible(True, collapsed=False)
         return card
 
+    def _emit_console_line(self, text: str) -> None:
+        """Spinner de espera do winget (\\r) fica numa linha só e anima - \\ | /."""
+        if is_winget_spinner_status(text):
+            self.log_output.set_partial_line(text)
+            return
+        self.log_output.append_log(text)
+
     def _append_log(self, text: str) -> None:
         if self._exec_log is None:
             if text:
-                self.log_output.append_log(text)
+                self._emit_console_line(text)
             return
 
         text, realtime = self._exec_log.strip_realtime_prefix(text)
@@ -552,7 +584,7 @@ class WinGetTab(QWidget):
         if line is None:
             return
 
-        self.log_output.append_log(line if line else "")
+        self._emit_console_line(line if line else "")
 
     def _set_busy(self, busy: bool) -> None:
         widgets = [self.btn_info_list]
@@ -583,6 +615,19 @@ class WinGetTab(QWidget):
             if hasattr(self, "btn_inst_uninstall_sel"):
                 self._refresh_installed_bulk_buttons()
             self._refresh_live_preview()
+
+    def eventFilter(self, watched, event):
+        query = getattr(self, "search_query", None)
+        if (
+            query is not None
+            and watched is query
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and self._worker is not None
+            and self._worker.isRunning()
+        ):
+            return True
+        return super().eventFilter(watched, event)
 
     def _on_cancel_operation(self) -> None:
         if self._worker is not None and self._worker.isRunning():
@@ -844,6 +889,8 @@ class WinGetTab(QWidget):
         )
 
     def _on_search(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
         term = self.search_query.text().strip()
         self._start_worker(
             action="search",

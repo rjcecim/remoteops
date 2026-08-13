@@ -135,6 +135,9 @@ class LogOutputWidget(CardWidget):
             cursor.removeSelectedText()
         else:
             cursor.movePosition(QTextCursor.MoveOperation.End)
+            doc = self.text_edit.toPlainText()
+            if doc and not doc.endswith("\n"):
+                cursor.insertText("\n")
             self._partial_anchor = cursor.position()
         if text:
             cursor.insertText(text)

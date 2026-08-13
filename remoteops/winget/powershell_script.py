@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
+from .constants import EXEC_ACTIONS, PSEXEC_ACTION_TIMEOUT_S
 from .winget_flags import (
     COMMON_EXEC_FLAGS,
     COMMON_QUERY_FLAGS,
@@ -33,26 +34,116 @@ def _load_conpty_cs() -> str:
     return (_TEMPLATES_DIR / "conpty_runner.cs").read_text(encoding="utf-8")
 
 
+def _minify_cs(src: str) -> str:
+    """Remove comentários // e linhas em branco do C# embutido."""
+    lines: list[str] = []
+    for line in src.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            continue
+        lines.append(line.rstrip())
+    return "\n".join(lines) + "\n"
+
+
+def _minify_ps(src: str) -> str:
+    """Remove comentários de linha e vazios extras, preservando here-strings."""
+    out: list[str] = []
+    in_here = False
+    here_close = ""
+    prev_blank = False
+    for line in src.splitlines():
+        if in_here:
+            out.append(line.rstrip())
+            if line.strip().startswith(here_close):
+                in_here = False
+            continue
+        stripped = line.strip()
+        if stripped.endswith("@'"):
+            in_here = True
+            here_close = "'@"
+            out.append(line.rstrip())
+            prev_blank = False
+            continue
+        if stripped.endswith('@"'):
+            in_here = True
+            here_close = '"@'
+            out.append(line.rstrip())
+            prev_blank = False
+            continue
+        if not stripped:
+            if not prev_blank:
+                out.append("")
+            prev_blank = True
+            continue
+        if stripped.startswith("#"):
+            continue
+        code = line.rstrip()
+        if "'" not in code and '"' not in code:
+            hash_pos = code.find(" #")
+            if hash_pos >= 0:
+                code = code[:hash_pos].rstrip()
+        if not code:
+            continue
+        prev_blank = False
+        out.append(code)
+    return "\n".join(out).strip() + "\n"
+
+
+def _conpty_init(include: bool) -> str:
+    if not include:
+        return "$script:ConPtyOk = $false\n"
+    cs = _minify_cs(_load_conpty_cs())
+    return (
+        "$script:ConPtyOk = $false\n"
+        "try {\n"
+        "  Add-Type -TypeDefinition @'\n"
+        f"{cs}"
+        "'@ -ErrorAction Stop\n"
+        "  $script:ConPtyOk = $true\n"
+        "} catch {\n"
+        "  $script:ConPtyOk = $false\n"
+        "}\n"
+    )
+
+
 _PS_TEMPLATE = r"""
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 try { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) } catch {}
 try { $OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch {}
 
-# ConPTY: winget emite progresso real quando "enxerga" um terminal.
-$script:ConPtyOk = $false
-try {
-  Add-Type -TypeDefinition @'
-@@CONPTY_CS@@
-'@ -ErrorAction Stop
-  $script:ConPtyOk = $true
-} catch {
-  $script:ConPtyOk = $false
+@@CONPTY_INIT@@
+$script:WingetCancelled = $false
+$script:WingetTimedOut = $false
+$script:WingetTimeoutS = 0
+$script:WingetLastExitCode = 0
+
+function Test-RemoteCancel {
+  if (-not $cancelPath) { return $false }
+  try { return [System.IO.File]::Exists($cancelPath) } catch { return $false }
 }
 
 function J($o) {
   $tmpFile = $null
   try {
+    try {
+      if ($null -ne $o.PSObject.Properties['Meta'] -and $null -ne $o.Meta) {
+        $o.Meta | Add-Member -NotePropertyName Cancelled -NotePropertyValue ([bool]$script:WingetCancelled) -Force
+        $o.Meta | Add-Member -NotePropertyName TimedOut -NotePropertyValue ([bool]$script:WingetTimedOut) -Force
+      }
+      $o | Add-Member -NotePropertyName Cancelled -NotePropertyValue ([bool]$script:WingetCancelled) -Force
+      $o | Add-Member -NotePropertyName TimedOut -NotePropertyValue ([bool]$script:WingetTimedOut) -Force
+      if ($script:WingetCancelled -or $script:WingetTimedOut) {
+        $o | Add-Member -NotePropertyName Ok -NotePropertyValue $false -Force
+        $hasErr = $false
+        try { $hasErr = [bool]$o.Error } catch { $hasErr = $false }
+        if (-not $hasErr) {
+          $stopMsg = 'Execução remota excedeu o tempo limite.'
+          if ($script:WingetCancelled) { $stopMsg = 'Operação cancelada pelo usuário.' }
+          $o | Add-Member -NotePropertyName Error -NotePropertyValue $stopMsg -Force
+        }
+      }
+    } catch {}
     $tmpFile = [System.IO.Path]::GetTempFileName()
     $json = $o | ConvertTo-Json -Depth 6
     if ($json -is [array]) { $json = ($json -join [Environment]::NewLine) }
@@ -151,6 +242,11 @@ function Test-WingetSuccess([object]$Code) {
   return $false
 }
 
+function Test-RunStillSuccessful([bool]$OkSoFar) {
+  if ($script:WingetCancelled -or $script:WingetTimedOut) { return $false }
+  return [bool]$OkSoFar
+}
+
 function Invoke-WingetCapture {
   param(
     [Parameter(Mandatory)][string]$WingetPath,
@@ -199,19 +295,37 @@ function Invoke-WingetCapture {
 
   $argStr = ($ArgumentList | ForEach-Object { Format-WingetArg $_ }) -join ' '
 
+  function Stop-WingetProcessTree($Process) {
+    if ($null -eq $Process) { return }
+    try {
+      $procId = [int]$Process.Id
+      $tk = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+      Start-Process -FilePath $tk -ArgumentList @('/F','/T','/PID',"$procId") -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null
+    } catch {
+      try { $Process.Kill() } catch {}
+    }
+  }
+
   # ConPTY só para execuções (install/upgrade/uninstall): faz o winget emitir o
   # progresso de download real. Em consultas (list/search) usamos o pipe, que
   # produz a tabela limpa que os parsers esperam (ConPTY reposiciona o cursor e
   # fragmenta as colunas, quebrando o parsing).
   if ($UseConPty -and $script:ConPtyOk) {
+    $runner = $null
+    $started = $false
     try {
       $runner = New-Object WingetRM.ConPtyRunner
       $cmdLine = "`"$WingetPath`" $argStr"
-      $code = [int]$runner.Run($cmdLine, $logPath, [int16]200, [int16]50)
+      $timeoutMs = 0
+      if ($script:WingetTimeoutS -gt 0) {
+        $timeoutMs = [int]([Math]::Min([double]$script:WingetTimeoutS * 1000.0, [int]::MaxValue))
+      }
+      $code = [int]$runner.Run($cmdLine, $logPath, [int16]200, [int16]50, $cancelPath, $timeoutMs)
+      $started = [bool]$runner.ProcessStarted
       $script:WingetLastExitCode = $code
-      # As linhas de progresso já foram para o log (tail em tempo real); aqui no
-      # buffer/JSON final guardamos só as linhas úteis (sem barras de download).
-      foreach ($ln in $runner.Lines) {
+      if ($runner.Cancelled) { $script:WingetCancelled = $true }
+      if ($runner.TimedOut) { $script:WingetTimedOut = $true }
+      foreach ($ln in $runner.GetLines()) {
         if ($null -eq $ln -or $ln.Length -eq 0) { continue }
         $t = $ln.Trim()
         if ($t -match '^[\s\u2588\u2592\u2591\u2593]*\d{1,3}%$') { continue }
@@ -220,6 +334,26 @@ function Invoke-WingetCapture {
       }
       return ,@($buf.ToArray())
     } catch {
+      $started = $started -or ($null -ne $runner -and [bool]$runner.ProcessStarted)
+      if ($started) {
+        # CreateProcess já lançou o WinGet: nunca reexecutar por pipe.
+        Emit-RemoteLog ("[wingetrm] ConPTY: falha após iniciar o WinGet (sem reexecução): " + $_.Exception.Message)
+        if ($null -ne $runner) {
+          if ($runner.Cancelled) { $script:WingetCancelled = $true }
+          if ($runner.TimedOut) { $script:WingetTimedOut = $true }
+          if ($script:WingetLastExitCode -eq 0 -and $runner.ExitCode -ne 0) {
+            $script:WingetLastExitCode = [int]$runner.ExitCode
+          }
+          try {
+            foreach ($ln in $runner.GetLines()) {
+              if ($null -eq $ln -or $ln.Length -eq 0) { continue }
+              [void]$buf.Add($ln)
+            }
+          } catch {}
+        }
+        if ($script:WingetLastExitCode -eq 0) { $script:WingetLastExitCode = 1 }
+        return ,@($buf.ToArray())
+      }
       Emit-RemoteLog ("[wingetrm] ConPTY indisponível, usando modo padrão: " + $_.Exception.Message)
     }
   }
@@ -242,9 +376,51 @@ function Invoke-WingetCapture {
   $proc.StartInfo = $psi
   [void]$proc.Start()
   $ms = New-Object System.IO.MemoryStream
-  $proc.StandardOutput.BaseStream.CopyTo($ms)
-  $proc.WaitForExit()
-  $script:WingetLastExitCode = [int]$proc.ExitCode
+  $stream = $proc.StandardOutput.BaseStream
+  $readBuf = New-Object byte[] 4096
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  try {
+    while ($true) {
+      if (Test-RemoteCancel) {
+        $script:WingetCancelled = $true
+        Stop-WingetProcessTree $proc
+        break
+      }
+      if ($script:WingetTimeoutS -gt 0 -and $sw.Elapsed.TotalSeconds -ge $script:WingetTimeoutS) {
+        $script:WingetTimedOut = $true
+        Stop-WingetProcessTree $proc
+        break
+      }
+      $iar = $null
+      try {
+        $iar = $stream.BeginRead($readBuf, 0, $readBuf.Length, $null, $null)
+      } catch { break }
+      while (-not $iar.IsCompleted) {
+        if (Test-RemoteCancel) {
+          $script:WingetCancelled = $true
+          Stop-WingetProcessTree $proc
+          break
+        }
+        if ($script:WingetTimeoutS -gt 0 -and $sw.Elapsed.TotalSeconds -ge $script:WingetTimeoutS) {
+          $script:WingetTimedOut = $true
+          Stop-WingetProcessTree $proc
+          break
+        }
+        [void]$iar.AsyncWaitHandle.WaitOne(250)
+      }
+      $n = 0
+      try { $n = $stream.EndRead($iar) } catch { break }
+      if ($script:WingetCancelled -or $script:WingetTimedOut) { break }
+      if ($n -le 0) { break }
+      [void]$ms.Write($readBuf, 0, $n)
+    }
+  } finally {
+    try { [void]$proc.WaitForExit(15000) } catch {}
+    if (-not $proc.HasExited) {
+      try { Stop-WingetProcessTree $proc } catch {}
+    }
+  }
+  try { $script:WingetLastExitCode = [int]$proc.ExitCode } catch { $script:WingetLastExitCode = 1 }
 
   $bytes = $ms.ToArray()
   $text = ''
@@ -273,6 +449,15 @@ function Invoke-WingetIdsAction {
   )
   $res = New-Object System.Collections.Generic.List[object]
   foreach ($id in $IdList) {
+    if ($script:WingetCancelled -or $script:WingetTimedOut) {
+      Emit-RemoteLog '[wingetrm] Cancelamento/timeout: demais IDs não serão executados.'
+      break
+    }
+    if (Test-RemoteCancel) {
+      $script:WingetCancelled = $true
+      Emit-RemoteLog '[wingetrm] Cancelamento/timeout: demais IDs não serão executados.'
+      break
+    }
     Emit-RemoteLog ''
     Emit-RemoteLog "--- $id ---"
     $out = Invoke-WingetCapture -WingetPath $winget -ArgumentList (@($Verb, '--id', $id) + $CommonFlags) -UseConPty
@@ -290,7 +475,11 @@ $ids             = @@IDS@@
 $query           = @@QUERY@@
 $resultPath      = @@RESULT_PATH@@
 $logPath         = @@LOG_PATH@@
+$cancelPath      = @@CANCEL_PATH@@
 $action          = @@ACTION@@
+$script:WingetTimeoutS = @@TIMEOUT_S@@
+$script:WingetCancelled = $false
+$script:WingetTimedOut = $false
 
 $meta = [pscustomobject]@{
   Timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
@@ -335,7 +524,7 @@ try {
     'upgrade_all' {
       $out = Invoke-WingetCapture -WingetPath $winget -ArgumentList (@('upgrade', '--all') + $commonUpgradeAll) -UseConPty
       $code = [int]$script:WingetLastExitCode
-      $ok = Test-WingetSuccess $code
+      $ok = Test-RunStillSuccessful (Test-WingetSuccess $code)
       J([pscustomobject]@{
         Ok      = [bool]$ok
         Action  = 'upgrade_all'
@@ -350,7 +539,7 @@ try {
         exit 9
       }
       $arr = Invoke-WingetIdsAction -Verb 'upgrade' -CommonFlags $commonExec -IdList $ids
-      $allOk = -not ($arr | Where-Object { -not (Test-WingetSuccess $_.ExitCode) } | Select-Object -First 1)
+      $allOk = Test-RunStillSuccessful (-not ($arr | Where-Object { -not (Test-WingetSuccess $_.ExitCode) } | Select-Object -First 1))
       J([pscustomobject]@{ Ok=[bool]$allOk; Action='upgrade'; Meta=$meta; Results=@($arr) })
       if ($allOk) { exit 0 } else { exit 10 }
     }
@@ -360,7 +549,7 @@ try {
         exit 3
       }
       $arr = Invoke-WingetIdsAction -Verb 'install' -CommonFlags $commonExec -IdList $ids
-      $allOk = -not ($arr | Where-Object { -not (Test-WingetSuccess $_.ExitCode) } | Select-Object -First 1)
+      $allOk = Test-RunStillSuccessful (-not ($arr | Where-Object { -not (Test-WingetSuccess $_.ExitCode) } | Select-Object -First 1))
       J([pscustomobject]@{ Ok=[bool]$allOk; Action='install'; Meta=$meta; Results=@($arr) })
       if ($allOk) { exit 0 } else { exit 4 }
     }
@@ -370,7 +559,7 @@ try {
         exit 7
       }
       $arr = Invoke-WingetIdsAction -Verb 'uninstall' -CommonFlags $commonUninstall -IdList $ids
-      $allOk = -not ($arr | Where-Object { -not (Test-WingetSuccess $_.ExitCode) } | Select-Object -First 1)
+      $allOk = Test-RunStillSuccessful (-not ($arr | Where-Object { -not (Test-WingetSuccess $_.ExitCode) } | Select-Object -First 1))
       J([pscustomobject]@{ Ok=[bool]$allOk; Action='uninstall'; Meta=$meta; Results=@($arr) })
       if ($allOk) { exit 0 } else { exit 8 }
     }
@@ -396,10 +585,13 @@ def build_remote_script(
     query: str,
     result_path: str,
     log_path: str,
+    cancel_path: str = "",
+    timeout_s: int = PSEXEC_ACTION_TIMEOUT_S,
 ) -> str:
     """Constrói o script PowerShell final (string)."""
+    include_conpty = (action or "").lower() in EXEC_ACTIONS
     replacements = {
-        "@@CONPTY_CS@@": _load_conpty_cs(),
+        "@@CONPTY_INIT@@": _conpty_init(include_conpty),
         "@@COMMON_QUERY@@": _ps_array(COMMON_QUERY_FLAGS),
         "@@COMMON_EXEC@@": _ps_array(COMMON_EXEC_FLAGS),
         "@@COMMON_UPGRADE_ALL@@": _ps_array(COMMON_UPGRADE_ALL_FLAGS),
@@ -408,33 +600,35 @@ def build_remote_script(
         "@@QUERY@@": _ps_single_quote(query or ""),
         "@@RESULT_PATH@@": _ps_single_quote(result_path or ""),
         "@@LOG_PATH@@": _ps_single_quote(log_path or ""),
+        "@@CANCEL_PATH@@": _ps_single_quote(cancel_path or ""),
+        "@@TIMEOUT_S@@": str(int(timeout_s)),
         "@@ACTION@@": _ps_single_quote((action or "").lower()),
     }
     out = _PS_TEMPLATE
     for k, v in replacements.items():
         out = out.replace(k, v)
-    return out
+    return _minify_ps(out)
 
 
 _BOOTSTRAP_TEMPLATE = (
-    "$ErrorActionPreference='Stop'\n"
-    "$gz='@@GZ@@'\n"
-    "$data=[Convert]::FromBase64String($gz)\n"
-    "$ms=New-Object System.IO.MemoryStream(,$data)\n"
-    "$gzs=New-Object System.IO.Compression.GzipStream($ms,[System.IO.Compression.CompressionMode]::Decompress)\n"
-    "$sr=New-Object System.IO.StreamReader($gzs,[System.Text.UTF8Encoding]::new($false))\n"
-    "$code=$sr.ReadToEnd()\n"
-    "$sr.Close()\n"
-    "Invoke-Expression $code\n"
+    "$ErrorActionPreference='Stop';"
+    "$gz='@@GZ@@';"
+    "$data=[Convert]::FromBase64String($gz);"
+    "$ms=New-Object System.IO.MemoryStream(,$data);"
+    "$gzs=New-Object System.IO.Compression.GzipStream($ms,[System.IO.Compression.CompressionMode]::Decompress);"
+    "$sr=New-Object System.IO.StreamReader($gzs,[System.Text.UTF8Encoding]::new($false));"
+    "$code=$sr.ReadToEnd();"
+    "$sr.Close();"
+    "Invoke-Expression $code"
 )
 
 
 def build_bootstrap_script(inner_script: str) -> str:
-    """Envolve o script real num bootstrap que o descomprime no host.
+    """Envolve o script real num bootstrap gzip de uma linha (para ``-Command``).
 
-    O script com ConPTY é grande; codificado direto em ``-EncodedCommand`` ele
-    estoura o limite da linha de comando do Windows (~32 KB → WinError 206).
-    Comprimir com gzip reduz ~7x e mantém tudo em um único comando.
+    ``-EncodedCommand`` reencodeia em UTF-16LE+Base64 e estoura o limite de
+    32767 caracteres do CreateProcess (WinError 206). O bootstrap ASCII gzip
+    cabe na linha de comando sem copiar arquivo para o host.
     """
     import gzip
 

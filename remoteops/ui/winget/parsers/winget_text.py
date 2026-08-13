@@ -24,8 +24,10 @@ _MOJIBAKE_MAP = (
     ("\u00c2\u00a9", "\u00a9"),  # Â© → ©
 )
 
-# Id winget: Publisher.Package… (exige letra após um ponto; evita versões numéricas).
-_PKG_ID_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9+._\-]*\.[A-Za-z][A-Za-z0-9+._\-]*)")
+# Id winget: Publisher.Package (segmentos podem começar com dígito: 7zip.7zip).
+# Versões puramente numéricas (24.09) são rejeitadas em _looks_like_pkg_id.
+_PKG_ID_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9+._\-]*\.[A-Za-z0-9][A-Za-z0-9+._\-]*)")
+_STORE_ID_RE = re.compile(r"^(?:9[A-Z0-9]{10,}|XP[A-Z0-9]{10,})$", re.IGNORECASE)
 _SOURCE_RE = re.compile(r"(?i)(?<!\S)(winget|msstore)$")
 _VERSION_TOKEN_RE = re.compile(r"^\d+(?:\.\d+){1,5}$")
 
@@ -47,7 +49,14 @@ def _looks_like_pkg_id(value: str) -> bool:
     s = s.split()[0]
     if any(ord(c) > 127 for c in s):
         return False
-    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+._\-]*\.[A-Za-z][A-Za-z0-9+._\-]*", s))
+    if _VERSION_TOKEN_RE.fullmatch(s):
+        return False
+    if _STORE_ID_RE.fullmatch(s):
+        return True
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+._\-]*\.[A-Za-z0-9][A-Za-z0-9+._\-]*", s):
+        return False
+    # Exige letra em algum segmento (rejeita 1.2.3 / 24.09; aceita 7zip.7zip).
+    return bool(re.search(r"[A-Za-z]", s))
 
 
 def _clean_pkg_id(value: str) -> str:
@@ -80,7 +89,7 @@ def _parse_row_by_pkg_id(
         return None
     source = src_m.group(1)
     body = line[: src_m.start()].rstrip()
-    id_matches = list(_PKG_ID_RE.finditer(body))
+    id_matches = [m for m in _PKG_ID_RE.finditer(body) if _looks_like_pkg_id(m.group(1))]
     if not id_matches:
         return None
     # Preferir o último Id à esquerda das versões (nome pode ter pontos raramente).
