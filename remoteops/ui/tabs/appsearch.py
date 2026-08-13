@@ -61,6 +61,41 @@ from remoteops.utils.search_settings import (
 )
 
 
+def parse_app_results_filter(raw: str) -> tuple[List[str], List[str]]:
+    """Separa o filtro em inclusões (OR) e exclusões (NOT).
+
+    Termos separados por ``;``. Um termo com prefixo ``-`` é exclusão.
+    """
+    include: List[str] = []
+    exclude: List[str] = []
+    text = (raw or "").strip().lower()
+    if not text:
+        return include, exclude
+    for part in text.split(";"):
+        term = part.strip()
+        if not term:
+            continue
+        if term.startswith("-"):
+            term = term[1:].strip()
+            if term:
+                exclude.append(term)
+            continue
+        include.append(term)
+    return include, exclude
+
+
+def row_matches_app_results_filter(
+    haystack: str, include: List[str], exclude: List[str]
+) -> bool:
+    """True se o texto da linha passa nas inclusões (OR) e em nenhuma exclusão."""
+    text = haystack.lower()
+    if include and not any(term in text for term in include):
+        return False
+    if exclude and any(term in text for term in exclude):
+        return False
+    return True
+
+
 def _icon_button(icon_char: str, tooltip: str = "", size: int = INPUT_HEIGHT) -> QPushButton:
     btn = QPushButton(icon_char)
     font = QFont("Segoe MDL2 Assets", ICON_FONT_PT)
@@ -422,7 +457,13 @@ class AppSearchTab(QWidget):
         filter_row.setSpacing(8)
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText(
-            self.tr("Buscar aplicativo... (vários termos com ;)")
+            self.tr("Buscar aplicativo... (vários com ; · excluir com -)")
+        )
+        self.filter_edit.setToolTip(
+            self.tr(
+                "Separe termos com ; (qualquer um). Prefixe com - para excluir.\n"
+                "Ex.: chrome; firefox   |   -edge   |   office; -365"
+            )
         )
         self.filter_count_lbl = QLabel("")
         self.filter_count_lbl.setStyleSheet("color: palette(windowText); opacity: 0.75;")
@@ -1132,13 +1173,13 @@ class AppSearchTab(QWidget):
     def _apply_results_filter(self) -> None:
         """Filtra a tabela de resultados (mesmo padrão do PsInfo: nome/editor/versão/tipo + computador).
 
-        Aceita vários termos separados por `;` — a linha fica visível se corresponder
-        a qualquer termo (OR).
+        Termos separados por `;` (OR). Prefixo ``-`` exclui o termo (NOT).
+        Só exclusões: mostra todos menos os que casam. Inclusão + exclusão: OR das
+        inclusões e depois remove as exclusões.
         """
         if not self._ui_alive():
             return
-        raw = (self.filter_edit.text() or "").strip().lower()
-        terms = [t.strip() for t in raw.split(";") if t.strip()] if raw else []
+        include, exclude = parse_app_results_filter(self.filter_edit.text() or "")
         total = self.table.rowCount()
         visible = 0
         for r in range(total):
@@ -1147,7 +1188,7 @@ class AppSearchTab(QWidget):
                 it = self.table.item(r, c)
                 parts.append(it.text() if it else "")
             text = " ".join(parts).lower()
-            ok = (not terms) or any(term in text for term in terms)
+            ok = row_matches_app_results_filter(text, include, exclude)
             self.table.setRowHidden(r, not ok)
             if ok:
                 visible += 1
