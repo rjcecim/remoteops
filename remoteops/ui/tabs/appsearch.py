@@ -2,46 +2,53 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from queue import Queue
 from typing import List, Optional
 
 from PyQt6 import sip
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QWidget,
-    QHBoxLayout,
-    QLineEdit,
-    QSizePolicy,
-    QPushButton,
-    QLabel,
-    QProgressBar,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QToolButton,
     QAbstractItemView,
     QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
     QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
+    QToolButton,
+    QWidget,
 )
 
 from remoteops.ui.style import ICON_FONT_PT, INPUT_HEIGHT, SIZE_UI_SMALL
 from remoteops.ui.widgets.card import (
     CardWidget,
-    grid_in_card,
     add_row,
+    grid_in_card,
     make_card_stack,
     make_field_label,
 )
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
 from remoteops.ui.widgets.status_dot import StatusDot as _StatusDot
+from remoteops.utils.app_catalog import resolve_uninstall_extras
+from remoteops.utils.hosts import load_hosts_file, save_hosts_file
+from remoteops.utils.network_range import (
+    get_network_range_config,
+    ips_for_config,
+    network_range_search_mode,
+)
+from remoteops.utils.network_scan import scan_windows_hosts
 from remoteops.utils.psinfo import (
     InstalledApp,
     build_uninstall_remote_cmd,
     describe_uninstall,
 )
-from remoteops.utils.app_catalog import resolve_uninstall_extras
-from remoteops.utils.hosts import load_hosts_file, save_hosts_file
 from remoteops.utils.remote_registry_query import (
     get_remote_registry_timeout,
     run_remote_inventory_batch,
@@ -103,6 +110,7 @@ class _AppSearchWorker(QThread):
         *,
         generation: int = 0,
         timeout: Optional[float] = None,
+        inbox: Optional[Queue] = None,
     ):
         super().__init__()
         self.hosts = list(hosts)
@@ -114,10 +122,31 @@ class _AppSearchWorker(QThread):
         self.max_workers = max(MIN_SEARCH_MAX_WORKERS, min(MAX_SEARCH_MAX_WORKERS, n))
         self.generation = int(generation)
         self.timeout = float(timeout) if timeout else get_remote_registry_timeout()
+        self._inbox = inbox
+        self._offered = len(self.hosts)
+        self._intake_closed = inbox is None
         self._abort = False
+
+    def offer_host(self, host: str) -> None:
+        """Enfileira um host descoberto (varredura em andamento)."""
+        if self._inbox is None or self._intake_closed or self._abort:
+            return
+        h = (host or "").strip().strip("\\")
+        if not h:
+            return
+        self._offered += 1
+        self._inbox.put(h)
+
+    def close_intake(self) -> None:
+        """Não haverá mais hosts da varredura."""
+        if self._inbox is None or self._intake_closed:
+            return
+        self._intake_closed = True
+        self._inbox.put(None)
 
     def abort(self) -> None:
         self._abort = True
+        self.close_intake()
 
     def run(self) -> None:
         gen = self.generation
@@ -126,22 +155,28 @@ class _AppSearchWorker(QThread):
             if not q:
                 self.finished_err.emit(gen, "Informe o nome do aplicativo a pesquisar.")
                 return
-            if not self.hosts:
+            streaming = self._inbox is not None
+            if not streaming and not self.hosts:
                 self.finished_err.emit(gen, "Nenhum host para consultar.")
                 return
 
             total = len(self.hosts)
-            workers = min(self.max_workers, total)
+            workers = self.max_workers if streaming else min(self.max_workers, max(1, total))
             done = 0
             failed = 0
             saw_cancel = False
+            saw_any = False
 
             for status in run_remote_inventory_batch(
                 self.hosts,
                 max_workers=workers,
                 timeout=self.timeout,
                 should_cancel=lambda: self._abort,
+                extra_hosts=self._inbox,
             ):
+                saw_any = True
+                if streaming:
+                    total = max(done + 1, int(self._offered))
                 if self._abort and status.error_kind == "cancelled":
                     saw_cancel = True
                     # Não conta hosts cancelados (já iniciados) como "falha de rede";
@@ -174,10 +209,63 @@ class _AppSearchWorker(QThread):
             if self._abort or saw_cancel:
                 self.finished_aborted.emit(gen, self.query)
                 return
-            self.progress.emit(gen, total, failed, total, "", True, "")
+            if not streaming and not saw_any:
+                self.finished_err.emit(gen, "Nenhum host para consultar.")
+                return
+            final_total = max(done, int(self._offered) if streaming else total)
+            self.progress.emit(gen, done, failed, final_total, "", True, "")
             self.finished_ok.emit(gen, self.query)
         except Exception as exc:
             self.finished_err.emit(gen, f"Erro na pesquisa: {exc}")
+
+
+class _NetworkScanWorker(QThread):
+    """Varre a faixa de IP em segundo plano (ping + portas Windows + nome)."""
+
+    progress = pyqtSignal(int, int, int, str, int)  # gen, done, total, last_ip, found
+    hostFound = pyqtSignal(int, str)  # generation, hostname
+    finished_ok = pyqtSignal(int, list)  # generation, hosts
+    finished_aborted = pyqtSignal(int)
+    finished_err = pyqtSignal(int, str)
+
+    def __init__(
+        self,
+        ips: List[str],
+        max_workers: int,
+        *,
+        generation: int = 0,
+    ):
+        super().__init__()
+        self.ips = list(ips)
+        self.max_workers = int(max_workers)
+        self.generation = int(generation)
+        self._abort = False
+
+    def abort(self) -> None:
+        self._abort = True
+
+    def run(self) -> None:
+        gen = self.generation
+        try:
+            def on_progress(done: int, total: int, ip: str, found: int) -> None:
+                self.progress.emit(gen, done, total, ip, found)
+
+            def on_host(name: str) -> None:
+                self.hostFound.emit(gen, name)
+
+            hosts = scan_windows_hosts(
+                self.ips,
+                max_workers=self.max_workers,
+                should_cancel=lambda: self._abort,
+                on_progress=on_progress,
+                on_host=on_host,
+            )
+            if self._abort:
+                self.finished_aborted.emit(gen)
+                return
+            self.finished_ok.emit(gen, hosts)
+        except Exception as exc:
+            self.finished_err.emit(gen, f"Erro na varredura de rede: {exc}")
 
 
 class AppSearchTab(QWidget):
@@ -189,12 +277,17 @@ class AppSearchTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._worker: Optional[_AppSearchWorker] = None
+        self._scan_worker: Optional[_NetworkScanWorker] = None
         self._hosts_path = ""
         self._hits: List[SearchHit] = []
         self._active_query = ""
         self._hosts_failed = 0
         self._hosts_done = 0
         self._hosts_total = 0
+        self._search_from_network = False
+        self._scan_ips_done = 0
+        self._scan_ips_total = 0
+        self._scan_hosts_found = 0
         # Após interrupção, ignora sinais tardios do worker antigo
         self._accepting_search_results = False
         self._search_generation = 0
@@ -242,43 +335,66 @@ class AppSearchTab(QWidget):
         status_wrap = QWidget()
         status_wrap.setLayout(status_row)
         status_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        status_wrap.setToolTip(self.tr("Definido em Configurações → hosts.json"))
+        status_wrap.setToolTip(
+            self.tr(
+                "Definido em Configurações. Com faixa de IP salva, varre a rede; "
+                "senão usa hosts.json."
+            )
+        )
         add_row(grid, 1, self.tr("Status"), status_wrap)
 
-        self.progress = QProgressBar()
-        self.progress.setMinimum(0)
-        self.progress.setMaximum(100)
-        self.progress.setValue(0)
-        self.progress.setTextVisible(True)
-        self.progress.setFormat("%v / %m hosts")
-        self.progress.setVisible(False)
-        self.progress.setFixedHeight(18)
+        def _search_bar(fmt: str) -> QProgressBar:
+            bar = QProgressBar()
+            bar.setMinimum(0)
+            bar.setMaximum(1)
+            bar.setValue(0)
+            bar.setTextVisible(True)
+            bar.setFormat(fmt)
+            bar.setFixedHeight(18)
+            return bar
 
-        stats_row = QHBoxLayout()
-        stats_row.setContentsMargins(0, 2, 0, 0)
-        stats_row.setSpacing(16)
+        self.scan_progress = _search_bar("%v / %m IPs")
+        self.scan_progress.setToolTip(self.tr("IPs verificados na faixa configurada"))
+        scan_wrap = QWidget()
+        scan_lay = QHBoxLayout(scan_wrap)
+        scan_lay.setContentsMargins(0, 0, 0, 0)
+        scan_lay.setSpacing(8)
+        scan_lay.addWidget(self.scan_progress, 1)
+        self._scan_row_label = make_field_label(self.tr("Rede"))
+        grid.addWidget(self._scan_row_label, 2, 0, Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(scan_wrap, 2, 1, Qt.AlignmentFlag.AlignVCenter)
+        self._scan_row_wrap = scan_wrap
+
+        self.progress = _search_bar("%v / %m")
+        self.progress.setToolTip(self.tr("Hosts consultados / encontrados"))
         self.ok_count_lbl = QLabel(self.tr("Sucesso: 0"))
         self.fail_count_lbl = QLabel(self.tr("Falharam: 0"))
-        self.progress_lbl = QLabel("")
-        for lbl in (self.ok_count_lbl, self.fail_count_lbl, self.progress_lbl):
-            lbl.setStyleSheet("color: palette(windowText); opacity: 0.85;")
-            lbl.setVisible(False)
         self.ok_count_lbl.setStyleSheet(
             "color: palette(highlight); font-weight: 600;"
         )
         self.fail_count_lbl.setStyleSheet(
             "color: #c42b1c; font-weight: 600;"
         )
-        stats_row.addWidget(self.ok_count_lbl)
-        stats_row.addWidget(self.fail_count_lbl)
-        stats_row.addWidget(self.progress_lbl, 1)
-        stats_wrap = QWidget()
-        stats_wrap.setLayout(stats_row)
-        self._stats_wrap = stats_wrap
-        self._stats_wrap.setVisible(False)
+        hosts_wrap = QWidget()
+        hosts_lay = QHBoxLayout(hosts_wrap)
+        hosts_lay.setContentsMargins(0, 0, 0, 0)
+        hosts_lay.setSpacing(12)
+        hosts_lay.addWidget(self.progress, 1)
+        hosts_lay.addWidget(self.ok_count_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+        hosts_lay.addWidget(self.fail_count_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._hosts_row_label = make_field_label(self.tr("Hosts"))
+        grid.addWidget(self._hosts_row_label, 3, 0, Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(hosts_wrap, 3, 1, Qt.AlignmentFlag.AlignVCenter)
+        self._hosts_row_wrap = hosts_wrap
 
-        search_card.content_layout.addWidget(self.progress)
-        search_card.content_layout.addWidget(self._stats_wrap)
+        self.phase_lbl = QLabel("")
+        self.phase_lbl.setObjectName("searchPhase")
+        self.phase_lbl.setWordWrap(True)
+        self.phase_lbl.setStyleSheet(
+            f"QLabel#searchPhase {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
+        )
+        grid.addWidget(self.phase_lbl, 4, 0, 1, 2)
+        self._set_progress_rows_visible(False, network=False)
 
         root.addWidget(search_card, 0)
 
@@ -431,15 +547,73 @@ class AppSearchTab(QWidget):
     def _ui_alive(self) -> bool:
         return not sip.isdeleted(self)
 
-    def _set_hosts_status(self, state: str, text: str) -> None:
+    def _set_hosts_status(self, state: str, text: str, tooltip: str = "") -> None:
         color = _STATUS_COLORS.get(state, _STATUS_COLORS["idle"])
         self.hosts_status_dot.set_color(color)
         self.hosts_status_lbl.setText(text)
-        self.hosts_status_dot.setToolTip(text)
-        self.hosts_status_lbl.setToolTip(text)
+        tip = (tooltip or text).strip()
+        self.hosts_status_dot.setToolTip(tip)
+        self.hosts_status_lbl.setToolTip(tip)
+
+    def _set_progress_rows_visible(self, visible: bool, *, network: bool = False) -> None:
+        show_scan = bool(visible and network)
+        self._scan_row_label.setVisible(show_scan)
+        self._scan_row_wrap.setVisible(show_scan)
+        self._hosts_row_label.setVisible(visible)
+        self._hosts_row_wrap.setVisible(visible)
+        if not visible:
+            self._set_phase_message("")
+
+    def _set_phase_message(self, text: str = "") -> None:
+        msg = (text or "").strip()
+        self.phase_lbl.setText(msg)
+        self.phase_lbl.setVisible(bool(msg))
+
+    def _refresh_progress_ui(self) -> None:
+        """Atualiza as duas barras (Rede / Hosts) sem textos longos misturados."""
+        if self._search_from_network:
+            ip_total = max(1, int(self._scan_ips_total))
+            self.scan_progress.setMaximum(ip_total)
+            self.scan_progress.setValue(min(int(self._scan_ips_done), ip_total))
+            found = max(int(self._scan_hosts_found), int(self._hosts_total), 0)
+            if found <= 0:
+                self.progress.setMaximum(1)
+                self.progress.setValue(0)
+                self.progress.setFormat(self.tr("0 encontrados"))
+            else:
+                self.progress.setMaximum(found)
+                self.progress.setValue(min(int(self._hosts_done), found))
+                self.progress.setFormat("%v / %m")
+        else:
+            host_total = max(1, int(self._hosts_total))
+            self.progress.setMaximum(host_total)
+            self.progress.setValue(min(int(self._hosts_done), host_total))
+            self.progress.setFormat("%v / %m")
+        ok = max(0, int(self._hosts_done) - int(self._hosts_failed))
+        self.ok_count_lbl.setText(self.tr(f"Sucesso: {ok}"))
+        self.fail_count_lbl.setText(self.tr(f"Falharam: {self._hosts_failed}"))
 
     def refresh_hosts_status(self) -> None:
-        """Atualiza legenda a partir das Configurações (sem editar o caminho aqui)."""
+        """Atualiza legenda a partir das Configurações (faixa de IP ou hosts.json)."""
+        mode, err, ip_count = network_range_search_mode()
+        if mode == "network":
+            self._hosts_path = ""
+            cfg = get_network_range_config()
+            self._set_hosts_status(
+                "ok",
+                self.tr(f"Faixa {cfg.start_ip}–{cfg.end_ip} ({ip_count} IPs)"),
+                self.tr(
+                    f"Varredura de rede: {cfg.start_ip}–{cfg.end_ip}. "
+                    f"{ip_count} IP(s), {cfg.scan_threads} threads. "
+                    "hosts.json não é usado."
+                ),
+            )
+            return
+        if mode == "invalid":
+            self._hosts_path = ""
+            self._set_hosts_status("invalid", err or self.tr("Faixa de IP inválida"))
+            return
+
         path, origin = resolve_configured_hosts_path()
         if origin == "missing" or not path or not os.path.isfile(path):
             self._hosts_path = ""
@@ -463,6 +637,46 @@ class AppSearchTab(QWidget):
             "ok", self.tr(f"Encontrado — {len(hosts)} host(s)")
         )
 
+    def _disconnect_scan_signals(self, w: _NetworkScanWorker) -> None:
+        for signal, slot in (
+            (w.progress, self._on_scan_progress),
+            (w.hostFound, self._on_scan_host_found),
+            (w.finished_ok, self._on_scan_ok),
+            (w.finished_aborted, self._on_scan_aborted),
+            (w.finished_err, self._on_scan_err),
+        ):
+            try:
+                signal.disconnect(slot)
+            except TypeError:
+                pass
+
+    def _is_busy(self) -> bool:
+        w = self._worker
+        s = self._scan_worker
+        return bool(
+            (w is not None and w.isRunning())
+            or (s is not None and s.isRunning())
+        )
+
+    def _set_search_busy(self, busy: bool) -> None:
+        self.search_btn.setEnabled(not busy)
+        self.stop_btn.setEnabled(busy)
+        self.app_edit.setEnabled(not busy)
+
+    def _abort_scan_worker(self) -> None:
+        w = self._scan_worker
+        if w is None:
+            return
+        self._scan_worker = None
+        self._disconnect_scan_signals(w)
+        w.abort()
+        if w.isRunning():
+            w.wait(4000)
+        if w.isRunning():
+            w.finished.connect(w.deleteLater)
+        else:
+            w.deleteLater()
+
     def _disconnect_worker_signals(self, w: _AppSearchWorker) -> None:
         for signal, slot in (
             (w.progress, self._on_progress),
@@ -484,6 +698,7 @@ class AppSearchTab(QWidget):
         )
 
     def _abort_worker(self, _destroyed: object = None) -> None:
+        self._abort_scan_worker()
         w = self._worker
         if w is None:
             return
@@ -500,8 +715,9 @@ class AppSearchTab(QWidget):
             w.deleteLater()
 
     def shutdown(self, wait_ms: int = 8000) -> None:
-        """Aborta pesquisa, encerra filhos RR e espera a QThread."""
+        """Aborta varredura/pesquisa, encerra filhos RR e espera a QThread."""
         self._accepting_search_results = False
+        self._abort_scan_worker()
         w = self._worker
         if w is None:
             return
@@ -520,13 +736,23 @@ class AppSearchTab(QWidget):
         Interrompe a pesquisa: para o agendamento, encerra processos filhos
         ativos e descarta resultados posteriores.
         """
-        w = self._worker
-        if w is None or not w.isRunning():
+        scan = self._scan_worker
+        worker = self._worker
+        scanning = scan is not None and scan.isRunning()
+        searching = worker is not None and worker.isRunning()
+        if not scanning and not searching:
             return
         self._accepting_search_results = False
-        w.abort()
+        if scanning:
+            scan.abort()
+        if searching:
+            worker.abort()
+        elif scanning:
+            w = self._worker
+            if w is not None:
+                w.abort()
         self.stop_btn.setEnabled(False)
-        self.progress_lbl.setText(self.tr("Interrompendo pesquisa..."))
+        self._set_phase_message(self.tr("Interrompendo..."))
         self.log_output.append_log(
             self.tr(
                 "[PESQUISA] Interrupção solicitada. "
@@ -535,7 +761,7 @@ class AppSearchTab(QWidget):
         )
 
     def start_search(self) -> None:
-        if self._worker and self._worker.isRunning():
+        if self._is_busy():
             return
 
         query = (self.app_edit.text() or "").strip()
@@ -548,13 +774,28 @@ class AppSearchTab(QWidget):
             return
 
         self.refresh_hosts_status()
+        mode, err, _ip_count = network_range_search_mode()
+        if mode == "invalid":
+            QMessageBox.warning(
+                self,
+                self.tr("Pesquisa de Aplicativos"),
+                self.tr(
+                    err
+                    or "Faixa de IP inválida. Corrija em Configurações ou limpe os campos."
+                ),
+            )
+            return
+        if mode == "network":
+            self._start_network_scan(query)
+            return
+
         if not self._hosts_path or not os.path.isfile(self._hosts_path):
             QMessageBox.warning(
                 self,
                 self.tr("Pesquisa de Aplicativos"),
                 self.tr(
                     "hosts.json não encontrado.\n"
-                    "Configure o arquivo em Configurações."
+                    "Configure o arquivo ou a faixa de IP em Configurações."
                 ),
             )
             return
@@ -569,34 +810,184 @@ class AppSearchTab(QWidget):
             )
             return
 
+        self._begin_app_search(hosts, query)
+
+    def _start_network_scan(self, query: str) -> None:
+        cfg = get_network_range_config()
+        ips, err = ips_for_config(cfg)
+        if err or not ips:
+            QMessageBox.warning(
+                self,
+                self.tr("Pesquisa de Aplicativos"),
+                self.tr(err or "Nenhum IP para varrer."),
+            )
+            return
+
         self._hits = []
         self._trash_buttons = []
         self._active_query = query
         self._hosts_failed = 0
         self._hosts_done = 0
-        self._hosts_total = len(hosts)
+        self._hosts_total = 0
+        self._search_from_network = True
+        self._scan_ips_done = 0
+        self._scan_ips_total = len(ips)
+        self._scan_hosts_found = 0
         self._search_generation += 1
         generation = self._search_generation
         self._accepting_search_results = True
         self.table.setRowCount(0)
         self._apply_results_filter()
+        self.summary_lbl.setText(self.tr("Varrendo a rede..."))
+        self._set_search_busy(True)
+        self._set_progress_rows_visible(True, network=True)
+        self._set_phase_message("")
+        self._refresh_progress_ui()
+
+        self._begin_streaming_search(query, generation)
+
+        self._scan_worker = _NetworkScanWorker(
+            ips,
+            cfg.scan_threads,
+            generation=generation,
+        )
+        self._scan_worker.progress.connect(self._on_scan_progress)
+        self._scan_worker.hostFound.connect(self._on_scan_host_found)
+        self._scan_worker.finished_ok.connect(self._on_scan_ok)
+        self._scan_worker.finished_aborted.connect(self._on_scan_aborted)
+        self._scan_worker.finished_err.connect(self._on_scan_err)
+        self._scan_worker.start()
+
+        self.log_output.append_log(
+            self.tr(
+                f"[PESQUISA] Varrendo {cfg.start_ip}–{cfg.end_ip} "
+                f"({len(ips)} IP(s), {cfg.scan_threads} threads) "
+                f"e pesquisando '{query}' em cada host encontrado..."
+            )
+        )
+
+    def _on_scan_progress(
+        self,
+        generation: int,
+        done: int,
+        total: int,
+        _ip: str,
+        found: int,
+    ) -> None:
+        if not self._ui_alive() or int(generation) != int(self._search_generation):
+            return
+        self._scan_ips_done = done
+        self._scan_ips_total = total
+        self._scan_hosts_found = found
+        self._refresh_progress_ui()
+
+    def _on_scan_host_found(self, generation: int, host: str) -> None:
+        if not self._ui_alive() or int(generation) != int(self._search_generation):
+            return
+        name = (host or "").strip()
+        if not name:
+            return
+        w = self._worker
+        if w is not None:
+            w.offer_host(name)
+        if self._accepting_search_results and not self._hits:
+            self.summary_lbl.setText(self.tr("Pesquisando..."))
+
+    def _on_scan_ok(self, generation: int, hosts: list) -> None:
+        if not self._ui_alive() or int(generation) != int(self._search_generation):
+            return
+        names = [str(h).strip() for h in hosts if str(h).strip()]
+        w = self._worker
+        if w is not None:
+            w.close_intake()
+        self._scan_hosts_found = len(names)
+        self._hosts_total = len(names)
+        self._scan_ips_done = self._scan_ips_total
+        self._refresh_progress_ui()
+        self.log_output.append_log(
+            self.tr(
+                f"[PESQUISA] Varredura concluída: {len(names)} host(s) Windows. "
+                "Consultas em andamento atualizam os resultados."
+            )
+        )
+
+    def _on_scan_aborted(self, generation: int) -> None:
+        if not self._ui_alive() or int(generation) != int(self._search_generation):
+            return
+        w = self._worker
+        if w is not None:
+            w.abort()
+        if w is not None and w.isRunning():
+            self._set_phase_message(self.tr("Interrompendo..."))
+            return
+        self._accepting_search_results = False
+        self._set_search_busy(False)
+        self._set_phase_message(self.tr("Varredura interrompida"))
+        self.summary_lbl.setText(self.tr("Varredura de rede interrompida."))
+        self.log_output.append_log(self.tr("[PESQUISA] Varredura de rede interrompida."))
+
+    def _on_scan_err(self, generation: int, msg: str) -> None:
+        if not self._ui_alive() or int(generation) != int(self._search_generation):
+            return
+        w = self._worker
+        if w is not None:
+            w.abort()
+        if w is not None and w.isRunning():
+            self.log_output.append_log(self.tr(f"[PESQUISA] {msg}"))
+            return
+        self._accepting_search_results = False
+        self._set_search_busy(False)
+        self._set_phase_message(self.tr(f"Falha: {msg}"))
+        self.log_output.append_log(self.tr(f"[PESQUISA] {msg}"))
+
+    def _begin_streaming_search(self, query: str, generation: int) -> None:
+        configured_workers = get_search_max_workers()
+        rr_timeout = get_remote_registry_timeout()
+        inbox: Queue = Queue()
+        self._worker = _AppSearchWorker(
+            [],
+            query,
+            max_workers=configured_workers,
+            generation=generation,
+            timeout=rr_timeout,
+            inbox=inbox,
+        )
+        self._worker.progress.connect(self._on_progress)
+        self._worker.hitsFound.connect(self._on_hits_found)
+        self._worker.finished_ok.connect(self._on_search_ok)
+        self._worker.finished_aborted.connect(self._on_search_aborted)
+        self._worker.finished_err.connect(self._on_search_err)
+        self._worker.finished.connect(self._on_worker_finished)
+        self._worker.start()
+
+    def _begin_app_search(
+        self,
+        hosts: List[str],
+        query: str,
+        *,
+        new_generation: bool = True,
+    ) -> None:
+        self._search_from_network = False
+        if new_generation:
+            self._hits = []
+            self._trash_buttons = []
+            self.table.setRowCount(0)
+            self._apply_results_filter()
+            self._search_generation += 1
+        self._active_query = query
+        self._hosts_failed = 0
+        self._hosts_done = 0
+        self._hosts_total = len(hosts)
+        generation = self._search_generation
+        self._accepting_search_results = True
         self.summary_lbl.setText(self.tr("Pesquisando..."))
-        self.search_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.app_edit.setEnabled(False)
-        self.progress.setVisible(True)
-        self._stats_wrap.setVisible(True)
-        self.ok_count_lbl.setVisible(True)
-        self.fail_count_lbl.setVisible(True)
-        self.progress_lbl.setVisible(True)
-        self.progress.setMaximum(len(hosts))
-        self.progress.setValue(0)
-        self.progress.setFormat(f"%v / %m hosts")
-        self._update_live_stats(0, 0, len(hosts), "")
-        self.progress_lbl.setText(self.tr("Iniciando pesquisa..."))
+        self._set_search_busy(True)
+        self._set_progress_rows_visible(True, network=False)
+        self._set_phase_message("")
+        self._refresh_progress_ui()
 
         configured_workers = get_search_max_workers()
-        effective_workers = min(configured_workers, len(hosts))
+        effective_workers = min(configured_workers, max(1, len(hosts)))
         rr_timeout = get_remote_registry_timeout()
         self._worker = _AppSearchWorker(
             hosts,
@@ -621,20 +1012,6 @@ class AppSearchTab(QWidget):
             )
         )
 
-    def _update_live_stats(self, done: int, failed: int, total: int, host: str = "") -> None:
-        """Atualiza contadores de sucesso/falha em tempo real."""
-        ok = max(0, done - failed)
-        self.ok_count_lbl.setText(self.tr(f"Sucesso: {ok}"))
-        self.fail_count_lbl.setText(self.tr(f"Falharam: {failed}"))
-        if host:
-            self.progress_lbl.setText(
-                self.tr(f"{done} de {total} consultados — último: {host}")
-            )
-        elif done > 0:
-            self.progress_lbl.setText(self.tr(f"{done} de {total} consultados"))
-        else:
-            self.progress_lbl.setText(self.tr(f"0 de {total} consultados"))
-
     def _on_progress(
         self,
         generation: int,
@@ -650,9 +1027,7 @@ class AppSearchTab(QWidget):
         self._hosts_done = done
         self._hosts_failed = failed
         self._hosts_total = total
-        self.progress.setMaximum(max(1, total))
-        self.progress.setValue(min(done, total))
-        self._update_live_stats(done, failed, total, host)
+        self._refresh_progress_ui()
         if host and not _ok and error_kind:
             kind_labels = {
                 "auth": "falha de autenticação",
@@ -673,20 +1048,16 @@ class AppSearchTab(QWidget):
     def _on_worker_finished(self) -> None:
         if not self._ui_alive():
             return
-        self.search_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
-        self.app_edit.setEnabled(True)
+        scan = self._scan_worker
+        if scan is not None and scan.isRunning():
+            return
+        self._set_search_busy(False)
 
     def _on_search_err(self, generation: int, msg: str) -> None:
         if not self._ui_alive() or int(generation) != int(self._search_generation):
             return
         self._accepting_search_results = False
-        self.progress.setVisible(False)
-        self._stats_wrap.setVisible(True)
-        self.ok_count_lbl.setVisible(True)
-        self.fail_count_lbl.setVisible(True)
-        self.progress_lbl.setVisible(True)
-        self.progress_lbl.setText(self.tr(f"Falha: {msg}"))
+        self._set_phase_message(self.tr(f"Falha: {msg}"))
         self.log_output.append_log(self.tr(f"[PESQUISA] {msg}"))
 
     def _on_hits_found(self, generation: int, hits: list) -> None:
@@ -705,14 +1076,28 @@ class AppSearchTab(QWidget):
             return
         self._accepting_search_results = False
         self._active_query = query or self._active_query
-        self.progress.setValue(self.progress.maximum())
-        total = self._hosts_total or self.progress.maximum()
+        total = int(self._hosts_total or 0) or int(self._hosts_done or 0)
         failed = self._hosts_failed
-        self._update_live_stats(total, failed, total, "")
-        self.progress_lbl.setText(
-            self.tr("Pesquisa concluída — ")
-            + self.tr(f"{total} de {total} consultados")
-        )
+        if self._search_from_network and total == 0 and not self._hits:
+            self._refresh_progress_ui()
+            self._set_phase_message(self.tr("Nenhum host Windows encontrado na faixa."))
+            self.summary_lbl.setText(self.tr("Nenhum computador encontrado na varredura."))
+            self.log_output.append_log(
+                self.tr("[PESQUISA] Varredura concluída sem hosts Windows.")
+            )
+            QMessageBox.information(
+                self,
+                self.tr("Pesquisa de Aplicativos"),
+                self.tr(
+                    "Nenhum computador Windows foi encontrado na faixa de IP.\n"
+                    "Verifique o intervalo, as sub-redes ignoradas e a rede."
+                ),
+            )
+            return
+        self._hosts_done = total
+        self._hosts_total = total
+        self._refresh_progress_ui()
+        self._set_phase_message("")
         self._update_summary(final=True)
         computers = {h.host.casefold() for h in self._hits}
         self.log_output.append_log(
@@ -728,14 +1113,11 @@ class AppSearchTab(QWidget):
             return
         self._accepting_search_results = False
         self._active_query = query or self._active_query
-        done = self._hosts_done or self.progress.value()
-        total = self._hosts_total or self.progress.maximum()
+        done = self._hosts_done
+        total = self._hosts_total or self._scan_hosts_found
         failed = self._hosts_failed
-        self._update_live_stats(done, failed, total, "")
-        self.progress_lbl.setText(
-            self.tr("Pesquisa interrompida — ")
-            + self.tr(f"{done} de {total} consultados")
-        )
+        self._refresh_progress_ui()
+        self._set_phase_message(self.tr("Pesquisa interrompida"))
         self._update_summary(final=True, interrupted=True)
         computers = {h.host.casefold() for h in self._hits}
         self.log_output.append_log(

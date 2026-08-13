@@ -10,7 +10,6 @@ a = Analysis(
     datas=[
         ('assets', 'assets'),
         ('config', 'config'),
-        ('hosts.example.json', '.'),
         ('remoteops/winget/templates', 'remoteops/winget/templates'),
     ],
     hiddenimports=[
@@ -85,8 +84,3 @@ if _src_config.is_dir():
     if _dst_config.exists():
         shutil.rmtree(_dst_config)
     shutil.copytree(_src_config, _dst_config)
-
-_src_hosts_ex = Path(SPECPATH) / 'hosts.example.json'
-_dst_hosts_ex = Path(DISTPATH) / 'hosts.example.json'
-if _src_hosts_ex.is_file():
-    shutil.copy2(_src_hosts_ex, _dst_hosts_ex)

@@ -19,13 +19,18 @@ from __future__ import annotations
 import multiprocessing
 import time
 from dataclasses import dataclass
+from queue import Empty, Queue
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
-from remoteops.utils.psinfo import HostInventoryStatus, InstalledApp, list_remote_installed_apps_status
 from remoteops.utils.app_settings import (
     KEY_REMOTE_REGISTRY_TIMEOUT,
     load_setting,
     save_portable_settings,
+)
+from remoteops.utils.psinfo import (
+    HostInventoryStatus,
+    InstalledApp,
+    list_remote_installed_apps_status,
 )
 
 # Timeout individual cobrindo ConnectRegistry + enumeração 64/32 + dedup + IPC.
@@ -379,6 +384,7 @@ def run_remote_inventory_batch(
     max_workers: int,
     timeout: Optional[float] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
+    extra_hosts: Optional[Queue] = None,
 ) -> Iterator[HostInventoryStatus]:
     """
     Agenda consultas com no máximo ``max_workers`` processos ativos.
@@ -386,9 +392,34 @@ def run_remote_inventory_batch(
     Yields um ``HostInventoryStatus`` por host efetivamente iniciado.
     Hosts ainda na fila quando ocorre cancelamento global **não** são
     emitidos (não viram unreachable).
+
+    ``extra_hosts``: fila opcional de hostnames extras (``None`` encerra a
+    entrada). Permite começar a consultar enquanto a varredura ainda acha hosts.
     """
     pending: List[str] = [((h or "").strip().strip("\\")) for h in hosts]
     pending = [h for h in pending if h]
+    intake_open = extra_hosts is not None
+
+    def _drain_inbox(*, block: bool) -> None:
+        nonlocal intake_open
+        if extra_hosts is None or not intake_open:
+            return
+        waited = False
+        while True:
+            try:
+                if block and not waited:
+                    item = extra_hosts.get(timeout=_POLL_INTERVAL_SECONDS)
+                    waited = True
+                else:
+                    item = extra_hosts.get_nowait()
+            except Empty:
+                return
+            if item is None:
+                intake_open = False
+                return
+            host = str(item or "").strip().strip("\\")
+            if host:
+                pending.append(host)
 
     try:
         workers = max(1, int(max_workers))
@@ -441,11 +472,12 @@ def run_remote_inventory_batch(
         return status
 
     try:
-        while pending or active:
+        while pending or active or intake_open:
             if should_cancel and should_cancel():
                 cancelled = True
 
             if cancelled:
+                intake_open = False
                 procs = [job.proc for job in active.values()]
                 _stop_processes(procs)
                 for job_id, job in list(active.items()):
@@ -459,6 +491,8 @@ def run_remote_inventory_batch(
                 active.clear()
                 pending.clear()
                 break
+
+            _drain_inbox(block=False)
 
             while pending and len(active) < workers:
                 if should_cancel and should_cancel():
@@ -546,8 +580,11 @@ def run_remote_inventory_batch(
                     )
                     progressed = True
 
-            if not progressed and (pending or active):
-                time.sleep(_POLL_INTERVAL_SECONDS)
+            if not progressed and (pending or active or intake_open):
+                if intake_open and not pending and not active:
+                    _drain_inbox(block=True)
+                else:
+                    time.sleep(_POLL_INTERVAL_SECONDS)
     finally:
         _stop_processes([job.proc for job in active.values()])
         for job in active.values():

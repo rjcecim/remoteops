@@ -14,11 +14,9 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QSizePolicy,
     QSpinBox,
-    QVBoxLayout,
     QWidget,
 )
 
-from remoteops.ui.branding import APP_DISPLAY_NAME, APP_NAME, APP_VERSION
 from remoteops.ui.style import SIZE_UI_SMALL, make_icon_button
 from remoteops.ui.widgets.card import (
     CardWidget,
@@ -28,6 +26,9 @@ from remoteops.ui.widgets.card import (
     grid_in_card,
     make_card_stack,
 )
+from remoteops.ui.widgets.network_range import NetworkRangeConfigWidget
+from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
+from remoteops.ui.widgets.status_dot import StatusDot as _StatusDot
 from remoteops.utils.app_logging import (
     get_log_dir,
     is_file_logging_enabled,
@@ -42,6 +43,13 @@ from remoteops.utils.pstools import (
     probe_rustdesk_local,
     set_pstools_dir,
 )
+from remoteops.utils.remote_registry_query import (
+    MAX_REMOTE_REGISTRY_TIMEOUT_SECONDS,
+    MIN_REMOTE_REGISTRY_TIMEOUT_SECONDS,
+    REMOTE_REGISTRY_TIMEOUT_SECONDS,
+    get_remote_registry_timeout,
+    set_remote_registry_timeout,
+)
 from remoteops.utils.search_settings import (
     DEFAULT_SEARCH_MAX_WORKERS,
     MAX_SEARCH_MAX_WORKERS,
@@ -51,16 +59,6 @@ from remoteops.utils.search_settings import (
     set_search_hosts_path,
     set_search_max_workers,
 )
-from remoteops.utils.remote_registry_query import (
-    MAX_REMOTE_REGISTRY_TIMEOUT_SECONDS,
-    MIN_REMOTE_REGISTRY_TIMEOUT_SECONDS,
-    REMOTE_REGISTRY_TIMEOUT_SECONDS,
-    get_remote_registry_timeout,
-    set_remote_registry_timeout,
-)
-
-from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
-from remoteops.ui.widgets.status_dot import StatusDot as _StatusDot
 
 
 def _caption(text: str) -> QLabel:
@@ -102,17 +100,20 @@ class SettingsTab(QWidget):
     """Aba de configurações do aplicativo."""
 
     pstoolsPathChanged = pyqtSignal(str)
+    networkRangeChanged = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._tool_rows: List[tuple[QWidget, QLabel, QLabel]] = []
+        self._tool_rows: List[tuple[_StatusDot, QLabel, QLabel]] = []
 
         root = make_card_stack(self)
 
         # ── Card 1 — PSTools ──────────────────────────────────────────────────
         card_ps = CardWidget("\uE8B7", self.tr("PSTools"))
         card_ps.set_collapsible(True, collapsed=False)
+        card_ps.set_resettable(True, self.tr("Restaurar padrões deste card"))
+        card_ps.resetRequested.connect(self._reset_pstools)
         g1 = grid_in_card(card_ps)
         row = 0
 
@@ -129,13 +130,10 @@ class SettingsTab(QWidget):
         self.pstools_open_btn.clicked.connect(self._open_pstools_folder)
         self.pstools_refresh_btn = make_icon_button("\uE72C", self.tr("Atualizar status"))
         self.pstools_refresh_btn.clicked.connect(self.refresh_pstools_status)
-        self.pstools_reset_btn = make_icon_button("\uE777", self.tr("Restaurar padrão C:\\PSTools"))
-        self.pstools_reset_btn.clicked.connect(self._reset_pstools)
         path_row.addWidget(self.pstools_edit, 1)
         path_row.addWidget(self.pstools_browse_btn)
         path_row.addWidget(self.pstools_open_btn)
         path_row.addWidget(self.pstools_refresh_btn)
-        path_row.addWidget(self.pstools_reset_btn)
         path_wrap = QWidget()
         path_wrap.setLayout(path_row)
         path_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -143,48 +141,36 @@ class SettingsTab(QWidget):
         row += 1
 
         status_row = QHBoxLayout()
-        status_row.setSpacing(8)
+        status_row.setSpacing(16)
         status_row.setContentsMargins(2, 0, 0, 0)
-        self.pstools_status_dot = _StatusDot()
-        self.pstools_status_label = QLabel()
-        self.pstools_status_label.setObjectName("pstoolsStatus")
-        self.pstools_status_label.setStyleSheet(
-            f"QLabel#pstoolsStatus {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
-        )
-        status_row.addWidget(self.pstools_status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
-        status_row.addWidget(self.pstools_status_label, 0, Qt.AlignmentFlag.AlignVCenter)
-        status_row.addStretch()
-        status_wrap = QWidget()
-        status_wrap.setLayout(status_row)
-        add_row(g1, row, self.tr("Status"), status_wrap)
-        row += 1
-
-        tools_box = QVBoxLayout()
-        tools_box.setSpacing(4)
-        tools_box.setContentsMargins(0, 2, 0, 0)
         for _ in range(2):
-            line = QHBoxLayout()
-            line.setSpacing(8)
-            line.setContentsMargins(0, 0, 0, 0)
+            chip = QHBoxLayout()
+            chip.setSpacing(6)
+            chip.setContentsMargins(0, 0, 0, 0)
             dot = _StatusDot(diameter=8)
             name = QLabel()
-            name.setMinimumWidth(72)
+            name.setObjectName("pstoolsToolName")
+            name.setStyleSheet(
+                f"QLabel#pstoolsToolName {{ font-size: {SIZE_UI_SMALL}pt; }}"
+            )
             detail = QLabel()
             detail.setObjectName("toolDetail")
             detail.setStyleSheet(
                 f"QLabel#toolDetail {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
             )
             detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            line.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
-            line.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
-            line.addWidget(detail, 1, Qt.AlignmentFlag.AlignVCenter)
+            chip.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+            chip.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
+            chip.addWidget(detail, 0, Qt.AlignmentFlag.AlignVCenter)
             wrap = QWidget()
-            wrap.setLayout(line)
-            tools_box.addWidget(wrap)
+            wrap.setLayout(chip)
+            wrap.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            status_row.addWidget(wrap, 0, Qt.AlignmentFlag.AlignVCenter)
             self._tool_rows.append((dot, name, detail))
-        tools_wrap = QWidget()
-        tools_wrap.setLayout(tools_box)
-        add_row(g1, row, self.tr("Ferramentas"), tools_wrap)
+        status_row.addStretch()
+        status_wrap = QWidget()
+        status_wrap.setLayout(status_row)
+        add_row(g1, row, self.tr("Status"), status_wrap)
 
         root.addWidget(card_ps)
 
@@ -273,10 +259,18 @@ class SettingsTab(QWidget):
         )
         root.addWidget(card_logs)
 
-        # ── Card 4 — Pesquisa de aplicativos ──────────────────────────────────
+        # ── Card — Faixa de IP (widget reutilizável)
+        self.network_range = NetworkRangeConfigWidget(self)
+        self.network_range.configChanged.connect(self.networkRangeChanged.emit)
+        self.network_range.saveFailed.connect(self._show_settings_save_error)
+        root.addWidget(self.network_range)
+
+        # ── Card 5 — Pesquisa de aplicativos ──────────────────────────────────
         # \uE721 = Find / Search (mesmo ícone da pesquisa)
         card_search = CardWidget("\uE721", self.tr("Pesquisa de aplicativos"))
         card_search.set_collapsible(True, collapsed=False)
+        card_search.set_resettable(True, self.tr("Restaurar padrões deste card"))
+        card_search.resetRequested.connect(self._reset_search_card)
         g3 = grid_in_card(card_search)
 
         hosts_row = QHBoxLayout()
@@ -284,19 +278,19 @@ class SettingsTab(QWidget):
         hosts_row.setContentsMargins(0, 0, 0, 0)
         self.hosts_edit = QLineEdit()
         self.hosts_edit.setReadOnly(True)
-        self.hosts_edit.setToolTip(self.tr("Arquivo JSON com a lista de computadores"))
+        self.hosts_edit.setToolTip(
+            self.tr(
+                "Arquivo JSON com a lista de computadores. "
+                "Não é usado quando a faixa de IP acima está salva."
+            )
+        )
         self.hosts_browse_btn = make_icon_button("\uED25", self.tr("Selecionar outro hosts.json"))
         self.hosts_browse_btn.clicked.connect(self._browse_hosts_file)
         self.hosts_open_btn = make_icon_button("\uED43", self.tr("Abrir pasta do hosts.json"))
         self.hosts_open_btn.clicked.connect(lambda: _open_in_explorer(self.hosts_edit.text()))
-        self.hosts_reset_btn = make_icon_button(
-            "\uE777", self.tr("Restaurar hosts.json padrão do aplicativo")
-        )
-        self.hosts_reset_btn.clicked.connect(self._reset_hosts_file)
         hosts_row.addWidget(self.hosts_edit, 1)
         hosts_row.addWidget(self.hosts_browse_btn)
         hosts_row.addWidget(self.hosts_open_btn)
-        hosts_row.addWidget(self.hosts_reset_btn)
         hosts_wrap = QWidget()
         hosts_wrap.setLayout(hosts_row)
         add_row(g3, 0, self.tr("hosts.json"), hosts_wrap)
@@ -338,13 +332,7 @@ class SettingsTab(QWidget):
         self.search_workers_spin.setValue(get_search_max_workers())
         self.search_workers_spin.blockSignals(False)
         self.search_workers_spin.valueChanged.connect(self._on_search_workers_changed)
-        self.search_workers_reset_btn = make_icon_button(
-            "\uE777",
-            self.tr(f"Restaurar padrão ({DEFAULT_SEARCH_MAX_WORKERS})"),
-        )
-        self.search_workers_reset_btn.clicked.connect(self._reset_search_workers)
         workers_row.addWidget(self.search_workers_spin)
-        workers_row.addWidget(self.search_workers_reset_btn)
         workers_row.addStretch()
         workers_wrap = QWidget()
         workers_wrap.setLayout(workers_row)
@@ -355,7 +343,9 @@ class SettingsTab(QWidget):
             self.tr(
                 "Define quantos computadores podem ser consultados ao mesmo tempo. "
                 "Valores maiores podem acelerar a pesquisa, mas aumentam o número de "
-                "conexões simultâneas. A alteração será aplicada na próxima pesquisa."
+                "conexões simultâneas. A alteração será aplicada na próxima pesquisa. "
+                "Se a faixa de IP acima estiver salva, a pesquisa varre a rede e "
+                "ignora o hosts.json."
             ),
         )
 
@@ -378,13 +368,7 @@ class SettingsTab(QWidget):
         self.rr_timeout_spin.setValue(int(get_remote_registry_timeout()))
         self.rr_timeout_spin.blockSignals(False)
         self.rr_timeout_spin.valueChanged.connect(self._on_rr_timeout_changed)
-        self.rr_timeout_reset_btn = make_icon_button(
-            "\uE777",
-            self.tr(f"Restaurar padrão ({int(REMOTE_REGISTRY_TIMEOUT_SECONDS)} s)"),
-        )
-        self.rr_timeout_reset_btn.clicked.connect(self._reset_rr_timeout)
         timeout_row.addWidget(self.rr_timeout_spin)
-        timeout_row.addWidget(self.rr_timeout_reset_btn)
         timeout_row.addStretch()
         timeout_wrap = QWidget()
         timeout_wrap.setLayout(timeout_row)
@@ -398,18 +382,6 @@ class SettingsTab(QWidget):
             ),
         )
         root.addWidget(card_search)
-
-        # ── Card 5 — Sobre ────────────────────────────────────────────────────
-        card_about = CardWidget("\uE946", self.tr("Sobre"))
-        card_about.set_collapsible(True, collapsed=False)
-        g4 = grid_in_card(card_about)
-        app_lbl = QLabel(f"{APP_NAME}  ·  v{APP_VERSION}")
-        app_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        add_row(g4, 0, self.tr("Aplicativo"), app_lbl)
-        desc = QLabel(APP_DISPLAY_NAME)
-        desc.setWordWrap(True)
-        add_row(g4, 1, self.tr("Descrição"), desc)
-        root.addWidget(card_about)
         finish_card_stack(root)
 
         self.refresh_pstools_status()
@@ -425,6 +397,7 @@ class SettingsTab(QWidget):
         except Exception:
             pass
         self._refresh_hosts_ui()
+        self.network_range.reload()
         self.search_workers_spin.blockSignals(True)
         self.search_workers_spin.setValue(get_search_max_workers())
         self.search_workers_spin.blockSignals(False)
@@ -462,13 +435,29 @@ class SettingsTab(QWidget):
             return
         self._refresh_hosts_ui()
 
-    def _reset_hosts_file(self) -> None:
+    def _reset_search_card(self) -> None:
+        """Restaura hosts.json, consultas simultâneas e timeout deste card."""
         try:
             set_search_hosts_path("")
+            normalized_workers = set_search_max_workers(DEFAULT_SEARCH_MAX_WORKERS)
+            normalized_timeout = set_remote_registry_timeout(REMOTE_REGISTRY_TIMEOUT_SECONDS)
         except SettingsWriteError as exc:
             self._show_settings_save_error(exc)
+            self._refresh_hosts_ui()
+            self.search_workers_spin.blockSignals(True)
+            self.search_workers_spin.setValue(get_search_max_workers())
+            self.search_workers_spin.blockSignals(False)
+            self.rr_timeout_spin.blockSignals(True)
+            self.rr_timeout_spin.setValue(int(get_remote_registry_timeout()))
+            self.rr_timeout_spin.blockSignals(False)
             return
         self._refresh_hosts_ui()
+        self.search_workers_spin.blockSignals(True)
+        self.search_workers_spin.setValue(normalized_workers)
+        self.search_workers_spin.blockSignals(False)
+        self.rr_timeout_spin.blockSignals(True)
+        self.rr_timeout_spin.setValue(int(normalized_timeout))
+        self.rr_timeout_spin.blockSignals(False)
 
     def _on_search_workers_changed(self, value: int) -> None:
         try:
@@ -479,16 +468,6 @@ class SettingsTab(QWidget):
             self.search_workers_spin.setValue(get_search_max_workers())
             self.search_workers_spin.blockSignals(False)
 
-    def _reset_search_workers(self) -> None:
-        try:
-            normalized = set_search_max_workers(DEFAULT_SEARCH_MAX_WORKERS)
-        except SettingsWriteError as exc:
-            self._show_settings_save_error(exc)
-            return
-        self.search_workers_spin.blockSignals(True)
-        self.search_workers_spin.setValue(normalized)
-        self.search_workers_spin.blockSignals(False)
-
     def _on_rr_timeout_changed(self, value: int) -> None:
         try:
             set_remote_registry_timeout(value)
@@ -497,16 +476,6 @@ class SettingsTab(QWidget):
             self.rr_timeout_spin.blockSignals(True)
             self.rr_timeout_spin.setValue(int(get_remote_registry_timeout()))
             self.rr_timeout_spin.blockSignals(False)
-
-    def _reset_rr_timeout(self) -> None:
-        try:
-            normalized = set_remote_registry_timeout(REMOTE_REGISTRY_TIMEOUT_SECONDS)
-        except SettingsWriteError as exc:
-            self._show_settings_save_error(exc)
-            return
-        self.rr_timeout_spin.blockSignals(True)
-        self.rr_timeout_spin.setValue(int(normalized))
-        self.rr_timeout_spin.blockSignals(False)
 
     def _apply_hosts_status(self, state: str, text: str) -> None:
         color = _STATUS_COLORS.get(state, _STATUS_COLORS["idle"])
@@ -611,42 +580,31 @@ class SettingsTab(QWidget):
         info = probe_pstools(get_pstools_dir())
         self.pstools_edit.setText(str(info["dir"]))
         dir_ok = bool(info["dir_ok"])
-        healthy = bool(info["healthy"])
-        ok_count = int(info["ok_count"])
-        total = int(info["total"])
-
-        if healthy:
-            self.pstools_status_dot.set_color(_STATUS_COLORS["ok"])
-            self.pstools_status_label.setText(
-                self.tr(f"Pronto — {ok_count}/{total} ferramentas encontradas")
-            )
-        elif dir_ok and ok_count > 0:
-            self.pstools_status_dot.set_color(_STATUS_COLORS["warn"])
-            self.pstools_status_label.setText(
-                self.tr(f"Parcial — {ok_count}/{total} ferramentas encontradas")
-            )
-        elif dir_ok:
-            self.pstools_status_dot.set_color(_STATUS_COLORS["err"])
-            self.pstools_status_label.setText(self.tr("Pasta existe, mas nenhum binário foi encontrado"))
-        else:
-            self.pstools_status_dot.set_color(_STATUS_COLORS["err"])
-            self.pstools_status_label.setText(self.tr("Pasta PSTools não encontrada"))
-
         tools = list(info["tools"])
         for idx, (dot, name_lbl, detail_lbl) in enumerate(self._tool_rows):
             if idx >= len(tools):
                 name_lbl.setText("")
                 detail_lbl.setText("")
+                name_lbl.setToolTip("")
+                detail_lbl.setToolTip("")
                 dot.set_color(_STATUS_COLORS["idle"])
                 continue
             tool = tools[idx]
             name_lbl.setText(str(tool["label"]))
             if tool["found"]:
                 dot.set_color(_STATUS_COLORS["ok"])
-                detail_lbl.setText(os.path.basename(str(tool["path"])))
-                detail_lbl.setToolTip(str(tool["path"]))
+                path = str(tool["path"])
+                detail_lbl.setText(os.path.basename(path))
+                name_lbl.setToolTip(path)
+                detail_lbl.setToolTip(path)
             else:
                 dot.set_color(_STATUS_COLORS["err"])
                 expected = " / ".join(tool["names"])
-                detail_lbl.setText(self.tr(f"Ausente ({expected})"))
-                detail_lbl.setToolTip(str(tool["path"]))
+                if not dir_ok:
+                    detail_lbl.setText(self.tr("pasta ausente"))
+                    tip = self.tr("Pasta PSTools não encontrada")
+                else:
+                    detail_lbl.setText(self.tr("ausente"))
+                    tip = self.tr(f"Ausente ({expected})")
+                name_lbl.setToolTip(tip)
+                detail_lbl.setToolTip(str(tool["path"]) or tip)

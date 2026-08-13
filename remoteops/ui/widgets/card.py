@@ -75,6 +75,7 @@ class CardWidget(QWidget):
     collapsedChanged = pyqtSignal(bool)
     downloadRequested = pyqtSignal()
     copyRequested = pyqtSignal()
+    resetRequested = pyqtSignal()
 
     def __init__(self, icon_char: str, title: str, parent=None):
         super().__init__(parent)
@@ -149,6 +150,18 @@ class CardWidget(QWidget):
         self._copy_btn.clicked.connect(self.copyRequested.emit)
         self._copy_btn.hide()
 
+        self._reset_btn = QToolButton()
+        self._reset_btn.setObjectName("cardReset")
+        self._reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._reset_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._reset_btn.setAutoRaise(True)
+        self._reset_btn.setFixedSize(22, 22)
+        self._reset_btn.setFont(QFont("Segoe MDL2 Assets", 10))
+        self._reset_btn.setText("\uE777")  # Reset
+        self._reset_btn.setToolTip("Restaurar padrões deste card")
+        self._reset_btn.clicked.connect(self.resetRequested.emit)
+        self._reset_btn.hide()
+
         self._toggle_btn = QToolButton()
         self._toggle_btn.setObjectName("cardToggle")
         self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -164,6 +177,7 @@ class CardWidget(QWidget):
         header.addStretch()
         header.addWidget(self._download_btn)
         header.addWidget(self._copy_btn)
+        header.addWidget(self._reset_btn)
         header.addWidget(self._toggle_btn)
 
         self._container_layout.addWidget(self._header_widget)
@@ -197,6 +211,12 @@ class CardWidget(QWidget):
 
     def set_copyable(self, copyable: bool = True) -> None:
         self._copy_btn.setVisible(bool(copyable))
+
+    def set_resettable(self, resettable: bool = True, tooltip: str = "") -> None:
+        """Mostra o botão de restaurar no cabeçalho, ao lado de recolher/expandir."""
+        self._reset_btn.setVisible(bool(resettable))
+        if tooltip:
+            self._reset_btn.setToolTip(tooltip)
 
     def set_expanding(self, expanding: bool = True) -> None:
         """Faz o card (e a área de conteúdo) ocupar o espaço vertical restante."""
@@ -388,6 +408,15 @@ class CardWidget(QWidget):
                 color: palette(highlight);
             }
             QToolButton#cardCopy:hover {
+                background: palette(light);
+                border-radius: 4px;
+            }
+            QToolButton#cardReset {
+                border: none;
+                background: transparent;
+                color: palette(highlight);
+            }
+            QToolButton#cardReset:hover {
                 background: palette(light);
                 border-radius: 4px;
             }

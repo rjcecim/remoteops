@@ -537,6 +537,7 @@ class MainWindow(QMainWindow):
 
         self.appsearch_tab = AppSearchTab()
         self.appsearch_tab.uninstallRequested.connect(self._on_appsearch_uninstall)
+        self._wire_network_range_status()
         self.tabs.addTab(self.appsearch_tab, self.tr("Pesquisa de Aplicativos"))
         idx = self.tabs.indexOf(self.appsearch_tab)
         bar = self.tabs.tabBar()
@@ -547,6 +548,18 @@ class MainWindow(QMainWindow):
         self._refresh_tab_bar_layout()
         self.tabs.setCurrentIndex(idx)
         self._update_psinfo_mode_ui()
+
+    def _wire_network_range_status(self) -> None:
+        """Atualiza o status da Pesquisa quando a faixa de IP é salva."""
+        settings = self.settings_tab
+        search = self.appsearch_tab
+        if settings is None or search is None:
+            return
+        try:
+            settings.networkRangeChanged.disconnect(search.refresh_hosts_status)
+        except TypeError:
+            pass
+        settings.networkRangeChanged.connect(search.refresh_hosts_status)
 
     def _on_tab_close_requested(self, index: int) -> None:
         """Fecha abas com X no título (Aplicativos / Pesquisa / Configurações)."""
@@ -676,6 +689,7 @@ class MainWindow(QMainWindow):
 
         self.settings_tab = SettingsTab()
         self.settings_tab.pstoolsPathChanged.connect(self._on_pstools_path_changed)
+        self._wire_network_range_status()
         self.tabs.addTab(self.settings_tab, self.tr("Configurações"))
         idx = self.tabs.indexOf(self.settings_tab)
         bar = self.tabs.tabBar()
