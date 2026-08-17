@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from typing import Any, List, Optional, Sequence, Union
 
 from remoteops.core.models import CommandSpec, FileSelection
+from remoteops.core.psexec_options import (
+    build_psexec_prefix_argv,
+    options_from_params,
+    sanitize_psexec_options,
+    validate_psexec_options,
+)
 from remoteops.core.win_cmdline import split_windows_command_line
 from remoteops.utils.pstools import resolve_pstools_tool
 from remoteops.utils.redaction import REDACTED, format_argv_for_display, redact_command_text
@@ -257,6 +264,16 @@ class CommandBuilder:
             return os.path.normpath(psexec_path.replace('"', "").replace("'", ""))
         return "PsExec.exe"
 
+    def _psexec_options(self):
+        opts = options_from_params(self.psexec_params)
+        if self.robocopy_params is not None:
+            opts = replace(opts, copy_allowed=False)
+        return opts
+
+    def validate_psexec_params(self) -> List[str]:
+        """Validação independente do estado enviado ao builder."""
+        return validate_psexec_options(self._psexec_options())
+
     def _base_psexec_argv(self, *, include_password: bool = False) -> List[str]:
         """
         Monta argv base do PsExec.
@@ -265,60 +282,24 @@ class CommandBuilder:
         inclui ``-p ********`` para preview. A injeção do valor real ocorre
         apenas na execução (``services.ops.materialize_password_in_argv``).
 
+        Combinações impossíveis são sanitizadas por ``build_psexec_prefix_argv``
+        — última linha de defesa após a validação da interface.
+
         O parâmetro ``include_password`` é mantido por compatibilidade de
         assinatura; o valor real da senha não está disponível neste objeto.
         """
         del include_password  # senha bruta não vive no builder
         host = (self.psexec_params.get("host") or "").strip().strip("\\")
-        cmd: List[str] = [self._resolve_psexec_path(), f"\\\\{host}"]
-
         user = (self.psexec_params.get("user") or "").strip()
-        if user:
-            cmd.extend(["-u", user])
-
-        if self._has_password:
-            cmd.extend(["-p", REDACTED])
-
-        for flag in ("-h", "-s", "-l"):
-            if self.psexec_params.get(flag):
-                cmd.append(flag)
-
-        if self.psexec_params.get("session_interactive"):
-            session_id = self.psexec_params.get("session_id", 0)
-            if session_id == 0:
-                cmd.append("-i")
-            else:
-                cmd.extend(["-i", str(session_id)])
-
-        priority_value = _extract_flag_value(self.psexec_params.get("priority", ""))
-        if priority_value and priority_value != "Nenhum":
-            cmd.append(priority_value)
-
-        affinity_value = (self.psexec_params.get("affinity") or "").strip()
-        if affinity_value:
-            cmd.extend(["-a", affinity_value])
-
-        group_value = _extract_flag_value(self.psexec_params.get("group", ""))
-        if group_value and group_value != "Nenhum":
-            if "(" in group_value:
-                group_value = group_value.split("(")[0].strip()
-            cmd.extend(["-g", group_value])
-
-        timeout = self.psexec_params.get("timeout") or 0
-        try:
-            timeout_i = int(timeout)
-        except (TypeError, ValueError):
-            timeout_i = 0
-        if timeout_i > 0:
-            cmd.extend(["-n", str(timeout_i)])
-
-        skip_copy_flags = self.robocopy_params is not None
-        for flag in ("-d", "-e", "-c", "-f", "-v", "-accepteula", "-nobanner"):
-            if flag in ("-c", "-f") and skip_copy_flags:
-                continue
-            if self.psexec_params.get(flag):
-                cmd.append(flag)
-        return cmd
+        opts = sanitize_psexec_options(self._psexec_options())
+        password_placeholder = REDACTED if (self._has_password and user) else None
+        return build_psexec_prefix_argv(
+            executable=self._resolve_psexec_path(),
+            host=host,
+            user=user,
+            password_placeholder=password_placeholder,
+            opts=opts,
+        )
 
     def _remote_path_after_robocopy(self) -> Optional[str]:
         if not self.robocopy_params:
@@ -348,6 +329,13 @@ class CommandBuilder:
         *,
         append_extra: bool = True,
     ) -> CommandSpec:
+        errors = self.validate_psexec_params()
+        if errors:
+            return CommandSpec(
+                executable=self._resolve_psexec_path(),
+                display_command="# Erro PsExec: " + "; ".join(errors),
+                metadata={"kind": "psexec", "psexec_errors": errors},
+            )
         # Argv com senha mascarada; materialização ocorre na execução.
         real = self._base_psexec_argv()
         real.extend(remote_parts)
@@ -415,7 +403,7 @@ class CommandBuilder:
         robocopy_dest = self._remote_path_after_robocopy()
         if robocopy_dest:
             return robocopy_dest
-        if self.psexec_params.get("-c") or self.psexec_params.get("-f"):
+        if self.psexec_params.get("-c"):
             return os.path.normpath(self.file_path) if self.file_path else ""
         return os.path.basename(self.file_path) if self.file_path else ""
 
@@ -430,6 +418,13 @@ class CommandBuilder:
             return CommandSpec(
                 executable="PsExec.exe",
                 display_command="# PsExec.exe \\\\<host> [opções] <comando>",
+            )
+        errors = self.validate_psexec_params()
+        if errors:
+            return CommandSpec(
+                executable=self._resolve_psexec_path(),
+                display_command="# Erro PsExec: " + "; ".join(errors),
+                metadata={"kind": "psexec", "psexec_errors": errors},
             )
         remote_cmd = (self.psexec_params.get("remote_cmd") or "").strip()
         if (not self.file_path and not self.folder_path) and remote_cmd:
@@ -473,7 +468,7 @@ class CommandBuilder:
                 executable="PsExec.exe",
                 display_command="# Erro: arquivo não selecionado",
             )
-        if self.psexec_params.get("-c") or self.psexec_params.get("-f"):
+        if self.psexec_params.get("-c"):
             target = os.path.normpath(self.file_path)
         else:
             target = os.path.basename(self.file_path)
@@ -527,7 +522,7 @@ class CommandBuilder:
                 executable="PsExec.exe",
                 display_command="# Erro: arquivo não selecionado",
             )
-        if self.psexec_params.get("-c") or self.psexec_params.get("-f"):
+        if self.psexec_params.get("-c"):
             target = os.path.normpath(self.file_path)
         else:
             target = os.path.basename(self.file_path)

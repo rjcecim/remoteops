@@ -166,12 +166,21 @@ class MainWindow(QMainWindow):
         self.psexec_tab.flag_s.stateChanged.connect(self.update_command)
         self.psexec_tab.flag_l.stateChanged.connect(self.update_command)
         self.psexec_tab.session_interactive.stateChanged.connect(self.update_command)
-        self.psexec_tab.session_id_spin.valueChanged.connect(self.update_command)
+        self.psexec_tab.session_combo.currentIndexChanged.connect(self.update_command)
         self.psexec_tab.priority_combo.currentTextChanged.connect(self.update_command)
         self.psexec_tab.affinity_edit.textChanged.connect(self.update_command)
         self.psexec_tab.group_combo.currentTextChanged.connect(self.update_command)
         self.psexec_tab.timeout_spin.valueChanged.connect(self.update_command)
-        for cb in [self.psexec_tab.flag_d, self.psexec_tab.flag_e, self.psexec_tab.flag_c, self.psexec_tab.flag_f, self.psexec_tab.flag_v, self.psexec_tab.flag_accepteula, self.psexec_tab.flag_nobanner]:
+        for cb in [
+            self.psexec_tab.flag_d,
+            self.psexec_tab.flag_e,
+            self.psexec_tab.flag_c,
+            self.psexec_tab.flag_f,
+            self.psexec_tab.flag_v,
+            self.psexec_tab.flag_arm,
+            self.psexec_tab.flag_accepteula,
+            self.psexec_tab.flag_nobanner,
+        ]:
             cb.stateChanged.connect(self.update_command)
         self.psexec_tab.extra_args.textChanged.connect(self.update_command)
         self.msi_tab.action_combo.currentTextChanged.connect(self.update_command)
@@ -920,16 +929,8 @@ class MainWindow(QMainWindow):
             file_path = selection
             is_msi = file_path.lower().endswith('.msi')
             is_exe = file_path.lower().endswith('.exe')
-        # Desabilita -c e -f para msi, ps1, bat
-        ext = file_path.lower().split('.')[-1] if '.' in file_path else ''
-        if ext in ['msi', 'ps1', 'bat']:
-            self.psexec_tab.flag_c.setChecked(False)
-            self.psexec_tab.flag_c.setEnabled(False)
-            self.psexec_tab.flag_f.setChecked(False)
-            self.psexec_tab.flag_f.setEnabled(False)
-        else:
-            self.psexec_tab.flag_c.setEnabled(True)
-            self.psexec_tab.flag_f.setEnabled(True)
+        # -c/-f/-v são recalculados pela aba (Robocopy vs cópia do PsExec)
+        self._sync_psexec_copy_allowed()
         # NOVO: Preencher campo -File da aba PowerShell automaticamente
         self.update_tab_visibility(is_msi, is_exe)
         self.update_command()
@@ -952,6 +953,13 @@ class MainWindow(QMainWindow):
             # Se contém outros comandos, desabilitar robocopy
             return False
         return True
+
+    def _sync_psexec_copy_allowed(self) -> None:
+        selection = getattr(self.file_selector, "selected_file", None)
+        if selection:
+            self.psexec_tab.set_copy_allowed(not self.should_enable_robocopy())
+        else:
+            self.psexec_tab.set_copy_allowed(True)
 
     def update_tab_visibility(self, is_msi, is_exe):
         """Atualiza a visibilidade das abas mantendo a ordem: PsExec, MSI, PowerShell, CMD, Robocopy, (PsInfo opcional por último)"""
@@ -1139,31 +1147,12 @@ class MainWindow(QMainWindow):
             QApplication.processEvents()
             self.psexec_tab.remote_cmd_edit.repaint()
             self._updating_remote_cmd = False
-            psexec_params = {
-                'host': self.psexec_tab.host_edit.text(),
-                'psexec_path': get_pstools_dir(),
-                'remote_cmd': self.psexec_tab.remote_cmd_edit.text(),
-                'user': self.psexec_tab.user_edit.text(),
-                # Senha NÃO persiste no CommandBuilder — só presença para preview
-                'has_password': bool((self.psexec_tab.pass_edit.text() or "").strip()),
-                '-h': self.psexec_tab.flag_h.isChecked(),
-                '-s': self.psexec_tab.flag_s.isChecked(),
-                '-l': self.psexec_tab.flag_l.isChecked(),
-                'session_interactive': self.psexec_tab.session_interactive.isChecked(),
-                'session_id': self.psexec_tab.session_id_spin.value(),
-                'priority': self.psexec_tab.priority_combo.currentData() or "",
-                'affinity': self.psexec_tab.affinity_edit.text(),
-                'group': self.psexec_tab.group_combo.currentText(),
-                'timeout': self.psexec_tab.timeout_spin.value(),
-                '-d': self.psexec_tab.flag_d.isChecked(),
-                '-e': self.psexec_tab.flag_e.isChecked(),
-                '-c': self.psexec_tab.flag_c.isChecked(),
-                '-f': self.psexec_tab.flag_f.isChecked(),
-                '-v': self.psexec_tab.flag_v.isChecked(),
-                '-accepteula': self.psexec_tab.flag_accepteula.isChecked(),
-                '-nobanner': self.psexec_tab.flag_nobanner.isChecked(),
-                'extra_args': self.psexec_tab.extra_args.text(),
-            }
+            self._sync_psexec_copy_allowed()
+            psexec_params = self.psexec_tab.collect_builder_params(
+                host=self.psexec_tab.host_edit.text(),
+                psexec_path=get_pstools_dir(),
+                remote_cmd=self.psexec_tab.remote_cmd_edit.text(),
+            )
             robocopy_params = self.robocopy_tab.get_params() if robocopy_enabled else None
             self.command_builder.set_robocopy_params(robocopy_params)
             self.command_builder.set_psexec_params(psexec_params)
@@ -1172,31 +1161,12 @@ class MainWindow(QMainWindow):
             self.command_preview.set_command(command)
         else:
             self.psexec_tab.remote_cmd_edit.setReadOnly(False)
-            psexec_params = {
-                'host': self.psexec_tab.host_edit.text(),
-                'psexec_path': get_pstools_dir(),
-                'remote_cmd': self.psexec_tab.remote_cmd_edit.text(),
-                'user': self.psexec_tab.user_edit.text(),
-                # Senha NÃO persiste no CommandBuilder — só presença para preview
-                'has_password': bool((self.psexec_tab.pass_edit.text() or "").strip()),
-                '-h': self.psexec_tab.flag_h.isChecked(),
-                '-s': self.psexec_tab.flag_s.isChecked(),
-                '-l': self.psexec_tab.flag_l.isChecked(),
-                'session_interactive': self.psexec_tab.session_interactive.isChecked(),
-                'session_id': self.psexec_tab.session_id_spin.value(),
-                'priority': self.psexec_tab.priority_combo.currentData() or "",
-                'affinity': self.psexec_tab.affinity_edit.text(),
-                'group': self.psexec_tab.group_combo.currentText(),
-                'timeout': self.psexec_tab.timeout_spin.value(),
-                '-d': self.psexec_tab.flag_d.isChecked(),
-                '-e': self.psexec_tab.flag_e.isChecked(),
-                '-c': self.psexec_tab.flag_c.isChecked(),
-                '-f': self.psexec_tab.flag_f.isChecked(),
-                '-v': self.psexec_tab.flag_v.isChecked(),
-                '-accepteula': self.psexec_tab.flag_accepteula.isChecked(),
-                '-nobanner': self.psexec_tab.flag_nobanner.isChecked(),
-                'extra_args': self.psexec_tab.extra_args.text(),
-            }
+            self._sync_psexec_copy_allowed()
+            psexec_params = self.psexec_tab.collect_builder_params(
+                host=self.psexec_tab.host_edit.text(),
+                psexec_path=get_pstools_dir(),
+                remote_cmd=self.psexec_tab.remote_cmd_edit.text(),
+            )
             self.command_builder.set_psexec_params(psexec_params)
             self.command_builder.set_robocopy_params(None)
             # Atualizar preview SEMPRE com representação sanitizada
@@ -1228,6 +1198,11 @@ class MainWindow(QMainWindow):
             )
             return
         self.update_command()
+        errors = self.command_builder.validate_psexec_params()
+        if errors:
+            for err in errors:
+                self.log_output.append_log(self.tr(f"[PSEXEC] {err}"))
+            return
         # Credencial efêmera: coletada só na execução; limpa após o lançamento.
         creds = self._current_creds()
 
@@ -1290,6 +1265,7 @@ class MainWindow(QMainWindow):
         is_exe = selected_file and selected_file.lower().endswith('.exe')
         # Não há mais checkbox manual, apenas atualizar abas e comando
         self.update_tab_visibility(is_msi, is_exe)
+        self._sync_psexec_copy_allowed()
         self.update_command()
 
     def on_restart(self):
@@ -1312,12 +1288,13 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
         if hasattr(self, "psexec_tab") and self.psexec_tab is not None:
-            worker = getattr(self.psexec_tab, "_host_status_worker", None)
-            if worker is not None and worker.isRunning():
-                try:
-                    worker.wait(2000)
-                except Exception:
-                    pass
+            for attr in ("_host_status_worker", "_session_worker"):
+                worker = getattr(self.psexec_tab, attr, None)
+                if worker is not None and worker.isRunning():
+                    try:
+                        worker.wait(2000)
+                    except Exception:
+                        pass
         self.executor.stop()
         if hasattr(self.executor, "shutdown"):
             try:
