@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
-    QHBoxLayout,
-    QLabel,
     QMainWindow,
     QSizePolicy,
     QVBoxLayout,
@@ -22,7 +19,7 @@ from remoteops.services.ops import (
     RemoteUninstallService,
     RustDeskService,
 )
-from remoteops.ui.branding import APP_DISPLAY_NAME, app_icon, app_mark_pixmap
+from remoteops.ui.branding import APP_DISPLAY_NAME, app_icon
 from remoteops.ui.tabs.appsearch import AppSearchTab
 from remoteops.ui.tabs.cmd import CmdTab
 from remoteops.ui.tabs.hostapps import HostAppsTab
@@ -57,9 +54,8 @@ class MainWindow(QMainWindow):
         vbox.setSpacing(3)
         vbox.setContentsMargins(4, 4, 4, 4)
 
-        # Marca + título e seletor de arquivo na mesma linha
         self.file_selector = FileSelectorWidget(self)
-        vbox.addWidget(self._build_brand_header(), 0)
+        vbox.addWidget(self.file_selector, 0)
 
         # Tabs (ícone = char Unicode em TabBar customizada)
         # stretch 0: formulário/abas não absorvem espaço vertical restante
@@ -131,6 +127,7 @@ class MainWindow(QMainWindow):
         
         # Conexões
         self.file_selector.fileSelected.connect(self.on_file_selected)
+        self.file_selector.fileCleared.connect(self.on_file_cleared)
         self.file_selector.appSearchRequested.connect(self.open_appsearch_tab)
         self.file_selector.settingsRequested.connect(self.open_settings_tab)
         self.psexec_tab.host_edit.textChanged.connect(self.update_command)
@@ -836,42 +833,6 @@ class MainWindow(QMainWindow):
         if self.size() != frozen:
             self.resize(frozen)
 
-    def _build_brand_header(self) -> QWidget:
-        row = QWidget()
-        lay = QHBoxLayout(row)
-        lay.setContentsMargins(6, 2, 6, 2)
-        lay.setSpacing(10)
-
-        mark = QLabel()
-        mark.setObjectName("brandMark")
-        pm = app_mark_pixmap(28)
-        if not pm.isNull():
-            mark.setPixmap(pm)
-        mark.setFixedSize(28, 28)
-        mark.setScaledContents(False)
-
-        title = QLabel(APP_DISPLAY_NAME)
-        title.setObjectName("brandTitle")
-        title_font = QFont(title.font())
-        title_font.setPointSize(11)
-        title_font.setWeight(QFont.Weight.DemiBold)
-        title.setFont(title_font)
-
-        subtitle = QLabel(self.tr("Instalação e comandos remotos via PsExec"))
-        subtitle.setObjectName("brandSubtitle")
-        subtitle.setStyleSheet("color: palette(mid);")
-
-        text_col = QVBoxLayout()
-        text_col.setContentsMargins(0, 0, 0, 0)
-        text_col.setSpacing(0)
-        text_col.addWidget(title)
-        text_col.addWidget(subtitle)
-
-        lay.addWidget(mark, alignment=Qt.AlignmentFlag.AlignVCenter)
-        lay.addLayout(text_col, stretch=0)
-        lay.addWidget(self.file_selector, stretch=1)
-        return row
-
     def _apply_initial_geometry(self):
         """Abre em 720×960 (reduz se a área útil da tela for menor)."""
         screen = QApplication.primaryScreen()
@@ -888,6 +849,13 @@ class MainWindow(QMainWindow):
         x = avail.x() + (avail.width() - w) // 2
         y = avail.y() + (avail.height() - h) // 2
         self.move(x, y)
+
+    def on_file_cleared(self):
+        """Reset do card: remove o arquivo/pasta e fecha abas que dependiam dele."""
+        self.command_builder.set_file_selection(None)
+        self._sync_psexec_copy_allowed()
+        self.update_tab_visibility(False, False)
+        self.update_command()
 
     def on_file_selected(self, selection):
         # selection: {'mode': 'file'|'folder', 'file': caminho, 'folder': caminho ou None}
@@ -961,6 +929,7 @@ class MainWindow(QMainWindow):
         # Remover abas dinâmicas, preservando PsExec e abas especiais sob demanda
         psinfo_widget = self.psinfo_tab
         hostapps_widget = self.hostapps_tab
+        winget_widget = self.winget_tab
         appsearch_widget = self.appsearch_tab
         settings_widget = self.settings_tab
         for i in range(self.tabs.count() - 1, -1, -1):
@@ -970,6 +939,8 @@ class MainWindow(QMainWindow):
             if psinfo_widget is not None and w is psinfo_widget:
                 continue
             if hostapps_widget is not None and w is hostapps_widget:
+                continue
+            if winget_widget is not None and w is winget_widget:
                 continue
             if appsearch_widget is not None and w is appsearch_widget:
                 continue
@@ -982,6 +953,7 @@ class MainWindow(QMainWindow):
         for special in (
             psinfo_widget,
             hostapps_widget,
+            winget_widget,
             appsearch_widget,
             settings_widget,
         ):
@@ -1134,6 +1106,10 @@ class MainWindow(QMainWindow):
             self.command_preview.set_command(command)
         else:
             self.psexec_tab.remote_cmd_edit.setReadOnly(False)
+            if self.psexec_tab.remote_cmd_edit.text().strip() == "Comando gerado automaticamente":
+                self._updating_remote_cmd = True
+                self.psexec_tab.remote_cmd_edit.clear()
+                self._updating_remote_cmd = False
             self._sync_psexec_copy_allowed()
             psexec_params = self.psexec_tab.collect_builder_params(
                 host=self.psexec_tab.host_edit.text(),

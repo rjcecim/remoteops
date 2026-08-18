@@ -29,7 +29,6 @@ from remoteops.ui.style import (
     INPUT_HEIGHT,
     SIZE_UI,
     SIZE_UI_SMALL,
-    make_icon_button,
 )
 from remoteops.ui.widgets.card import CardWidget, make_card_stack
 from remoteops.ui.widgets.flow import FlowLayout
@@ -244,37 +243,34 @@ class PsExecTab(QWidget):
         card1 = CardWidget("\uEA18", self.tr("Conexão"))
         g1 = _grid_in_card(card1)
 
-        # Host remoto
-        host_row = QHBoxLayout()
-        host_row.setSpacing(4)
-        host_row.setContentsMargins(0, 0, 0, 0)
         host_clear_container, self.host_edit = _line_edit_with_clear_icon()
         self.host_edit.setPlaceholderText("ex: 192.168.1.100 ou computador.local")
         self.host_edit.setToolTip(self.tr("Nome ou IP do computador remoto"))
-        # \uE71D = List — aplicativos do host (Remote Registry)
-        self.hostapps_button = make_icon_button(
+        _add_row(g1, 0, self.tr("Host remoto"), host_clear_container)
+
+        self.hostapps_button = card1.make_header_button(
             "\uE71D", self.tr("Listar aplicativos do host (Remote Registry)")
         )
         self.hostapps_button.clicked.connect(self.openHostAppsRequested.emit)
-        # \uE7B8 = Package — WinGet (gerenciador de pacotes)
-        self.winget_button = make_icon_button(
+        card1.add_header_button(self.hostapps_button)
+
+        self.winget_button = card1.make_header_button(
             "\uE7B8", self.tr("WinGet — pacotes remotos (winget)")
         )
         self.winget_button.clicked.connect(self.openWinGetRequested.emit)
-        self.psinfo_button = make_icon_button("\uE946", self.tr("Abrir PsInfo (inventário)"))
+        card1.add_header_button(self.winget_button)
+
+        self.psinfo_button = card1.make_header_button(
+            "\uE946", self.tr("Abrir PsInfo (inventário)")
+        )
         self.psinfo_button.clicked.connect(self.openPsInfoRequested.emit)
-        # \uE8B7 (Copy) já usado em Robocopy; aqui usamos \uE774 (Link) como ação de conexão
-        self.rustdesk_button = make_icon_button("\uE774", self.tr("Conectar via RustDesk"))
+        card1.add_header_button(self.psinfo_button)
+
+        self.rustdesk_button = card1.make_header_button(
+            "\uE774", self.tr("Conectar via RustDesk")
+        )
         self.rustdesk_button.clicked.connect(self.openRustDeskRequested.emit)
-        host_row.addWidget(host_clear_container)
-        host_row.addWidget(self.hostapps_button)
-        host_row.addWidget(self.winget_button)
-        host_row.addWidget(self.psinfo_button)
-        host_row.addWidget(self.rustdesk_button)
-        host_container = QWidget()
-        host_container.setLayout(host_row)
-        host_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        _add_row(g1, 0, self.tr("Host remoto"), host_container)
+        card1.add_header_button(self.rustdesk_button)
 
         # Status (legenda com bolinha abaixo do host)
         status_row = QHBoxLayout()

@@ -260,6 +260,38 @@ class CardWidget(QWidget):
         if tooltip:
             self._reset_btn.setToolTip(tooltip)
 
+    def make_header_button(
+        self,
+        icon_char: str,
+        tooltip: str = "",
+        *,
+        object_name: str = "cardHeaderAction",
+    ) -> QToolButton:
+        """Botão de ícone MDL2 no mesmo tamanho dos demais do título do card."""
+        btn = QToolButton()
+        btn.setObjectName(object_name)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        btn.setAutoRaise(True)
+        btn.setFixedSize(22, 22)
+        btn.setFont(QFont("Segoe MDL2 Assets", 10))
+        btn.setText(icon_char)
+        if tooltip:
+            btn.setToolTip(tooltip)
+        return btn
+
+    def add_header_button(self, button: QToolButton) -> None:
+        """Insere um botão no título, à esquerda de reset/recolher."""
+        header = self._header_widget.layout()
+        if header is None:
+            return
+        idx = header.indexOf(self._reset_btn)
+        if idx < 0:
+            idx = header.indexOf(self._toggle_btn)
+        if idx < 0:
+            idx = header.count()
+        header.insertWidget(idx, button)
+
     def set_expanding(self, expanding: bool = True) -> None:
         """Faz o card (e a área de conteúdo) ocupar o espaço vertical restante."""
         self._wants_expanding = bool(expanding)
@@ -444,16 +476,19 @@ class CardWidget(QWidget):
                 color: palette(mid);
                 background: transparent;
             }
-            QToolButton#cardCopy, QToolButton#cardRun, QToolButton#cardStop {
+            QToolButton#cardCopy, QToolButton#cardRun, QToolButton#cardStop,
+            QToolButton#cardHeaderAction {
                 border: none;
                 background: transparent;
                 color: palette(highlight);
             }
-            QToolButton#cardCopy:hover, QToolButton#cardRun:hover, QToolButton#cardStop:hover {
+            QToolButton#cardCopy:hover, QToolButton#cardRun:hover, QToolButton#cardStop:hover,
+            QToolButton#cardHeaderAction:hover {
                 background: palette(light);
                 border-radius: 4px;
             }
-            QToolButton#cardRun:disabled, QToolButton#cardStop:disabled {
+            QToolButton#cardRun:disabled, QToolButton#cardStop:disabled,
+            QToolButton#cardHeaderAction:disabled {
                 color: palette(mid);
                 background: transparent;
             }

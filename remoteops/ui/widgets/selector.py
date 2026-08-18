@@ -2,33 +2,16 @@ from PyQt6.QtWidgets import (
     QWidget,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QFileDialog,
     QFileIconProvider,
-    QToolButton,
     QDialog,
     QLineEdit,
 )
-from PyQt6.QtGui import QFont
 from PyQt6.QtCore import pyqtSignal, Qt, QFileInfo
 import os
 
-from remoteops.ui.style import ICON_FONT_PT
-
-_MDL2_FONT = QFont("Segoe MDL2 Assets", ICON_FONT_PT)
-_MDL2_BTN_STYLE = f"""
-    QToolButton, QPushButton {{
-        border: 1px solid palette(mid);
-        border-radius: 4px;
-        background: palette(button);
-        font-family: "Segoe MDL2 Assets";
-        font-size: {ICON_FONT_PT}pt;
-        color: palette(highlight);
-    }}
-    QToolButton:hover, QPushButton:hover {{ background: palette(light); }}
-    QToolButton:pressed, QPushButton:pressed {{ background: palette(dark); }}
-    QToolButton:disabled, QPushButton:disabled {{ color: palette(mid); }}
-"""
+from remoteops.ui.branding import APP_NAME, app_mark_pixmap
+from remoteops.ui.widgets.card import CardWidget
 
 
 class _FileOrFolderDialog(QFileDialog):
@@ -96,74 +79,70 @@ class _FileOrFolderDialog(QFileDialog):
             QDialog.accept(self)
 
 
-class FileSelectorWidget(QWidget):
+class FileSelectorWidget(CardWidget):
     # Sinal emitido quando um arquivo ou pasta é selecionado
     fileSelected = pyqtSignal(dict)  # Emite dict: {'mode': 'file'|'folder', 'file': ..., 'folder': ...}
+    fileCleared = pyqtSignal()  # Seleção removida (reset do card)
     appSearchRequested = pyqtSignal()  # Abre a tela de pesquisa de aplicativos nos hosts
     settingsRequested = pyqtSignal()  # Abre a aba Configurações
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__("\uE80F", APP_NAME, parent)
+        self._title_label.setText(
+            f"{APP_NAME} — {self.tr('Instalação e comandos remotos via PsExec')}"
+        )
+        mark = app_mark_pixmap(16)
+        if not mark.isNull():
+            self._icon_label.setPixmap(mark)
+            self._icon_label.setText("")
         self.selected_file = None
         self.selected_folder = None
         self.selection_mode = None  # 'file' ou 'folder'
-        self.layout_widget = QHBoxLayout(self)
-        # Compacto como no layout original
-        self.layout_widget.setContentsMargins(0, 0, 0, 0)
-        self.layout_widget.setSpacing(5)
-        self.icon_label = QLabel()
-        self.icon_label.setFixedSize(32, 32)
-        self.name_label = QLabel(self.tr("Nenhum arquivo ou pasta selecionado"))
 
-        # \uE721 = Find / Search (Segoe MDL2 Assets)
-        self.search_button = QToolButton()
-        self.search_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.search_button.setText("\uE721")
-        self.search_button.setFont(_MDL2_FONT)
-        self.search_button.setStyleSheet(_MDL2_BTN_STYLE)
-        self.search_button.setToolTip(self.tr("Pesquisar aplicativos nos hosts"))
-        self.search_button.setFixedSize(32, 32)
+        self.search_button = self.make_header_button(
+            "\uE721", self.tr("Pesquisar aplicativos nos hosts")
+        )
         self.search_button.clicked.connect(self.appSearchRequested.emit)
+        self.add_header_button(self.search_button)
 
-        # \uED25 = OpenFile — único botão para arquivo ou pasta
-        self.browse_button = QToolButton()
-        self.browse_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.browse_button.setText("\uED25")
-        self.browse_button.setFont(_MDL2_FONT)
-        self.browse_button.setStyleSheet(_MDL2_BTN_STYLE)
-        self.browse_button.setToolTip(self.tr("Selecionar arquivo ou pasta"))
-        self.browse_button.setFixedSize(32, 32)
+        self.browse_button = self.make_header_button(
+            "\uED25", self.tr("Selecionar arquivo ou pasta")
+        )
         self.browse_button.clicked.connect(self.open_path_dialog)
+        self.add_header_button(self.browse_button)
         # Alias para compatibilidade com main.py (antigo file_button)
         self.file_button = self.browse_button
 
-        # \uE946 = Info / Help (Segoe MDL2 Assets)
-        self.help_button = QPushButton("\uE946")
-        self.help_button.setFont(_MDL2_FONT)
-        self.help_button.setStyleSheet(_MDL2_BTN_STYLE)
-        self.help_button.setToolTip(self.tr("Executar arquivo com /? para ver argumentos disponíveis"))
-        self.help_button.setFixedSize(32, 32)
+        self.help_button = self.make_header_button(
+            "\uE946",
+            self.tr("Executar arquivo com /? para ver argumentos disponíveis"),
+        )
         self.help_button.setEnabled(False)
         self.help_button.clicked.connect(self.show_help)
+        self.add_header_button(self.help_button)
 
-        # \uE713 = Setting / engrenagem (Segoe MDL2 Assets)
-        self.settings_button = QToolButton()
-        self.settings_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.settings_button.setText("\uE713")
-        self.settings_button.setFont(_MDL2_FONT)
-        self.settings_button.setStyleSheet(_MDL2_BTN_STYLE)
-        self.settings_button.setToolTip(self.tr("Configurações"))
-        self.settings_button.setFixedSize(32, 32)
+        self.settings_button = self.make_header_button(
+            "\uE713", self.tr("Configurações")
+        )
         self.settings_button.clicked.connect(self.settingsRequested.emit)
+        self.add_header_button(self.settings_button)
 
-        self.layout_widget.addWidget(self.icon_label)
-        self.layout_widget.addWidget(self.name_label, 1)
-        self.layout_widget.addWidget(self.search_button)
-        self.layout_widget.addWidget(self.browse_button)
-        self.layout_widget.addWidget(self.help_button)
-        self.layout_widget.addWidget(self.settings_button)
-        self.setLayout(self.layout_widget)
-        self.icon_label.hide()  # só aparece quando há arquivo selecionado
+        self.set_resettable(True, self.tr("Limpar arquivo ou pasta selecionado"))
+        self.resetRequested.connect(self.clear_selection)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        self.icon_label = QLabel()
+        self.icon_label.setFixedSize(32, 32)
+        self.name_label = QLabel(self.tr("Nenhum arquivo ou pasta selecionado"))
+        self.name_label.setObjectName("fieldLabel")
+        row.addWidget(self.icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self.name_label, 1, Qt.AlignmentFlag.AlignVCenter)
+        wrap = QWidget()
+        wrap.setLayout(row)
+        self.content_layout.addWidget(wrap)
+        self.icon_label.hide()
 
     def open_path_dialog(self):
         dialog = _FileOrFolderDialog(self, self.tr("Selecionar arquivo ou pasta"))
@@ -221,6 +200,19 @@ class FileSelectorWidget(QWidget):
         # Habilitar botão de ajuda apenas se for arquivo .exe
         is_exe = file_path.lower().endswith('.exe')
         self.help_button.setEnabled(is_exe)
+
+    def clear_selection(self):
+        """Remove o arquivo/pasta escolhido e volta ao estado inicial do card."""
+        if not self.selected_file and not self.selected_folder:
+            return
+        self.selected_file = None
+        self.selected_folder = None
+        self.selection_mode = None
+        self.name_label.setText(self.tr("Nenhum arquivo ou pasta selecionado"))
+        self.icon_label.hide()
+        self.icon_label.clear()
+        self.help_button.setEnabled(False)
+        self.fileCleared.emit()
 
     def show_help(self):
         """Executa o arquivo com /? para mostrar argumentos disponíveis"""
