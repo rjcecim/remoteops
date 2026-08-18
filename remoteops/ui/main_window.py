@@ -228,7 +228,7 @@ class MainWindow(QMainWindow):
 
     def _current_creds(self) -> CredentialContext:
         return CredentialContext(
-            user=(self.psexec_tab.user_edit.text() or "").strip(),
+            user=self.psexec_tab.auth_username(),
             password=self.psexec_tab.pass_edit.text() or "",
         )
 
@@ -441,7 +441,7 @@ class MainWindow(QMainWindow):
             log_output=self.log_output,
             host_source=self.psexec_tab.host_edit,
             creds_provider=lambda: (
-                (self.psexec_tab.user_edit.text() or "").strip(),
+                self.psexec_tab.auth_username(),
                 self.psexec_tab.pass_edit.text() or "",
             ),
         )
@@ -504,7 +504,7 @@ class MainWindow(QMainWindow):
         self.winget_tab = WinGetTab(
             host_source=self.psexec_tab.host_edit,
             creds_provider=lambda: (
-                (self.psexec_tab.user_edit.text() or "").strip(),
+                self.psexec_tab.auth_username(),
                 self.psexec_tab.pass_edit.text() or "",
             ),
         )
@@ -1264,7 +1264,7 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
         if hasattr(self, "psexec_tab") and self.psexec_tab is not None:
-            for attr in ("_host_status_worker", "_session_worker"):
+            for attr in ("_host_status_worker", "_session_worker", "_domain_worker"):
                 worker = getattr(self.psexec_tab, attr, None)
                 if worker is not None and worker.isRunning():
                     try:

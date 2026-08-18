@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -25,7 +25,9 @@ from remoteops.core.psexec_options import (
 )
 from remoteops.ui.style import (
     CARD_GRID_VERTICAL_SPACING,
+    FONT_UI,
     INPUT_HEIGHT,
+    SIZE_UI,
     SIZE_UI_SMALL,
     make_icon_button,
 )
@@ -34,6 +36,18 @@ from remoteops.ui.widgets.flow import FlowLayout
 from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
 from remoteops.ui.widgets.status_dot import StatusDot as _StatusDot
 from remoteops.utils.api import get_processor_count, get_processor_groups
+from remoteops.utils.domain import (
+    LOCAL_PREFIX,
+    HostUserDomain,
+    apply_discovered_userdomain,
+    clear_discovered_prefix,
+    domain_hint_from_hostname,
+    effective_auth_username,
+    lookup_host_userdomain,
+    rewrite_user_field_for_local,
+    split_user_field,
+    userdomain_prefix,
+)
 from remoteops.utils.ping import is_valid_host, normalize_host, ping_host
 from remoteops.utils.sessions import RemoteSession, list_remote_sessions
 from remoteops.utils.validator import AffinityValidator
@@ -74,16 +88,40 @@ class _SessionListWorker(QThread):
             self._password = ""
 
 
+class _HostDomainWorker(QThread):
+    """Descobre o USERDOMAIN do host em background (NetAPI + nbtstat)."""
+
+    result = pyqtSignal(str, object)
+
+    def __init__(self, host: str, parent=None):
+        super().__init__(parent)
+        self._host = host
+
+    def run(self) -> None:
+        self.result.emit(self._host, lookup_host_userdomain(self._host))
+
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def _make_label(text: str) -> QLabel:
+def _make_label(text: str, *, min_width: int = 120) -> QLabel:
     lbl = QLabel(text)
     lbl.setObjectName("fieldLabel")
     lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-    # Mantém alinhado com as outras abas (padrão antigo ~120)
-    lbl.setMinimumWidth(120)
+    if min_width > 0:
+        lbl.setMinimumWidth(min_width)
     # opacidade reduzida via stylesheet
     lbl.setStyleSheet("QLabel#fieldLabel { color: palette(windowText); opacity: 0.75; }")
+    return lbl
+
+
+def _field_caption(object_name: str) -> QLabel:
+    lbl = QLabel()
+    lbl.setObjectName(object_name)
+    lbl.setWordWrap(True)
+    lbl.setStyleSheet(
+        f"QLabel#{object_name} {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
+    )
+    lbl.setContentsMargins(2, 0, 0, 0)
     return lbl
 
 
@@ -180,6 +218,10 @@ class PsExecTab(QWidget):
         self._host_online = False
         self._host_status_worker: Optional[_HostStatusWorker] = None
         self._host_status_wanted = ""
+        self._domain_worker: Optional[_HostDomainWorker] = None
+        self._domain_wanted = ""
+        self._host_userdomain = HostUserDomain()
+        self._updating_user = False
         self._copy_allowed = True
         self._updating_option_state = False
         self._session_worker: Optional[_SessionListWorker] = None
@@ -272,15 +314,44 @@ class PsExecTab(QWidget):
         g2 = _grid_in_card(card2)
 
         user_container, self.user_edit = _line_edit_with_clear_icon(password=False)
-        self.user_edit.setPlaceholderText(r"DOMAIN\user")
-        self.user_edit.setToolTip(self.tr(TOOLTIPS["-u"]))
-        _add_row(g2, 0, self.tr("Usuário"), user_container)
+        self._user_prefix = QLabel()
+        self._user_prefix.setObjectName("authUserPrefix")
+        self._user_prefix.setFont(QFont(FONT_UI, SIZE_UI))
+        self._user_prefix.setStyleSheet(
+            "QLabel#authUserPrefix { color: palette(highlight); background: transparent; }"
+        )
+        self._user_prefix.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        self._user_prefix.setCursor(Qt.CursorShape.IBeamCursor)
+        self._user_prefix.hide()
+        user_lay = user_container.layout()
+        user_lay.setSpacing(0)
+        user_lay.insertWidget(0, self._user_prefix, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._user_prefix.installEventFilter(self)
+        self.user_edit.setToolTip(
+            self.tr(
+                "O USERDOMAIN do host é preenchido automaticamente. "
+                "Digite só o usuário. Use .\\ para conta local do computador remoto."
+            )
+        )
+        self._user_caption = _field_caption("authUserCaption")
 
         self._pass_container, self.pass_edit = _line_edit_with_clear_icon(password=True)
-        self.pass_edit.setPlaceholderText(self.tr("Senha"))
         self.pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.pass_edit.setToolTip(self.tr(TOOLTIPS["-p"]))
-        _add_row(g2, 1, self.tr("Senha"), self._pass_container)
+        self._pass_caption = _field_caption("authPassCaption")
+
+        g2.setColumnStretch(1, 1)
+        g2.setColumnStretch(3, 1)
+        user_lbl = _make_label(self.tr("Usuário"))
+        pass_lbl = _make_label(self.tr("Senha"), min_width=0)
+        g2.addWidget(user_lbl, 0, 0, Qt.AlignmentFlag.AlignVCenter)
+        g2.addWidget(user_container, 0, 1, Qt.AlignmentFlag.AlignVCenter)
+        g2.addWidget(pass_lbl, 0, 2, Qt.AlignmentFlag.AlignVCenter)
+        g2.addWidget(self._pass_container, 0, 3, Qt.AlignmentFlag.AlignVCenter)
+        g2.addWidget(self._user_caption, 1, 1, Qt.AlignmentFlag.AlignTop)
+        g2.addWidget(self._pass_caption, 1, 3, Qt.AlignmentFlag.AlignTop)
+        self._update_user_caption()
+        self._update_pass_caption(enabled=False)
 
         vbox.addWidget(card2)
 
@@ -479,8 +550,9 @@ class PsExecTab(QWidget):
         self.update_psexec_option_state()
 
     def _reset_card_autenticacao(self) -> None:
-        self.user_edit.clear()
         self.pass_edit.clear()
+        self._set_user_text("")
+        self._fill_userdomain_prefix(self._host_userdomain.name, previous="")
         self.update_psexec_option_state("user")
 
     def _reset_card_privilegios(self) -> None:
@@ -519,10 +591,24 @@ class PsExecTab(QWidget):
         self.updateGeometry()
         self.formLayoutChanged.emit()
 
+    def eventFilter(self, obj, event):
+        if (
+            obj is getattr(self, "_user_prefix", None)
+            and event.type() == QEvent.Type.MouseButtonPress
+        ):
+            self.user_edit.setFocus()
+            self.user_edit.setCursorPosition(0)
+            return True
+        return super().eventFilter(obj, event)
+
     # ── estado / compatibilidade ──────────────────────────────────────────────
 
+    def auth_username(self) -> str:
+        """Usuário completo para ``-u`` (vazio se só o prefixo do domínio)."""
+        return effective_auth_username(self._composed_user_text())
+
     def _connect_option_signals(self) -> None:
-        self.user_edit.textChanged.connect(lambda: self.update_psexec_option_state("user"))
+        self.user_edit.textChanged.connect(self._on_user_text_changed)
         self.pass_edit.textChanged.connect(self._schedule_session_refresh)
         self.flag_h.stateChanged.connect(lambda: self.update_psexec_option_state("-h"))
         self.flag_s.stateChanged.connect(lambda: self.update_psexec_option_state("-s"))
@@ -554,7 +640,7 @@ class PsExecTab(QWidget):
             except (TypeError, ValueError):
                 group = None
         return PsExecOptions(
-            user=(self.user_edit.text() or "").strip(),
+            user=self.auth_username(),
             has_password=bool((self.pass_edit.text() or "").strip()),
             flag_h=self.flag_h.isChecked(),
             flag_s=self.flag_s.isChecked(),
@@ -644,12 +730,17 @@ class PsExecTab(QWidget):
         apply_cb(self.session_interactive, "-i")
 
         pass_state = widgets.get("-p")
-        user_filled = bool(opts.user.strip())
+        user_started = bool(self._composed_user_text().strip())
         if pass_state is not None:
-            self._pass_container.setEnabled(bool(pass_state.enabled))
-            self.pass_edit.setEnabled(bool(pass_state.enabled))
-            self.pass_edit.setToolTip(self.tr(pass_state.tooltip))
-        if not user_filled and (self.pass_edit.text() or "").strip():
+            enabled = bool(pass_state.enabled) or user_started
+            self._pass_container.setEnabled(enabled)
+            self.pass_edit.setEnabled(enabled)
+            if enabled:
+                self.pass_edit.setToolTip(self.tr(TOOLTIPS["-p"]))
+            else:
+                self.pass_edit.setToolTip(self.tr(pass_state.tooltip))
+            self._update_pass_caption(enabled=enabled)
+        if not user_started and (self.pass_edit.text() or "").strip():
             self.pass_edit.blockSignals(True)
             self.pass_edit.clear()
             self.pass_edit.blockSignals(False)
@@ -740,7 +831,7 @@ class PsExecTab(QWidget):
         self.session_combo.setToolTip(self.tr("Consultando sessões do host…"))
         self._session_worker = _SessionListWorker(
             host,
-            user=(self.user_edit.text() or "").strip(),
+            user=self.auth_username(),
             password=self.pass_edit.text() or "",
             parent=self,
         )
@@ -851,14 +942,17 @@ class PsExecTab(QWidget):
         if self._host_online != online:
             self._host_online = online
             self.hostOnlineChanged.emit(online)
-            if online and self.session_interactive.isChecked():
-                self._schedule_session_refresh()
+            if online:
+                self._start_domain_worker(normalize_host(self.host_edit.text()))
+                if self.session_interactive.isChecked():
+                    self._schedule_session_refresh()
             elif not online:
                 self._reset_session_combo(keep_enabled=self.session_interactive.isChecked())
 
     def _on_host_text_changed(self, _text: str = "") -> None:
         host = normalize_host(self.host_edit.text())
         self._host_status_wanted = host
+        self._apply_host_userdomain_hint(host)
         if not host:
             self._host_status_timer.stop()
             self._set_host_status("idle")
@@ -869,6 +963,144 @@ class PsExecTab(QWidget):
             return
         self._set_host_status("checking")
         self._host_status_timer.start()
+
+    def _composed_user_text(self) -> str:
+        prefix = self._user_prefix.text() if self._user_prefix.isVisible() else ""
+        return f"{prefix}{self.user_edit.text() or ''}"
+
+    def _is_auto_prefix(self, prefix: str) -> bool:
+        if prefix == LOCAL_PREFIX:
+            return True
+        disc = userdomain_prefix(self._host_userdomain.name)
+        return bool(prefix) and bool(disc) and prefix.casefold() == disc.casefold()
+
+    def _update_user_caption(self) -> None:
+        prefix = self._user_prefix.text() if self._user_prefix.isVisible() else ""
+        if prefix == LOCAL_PREFIX:
+            caption = self.tr("Conta local do host remoto.")
+        elif prefix:
+            caption = self.tr("Digite o usuário. Use .\\ para conta local.")
+        else:
+            caption = self.tr(r"domínio\usuário  ou  .\usuário")
+        self._user_caption.setText(caption)
+
+    def _update_pass_caption(self, *, enabled: bool) -> None:
+        if enabled:
+            self._pass_caption.setText(self.tr("Senha da conta."))
+        else:
+            self._pass_caption.setText(
+                self.tr("A senha só entra quando houver um usuário.")
+            )
+
+    def _set_user_text(self, text: str, cursor: int | None = None) -> None:
+        prefix, user = split_user_field(text)
+        auto = bool(prefix) and self._is_auto_prefix(prefix)
+        self._updating_user = True
+        try:
+            if auto:
+                self._user_prefix.setText(prefix)
+                self._user_prefix.show()
+                self.user_edit.setText(user)
+                if cursor is None:
+                    self.user_edit.setCursorPosition(len(user))
+                else:
+                    pos = max(0, int(cursor) - len(prefix))
+                    self.user_edit.setCursorPosition(min(pos, len(user)))
+            else:
+                self._user_prefix.hide()
+                self._user_prefix.clear()
+                self.user_edit.setText(text)
+                if cursor is not None:
+                    self.user_edit.setCursorPosition(cursor)
+                elif text.endswith("\\"):
+                    self.user_edit.setCursorPosition(len(text))
+            self._update_user_caption()
+        finally:
+            self._updating_user = False
+
+    def _on_user_text_changed(self, _text: str = "") -> None:
+        if self._updating_user:
+            return
+        composed = self._composed_user_text()
+        rewritten = rewrite_user_field_for_local(composed, self._host_userdomain.name)
+        if rewritten != composed:
+            self._set_user_text(rewritten, cursor=len(rewritten))
+        else:
+            prefix, _user = split_user_field(composed)
+            if (
+                prefix
+                and self._is_auto_prefix(prefix)
+                and not self._user_prefix.isVisible()
+            ):
+                self._set_user_text(composed)
+        self.update_psexec_option_state("user")
+
+    def _fill_userdomain_prefix(self, name: str, *, previous: str) -> None:
+        current = self._composed_user_text()
+        updated = apply_discovered_userdomain(current, name, previous)
+        if updated is None or updated == current:
+            return
+        self._set_user_text(updated, cursor=len(updated))
+        self.update_psexec_option_state("user")
+
+    def _apply_host_userdomain_hint(self, host: str) -> None:
+        if not host or not is_valid_host(host):
+            previous = self._host_userdomain.name
+            self._host_userdomain = HostUserDomain()
+            cleared = clear_discovered_prefix(self._composed_user_text(), previous)
+            if cleared is not None:
+                self._set_user_text(cleared)
+                self.update_psexec_option_state("user")
+            return
+        hint = domain_hint_from_hostname(host)
+        if not hint.name:
+            return
+        previous = self._host_userdomain.name
+        self._host_userdomain = hint
+        self._fill_userdomain_prefix(hint.name, previous=previous)
+
+    def _start_domain_worker(self, host: str) -> None:
+        host = normalize_host(host)
+        if not host or not is_valid_host(host):
+            return
+        self._domain_wanted = host
+        worker = self._domain_worker
+        if worker is not None and worker.isRunning():
+            return
+        self._domain_worker = _HostDomainWorker(host, self)
+        self._domain_worker.result.connect(self._on_host_domain_result)
+        self._domain_worker.finished.connect(self._on_domain_worker_finished)
+        self._domain_worker.start()
+
+    def _on_host_domain_result(self, host: str, info: object) -> None:
+        wanted = self._domain_wanted
+        if host.casefold() != (wanted or "").casefold():
+            return
+        current = normalize_host(self.host_edit.text())
+        if host.casefold() != current.casefold():
+            return
+        domain = info if isinstance(info, HostUserDomain) else HostUserDomain()
+        if not domain.name:
+            return
+        previous = self._host_userdomain.name
+        self._host_userdomain = domain
+        self._fill_userdomain_prefix(domain.name, previous=previous)
+
+    def _on_domain_worker_finished(self) -> None:
+        worker = self._domain_worker
+        finished_host = getattr(worker, "_host", "") if worker is not None else ""
+        self._domain_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+        current = normalize_host(self.host_edit.text())
+        if (
+            self.is_host_online
+            and current
+            and is_valid_host(current)
+            and current.casefold() != (finished_host or "").casefold()
+        ):
+            self._start_domain_worker(current)
 
     def _check_host_status(self) -> None:
         host = normalize_host(self.host_edit.text())

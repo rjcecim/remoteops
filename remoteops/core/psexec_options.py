@@ -124,7 +124,10 @@ TOOLTIPS = {
     "-arm": "Indica ao PsExec que o computador remoto utiliza arquitetura ARM.",
     "-accepteula": "Aceitar automaticamente o EULA do PsExec.",
     "-nobanner": "Não exibir o banner do PsExec.",
-    "-u": r"Usuário no formato DOMAIN\user. Usado para autenticar no host remoto.",
+    "-u": (
+        r"Usuário no formato DOMAIN\user ou .\user (conta local do host). "
+        "O domínio é preenchido com o USERDOMAIN do computador remoto."
+    ),
     "-p": (
         "Senha da conta em -u. Se o usuário estiver preenchido e a senha vazia, "
         "-p é omitido e o PsExec pode solicitar a senha no console."
