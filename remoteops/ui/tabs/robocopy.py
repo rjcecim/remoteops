@@ -17,9 +17,15 @@ class RobocopyTab(QWidget):
         g1 = grid_in_card(card_dest)
 
         self.dest_edit = QLineEdit()
-        self.dest_edit.setText("temp")
-        self.dest_edit.setPlaceholderText(self.tr("Ex: temp ou temp\\scripts (relativo à raiz do C:)"))
-        self.dest_edit.setToolTip(self.tr("Digite apenas o caminho relativo à raiz do C: do remoto, ex: temp ou temp\\scripts. Não inclua C: ou C$."))
+        self.dest_edit.setText("C:\\temp")
+        self.dest_edit.setPlaceholderText(self.tr("Ex.: C:\\temp ou C:\\temp\\scripts"))
+        self.dest_edit.setToolTip(
+            self.tr(
+                "Caminho completo no C: do host remoto. "
+                "Ex.: C:\\temp ou C:\\temp\\scripts. "
+                "C: é opcional (temp equivale a C:\\temp). Não use C$."
+            )
+        )
         add_row(g1, 0, self.tr("Pasta de destino:"), self.dest_edit)
 
         vbox.addWidget(card_dest)
