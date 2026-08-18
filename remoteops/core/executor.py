@@ -99,7 +99,7 @@ def _emit_conpty_text(
         carry.append(parts[-1])
         parts = parts[:-1]
     for part in parts:
-        line = part.rstrip("\r")
+        line = part.split("\r")[-1]
         if not line.strip():
             continue
         on_line(f"{prefix}{line}" if prefix else line)
@@ -270,6 +270,7 @@ class Executor(QObject):
                 return result.finalize()
 
             prefix = "[ROBOCOPY] " if is_robocopy else ""
+            from remoteops.winget.clixml import CliXmlLineFilter
 
             if use_conpty and not is_robocopy:
                 return self._run_conpty(
@@ -290,6 +291,9 @@ class Executor(QObject):
             def on_err(line: str) -> None:
                 stderr_acc.append(line)
                 self.errorReceived.emit(line)
+
+            xml_out = CliXmlLineFilter(on_out)
+            xml_err = CliXmlLineFilter(on_err)
 
             try:
                 proc = popen_argv(
@@ -329,14 +333,14 @@ class Executor(QObject):
             t_out = threading.Thread(
                 target=lambda: _read_pipe(
                     stdout_pipe,
-                    lambda ln: on_out(f"{prefix}{ln}" if prefix else ln),
+                    lambda ln: xml_out.feed(f"{prefix}{ln}" if prefix else ln),
                 ),
                 daemon=True,
             )
             t_err = threading.Thread(
                 target=lambda: _read_pipe(
                     stderr_pipe,
-                    lambda ln: on_err(f"{prefix}{ln}" if prefix else ln),
+                    lambda ln: xml_err.feed(f"{prefix}{ln}" if prefix else ln),
                 ),
                 daemon=True,
             )
@@ -359,6 +363,8 @@ class Executor(QObject):
 
             t_out.join(timeout=5)
             t_err.join(timeout=5)
+            xml_out.flush()
+            xml_err.flush()
 
             if self._cancel_requested and generation == self._run_generation:
                 result.cancelled = True
@@ -450,14 +456,22 @@ class Executor(QObject):
 
         self._set_interactive(True)
 
-        carry: List[str] = []
+        from remoteops.winget.clixml import CliXmlLineFilter
 
-        def on_line(line: str) -> None:
+        carry: List[str] = []
+        xml_out = CliXmlLineFilter(lambda line: _emit_ps_line(line))
+
+        def _emit_ps_line(line: str) -> None:
             safe_line = redact_command_text(line, passwords=self._passwords)
             stdout_acc.append(safe_line)
             self.outputReceived.emit(safe_line)
 
+        def on_line(line: str) -> None:
+            xml_out.feed(line)
+
         def on_partial(text: str) -> None:
+            if xml_out.buffering:
+                return
             safe = redact_command_text(text, passwords=self._passwords)
             self.partialOutput.emit(safe)
 
@@ -480,6 +494,7 @@ class Executor(QObject):
         finally:
             if carry and carry[0].strip():
                 on_line(f"{prefix}{carry[0]}" if prefix else carry[0])
+            xml_out.flush()
             self.partialOutput.emit("")
             with self._lock:
                 if generation == self._run_generation:

@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Any, List, Optional, Sequence, Union
 
 from remoteops.core import cmd_options as cmd_opt
+from remoteops.core import powershell_options as ps_opt
 from remoteops.core.models import CommandSpec, FileSelection
 from remoteops.core.psexec_options import (
     build_psexec_prefix_argv,
@@ -357,23 +358,19 @@ class CommandBuilder:
     # ── PowerShell / CMD helpers ────────────────────────────────────────
 
     def _powershell_remote_parts(self, exec_path: str) -> List[str]:
-        p = self.powershell_params or {}
-        parts: List[str] = ["powershell"]
-        if p.get("NoProfile"):
-            parts.append("-NoProfile")
-        if p.get("NoExit"):
-            parts.append("-NoExit")
-        if p.get("ExecutionPolicy"):
-            parts.extend(["-ExecutionPolicy", str(p["ExecutionPolicy"])])
-        if p.get("WindowStyle"):
-            parts.extend(["-WindowStyle", str(p["WindowStyle"])])
-        if p.get("EncodedCommand"):
-            parts.extend(["-EncodedCommand", str(p["EncodedCommand"])])
-        elif p.get("Command"):
-            parts.extend(["-Command", str(p["Command"])])
-        elif self.file_path or exec_path:
-            parts.extend(["-File", exec_path])
-        return parts
+        opts = ps_opt.options_from_params(self.powershell_params)
+        return ps_opt.build_powershell_remote_argv(opts, file_path=exec_path or "")
+
+    def validate_powershell_params(self) -> List[str]:
+        """Validação independente das opções do powershell.exe."""
+        exec_path = ""
+        if self.file_path and str(self.file_path).lower().endswith(".ps1"):
+            exec_path = self._resolve_exec_path()
+        elif ps_opt.options_from_params(self.powershell_params).mode == ps_opt.MODE_FILE:
+            exec_path = self._resolve_exec_path()
+        return ps_opt.validate_powershell_params(
+            self.powershell_params, file_path=exec_path
+        )
 
     def validate_cmd_params(self) -> List[str]:
         """Validação independente das opções do cmd.exe."""
@@ -486,8 +483,22 @@ class CommandBuilder:
                 executable="PsExec.exe",
                 display_command="# Erro: parâmetros de psexec ausentes",
             )
+        ps_errors = self.validate_powershell_params()
+        if ps_errors:
+            return CommandSpec(
+                executable=self._resolve_psexec_path(),
+                display_command="# Erro PowerShell: " + "; ".join(ps_errors),
+                metadata={"kind": "psexec", "powershell_errors": ps_errors},
+            )
         exec_path = self._resolve_exec_path()
-        return self._spec_from_psexec_argv(self._powershell_remote_parts(exec_path))
+        try:
+            return self._spec_from_psexec_argv(self._powershell_remote_parts(exec_path))
+        except ps_opt.PowerShellOptionsError as exc:
+            return CommandSpec(
+                executable=self._resolve_psexec_path(),
+                display_command="# Erro PowerShell: " + "; ".join(exc.errors),
+                metadata={"kind": "psexec", "powershell_errors": exc.errors},
+            )
 
     def _build_psexec_bat_script_spec(self) -> CommandSpec:
         if not self.psexec_params:
@@ -536,7 +547,21 @@ class CommandBuilder:
         exec_path = self._remote_path_after_robocopy() or ""
         ext = os.path.splitext(self.file_path)[1].lower() if self.file_path else ""
         if ext == ".ps1":
-            remote = self._powershell_remote_parts(exec_path)
+            ps_errors = self.validate_powershell_params()
+            if ps_errors:
+                return CommandSpec(
+                    executable=self._resolve_psexec_path(),
+                    display_command="# Erro PowerShell: " + "; ".join(ps_errors),
+                    metadata={"kind": "psexec", "powershell_errors": ps_errors},
+                )
+            try:
+                remote = self._powershell_remote_parts(exec_path)
+            except ps_opt.PowerShellOptionsError as exc:
+                return CommandSpec(
+                    executable=self._resolve_psexec_path(),
+                    display_command="# Erro PowerShell: " + "; ".join(exc.errors),
+                    metadata={"kind": "psexec", "powershell_errors": exc.errors},
+                )
         elif ext == ".bat":
             cmd_errors = self.validate_cmd_params()
             if cmd_errors:

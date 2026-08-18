@@ -659,3 +659,45 @@ def _regex_fallback_records(body: str) -> list[CliXmlRecord]:
         pending_stream = stream
     flush()
     return records
+
+
+class CliXmlLineFilter:
+    """Acumula CLIXML linha a linha e emite texto humano; outro conteúdo passa direto.
+
+    Se o parse falhar, devolve o fallback de ``clixml_to_text`` (não some com o erro).
+    """
+
+    def __init__(self, emit) -> None:
+        self._emit = emit
+        self._buf: list[str] = []
+        self._in_xml = False
+
+    @property
+    def buffering(self) -> bool:
+        return self._in_xml
+
+    def feed(self, line: str) -> None:
+        text = line or ""
+        if self._in_xml or looks_like_clixml(text):
+            self._in_xml = True
+            self._buf.append(text)
+            joined = "\n".join(self._buf)
+            if "</Objs>" in joined or "</objs>" in joined:
+                self.flush()
+            return
+        if is_clixml_log_noise(text):
+            return
+        self._emit(text)
+
+    def flush(self) -> None:
+        if not self._buf:
+            self._in_xml = False
+            return
+        joined = "\n".join(self._buf)
+        self._buf.clear()
+        self._in_xml = False
+        human = clixml_to_text(joined)
+        if not (human or "").strip():
+            return
+        for chunk in human.split("\n"):
+            self._emit(chunk)

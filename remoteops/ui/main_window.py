@@ -180,12 +180,7 @@ class MainWindow(QMainWindow):
         for cb in self.robocopy_tab.switches:
             cb.stateChanged.connect(self.update_command)
         # Conexões da aba PowerShell
-        self.powershell_tab.noprofile_checkbox.stateChanged.connect(self.update_command)
-        self.powershell_tab.noexit_checkbox.stateChanged.connect(self.update_command)
-        self.powershell_tab.execpol_combo.currentTextChanged.connect(self.update_command)
-        self.powershell_tab.winstyle_combo.currentTextChanged.connect(self.update_command)
-        self.powershell_tab.command_edit.textChanged.connect(self.update_command)
-        self.powershell_tab.encoded_edit.textChanged.connect(self.update_command)
+        self.powershell_tab.optionsChanged.connect(self.update_command)
         # Conexões da aba CMD
         self.cmd_tab.optionsChanged.connect(self.update_command)
         self.psexec_tab.remote_cmd_edit.textChanged.connect(self.on_remote_cmd_edit_changed)
@@ -1187,6 +1182,18 @@ class MainWindow(QMainWindow):
                 for err in cmd_errors:
                     self.log_output.append_log(self.tr(f"[CMD] {err}"))
                 return
+        selection = getattr(self.file_selector, "selected_file", None) or ""
+        remote_cmd = self.psexec_tab.remote_cmd_edit.text().strip().lower()
+        if (
+            self.tabs.currentWidget() == self.powershell_tab
+            or remote_cmd in ("powershell", "powershell.exe")
+            or str(selection).lower().endswith(".ps1")
+        ):
+            ps_errors = self.command_builder.validate_powershell_params()
+            if ps_errors:
+                for err in ps_errors:
+                    self.log_output.append_log(self.tr(f"[POWERSHELL] {err}"))
+                return
         # Credencial efêmera: coletada só na execução; limpa após o lançamento.
         creds = self._current_creds()
 
@@ -1232,7 +1239,13 @@ class MainWindow(QMainWindow):
         cmd_session = (
             self.tabs.currentWidget() == self.cmd_tab and self.cmd_tab.mode_k.isChecked()
         )
-        self.log_output.set_session_status("session" if cmd_session else "running")
+        ps_session = (
+            self.tabs.currentWidget() == self.powershell_tab
+            and self.powershell_tab.is_session_mode()
+        )
+        self.log_output.set_session_status(
+            "session" if (cmd_session or ps_session) else "running"
+        )
 
     def _on_console_session_exit(self) -> None:
         if not self.executor.send_input("exit"):
