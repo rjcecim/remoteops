@@ -107,6 +107,9 @@ kernel32.CreatePseudoConsole.argtypes = [
 ]
 kernel32.CreatePseudoConsole.restype = HRESULT
 
+kernel32.ResizePseudoConsole.argtypes = [HPCON, COORD]
+kernel32.ResizePseudoConsole.restype = HRESULT
+
 kernel32.ClosePseudoConsole.argtypes = [HPCON]
 kernel32.ClosePseudoConsole.restype = None
 
@@ -271,6 +274,18 @@ class ConPtySession:
                 handle, arr, len(data), ctypes.byref(written), None
             )
             return bool(ok)
+
+    def resize(self, cols: int, rows: int) -> bool:
+        """ResizePseudoConsole — wrapping de dir/tabelas no console integrado."""
+        cols = max(20, int(cols))
+        rows = max(5, int(rows))
+        self.cols = cols
+        self.rows = rows
+        hpc = self._hpc
+        if not hpc:
+            return False
+        hr = kernel32.ResizePseudoConsole(hpc, COORD(cols, rows))
+        return hr == S_OK
 
     def start(self) -> None:
         # Espelha o sample EchoCon da Microsoft:

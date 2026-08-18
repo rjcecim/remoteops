@@ -6,6 +6,7 @@ import os
 from dataclasses import replace
 from typing import Any, List, Optional, Sequence, Union
 
+from remoteops.core import cmd_options as cmd_opt
 from remoteops.core.models import CommandSpec, FileSelection
 from remoteops.core.psexec_options import (
     build_psexec_prefix_argv,
@@ -374,30 +375,16 @@ class CommandBuilder:
             parts.extend(["-File", exec_path])
         return parts
 
+    def validate_cmd_params(self) -> List[str]:
+        """Validação independente das opções do cmd.exe."""
+        return cmd_opt.validate_cmd_params(self.cmd_params)
+
     def _cmd_remote_parts(self, exec_path: str) -> List[str]:
-        c = self.cmd_params or {}
-        parts: List[str] = ["cmd"]
-        if c.get("/C"):
-            parts.append("/C")
-        if c.get("/K"):
-            parts.append("/K")
-        if c.get("/Q"):
-            parts.append("/Q")
-        if c.get("/D"):
-            parts.append("/D")
-        if c.get("/S"):
-            parts.append("/S")
-        cmd_str = c.get("Command") or exec_path
-        if cmd_str:
-            # Sem flags /C|/K, default histórico era incluir o path entre aspas
-            if not any(c.get(f) for f in ("/C", "/K", "/Q", "/D", "/S")) and not c.get(
-                "Command"
-            ):
-                # Mantém compat: cmd /c "path" era o padrão em folder .bat;
-                # em _build_psexec_bat_script o padrão era `cmd {flags} "{cmd_str}"`
-                pass
-            parts.append(str(cmd_str))
-        return parts
+        opts = cmd_opt.sanitize_cmd_options(cmd_opt.options_from_params(self.cmd_params))
+        ext = os.path.splitext(self.file_path)[1].lower() if self.file_path else ""
+        if ext == ".bat" and exec_path:
+            opts = replace(opts, command=exec_path)
+        return cmd_opt.build_cmd_remote_argv(opts, fallback_command=exec_path or "")
 
     def _resolve_exec_path(self) -> str:
         robocopy_dest = self._remote_path_after_robocopy()
@@ -508,6 +495,13 @@ class CommandBuilder:
                 executable="PsExec.exe",
                 display_command="# Erro: parâmetros de psexec ausentes",
             )
+        cmd_errors = self.validate_cmd_params()
+        if cmd_errors:
+            return CommandSpec(
+                executable=self._resolve_psexec_path(),
+                display_command="# Erro CMD: " + "; ".join(cmd_errors),
+                metadata={"kind": "psexec", "cmd_errors": cmd_errors},
+            )
         exec_path = self._resolve_exec_path()
         return self._spec_from_psexec_argv(self._cmd_remote_parts(exec_path))
 
@@ -544,8 +538,14 @@ class CommandBuilder:
         if ext == ".ps1":
             remote = self._powershell_remote_parts(exec_path)
         elif ext == ".bat":
-            # Mantém comportamento histórico: cmd /c "path"
-            remote = ["cmd", "/c", exec_path]
+            cmd_errors = self.validate_cmd_params()
+            if cmd_errors:
+                return CommandSpec(
+                    executable=self._resolve_psexec_path(),
+                    display_command="# Erro CMD: " + "; ".join(cmd_errors),
+                    metadata={"kind": "psexec", "cmd_errors": cmd_errors},
+                )
+            remote = self._cmd_remote_parts(exec_path)
         elif ext == ".msi":
             # CORREÇÃO: usar opções MSI da UI (antes era só msiexec /i)
             remote = self._build_msiexec_argv(remote_msi_path=exec_path)

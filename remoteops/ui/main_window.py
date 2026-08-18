@@ -187,21 +187,18 @@ class MainWindow(QMainWindow):
         self.powershell_tab.command_edit.textChanged.connect(self.update_command)
         self.powershell_tab.encoded_edit.textChanged.connect(self.update_command)
         # Conexões da aba CMD
-        self.cmd_tab.c_checkbox.stateChanged.connect(self.update_command)
-        self.cmd_tab.k_checkbox.stateChanged.connect(self.update_command)
-        self.cmd_tab.q_checkbox.stateChanged.connect(self.update_command)
-        self.cmd_tab.d_checkbox.stateChanged.connect(self.update_command)
-        self.cmd_tab.s_checkbox.stateChanged.connect(self.update_command)
-        self.cmd_tab.command_edit.textChanged.connect(self.update_command)
+        self.cmd_tab.optionsChanged.connect(self.update_command)
         self.psexec_tab.remote_cmd_edit.textChanged.connect(self.on_remote_cmd_edit_changed)
         self.command_preview.runRequested.connect(self.on_run)
         self.command_preview.stopRequested.connect(self.on_stop)
         self.executor.outputReceived.connect(self.log_output.append_log)
         self.executor.errorReceived.connect(self.log_output.append_log)
         self.executor.partialOutput.connect(self.log_output.set_partial_line)
-        self.executor.interactiveChanged.connect(self.log_output.set_interactive)
+        self.executor.interactiveChanged.connect(self._on_console_interactive)
         self.log_output.inputSubmitted.connect(self.executor.send_input)
         self.log_output.interruptRequested.connect(self.executor.send_control)
+        self.log_output.sessionExitRequested.connect(self._on_console_session_exit)
+        self.log_output.consoleResized.connect(self.executor.resize_conpty)
         self.executor.finished.connect(self.on_process_finished)
         self.tabs.currentChanged.connect(self._on_tab_changed)
         
@@ -1184,10 +1181,17 @@ class MainWindow(QMainWindow):
             for err in errors:
                 self.log_output.append_log(self.tr(f"[PSEXEC] {err}"))
             return
+        if self.tabs.currentWidget() == self.cmd_tab:
+            cmd_errors = self.command_builder.validate_cmd_params()
+            if cmd_errors:
+                for err in cmd_errors:
+                    self.log_output.append_log(self.tr(f"[CMD] {err}"))
+                return
         # Credencial efêmera: coletada só na execução; limpa após o lançamento.
         creds = self._current_creds()
 
         self.log_output.clear_log()
+        self.log_output.set_session_status("connecting")
         self._set_run_button_enabled(False)
         self.stop_button.setEnabled(True)
 
@@ -1207,6 +1211,7 @@ class MainWindow(QMainWindow):
             if not result.robocopy_started and not result.ok:
                 self._set_run_button_enabled(True)
                 self.stop_button.setEnabled(False)
+                self.log_output.set_session_status("error")
         finally:
             creds.clear()
 
@@ -1217,12 +1222,27 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self._set_run_button_enabled(True)
         self.log_output.set_interactive(False)
+        self.log_output.set_session_status("error" if exit_code else "exited")
         self.log_output.append_log(self.tr(f"Processo finalizado com código {exit_code}"))
+
+    def _on_console_interactive(self, active: bool) -> None:
+        self.log_output.set_interactive(active)
+        if not active:
+            return
+        cmd_session = (
+            self.tabs.currentWidget() == self.cmd_tab and self.cmd_tab.mode_k.isChecked()
+        )
+        self.log_output.set_session_status("session" if cmd_session else "running")
+
+    def _on_console_session_exit(self) -> None:
+        if not self.executor.send_input("exit"):
+            self.executor.stop()
 
     def on_stop(self):
         self._execution_service.cancel_plan()
         self.executor.stop()
         self.log_output.set_interactive(False)
+        self.log_output.set_session_status("exited")
         self._set_run_button_enabled(True)
         self.stop_button.setEnabled(False)
         self.log_output.append_log(

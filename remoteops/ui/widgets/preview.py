@@ -1,6 +1,6 @@
-from PyQt6.QtWidgets import QPlainTextEdit, QSizePolicy, QApplication
 from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import QApplication, QPlainTextEdit, QSizePolicy
 
 from remoteops.ui.style import FONT_MONO, SIZE_MONO
 from remoteops.ui.widgets.card import CardWidget
@@ -18,7 +18,12 @@ class CommandPreviewWidget(CardWidget):
         self.set_copyable(True)
         self.set_runnable(True)
         self._run_btn.setToolTip(self.tr("Executar"))
-        self._stop_btn.setToolTip(self.tr("Parar"))
+        self._stop_btn.setToolTip(
+            self.tr(
+                "Cancelar execução local. Em sessão CMD (/K), "
+                "prefira Encerrar sessão no console."
+            )
+        )
         self.copyRequested.connect(self._copy_to_clipboard)
 
         self.preview = QPlainTextEdit()

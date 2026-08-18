@@ -15,13 +15,43 @@ from remoteops.core.win_cmd import CREATE_NO_WINDOW, popen_argv
 from remoteops.utils.redaction import redact_command_text
 
 
-def decode_best_effort(b: bytes) -> str:
-    if not b:
-        return ""
+def _oem_encoding() -> str:
     try:
-        return b.decode("utf-8-sig")
+        import ctypes
+
+        cp = int(ctypes.windll.kernel32.GetOEMCP())
+        if cp in (65001, 20127):
+            return "utf-8"
+        if cp > 0:
+            return f"cp{cp}"
     except Exception:
         pass
+    return ""
+
+
+def decode_best_effort(b: bytes) -> str:
+    """Decodifica pipes de console: UTF-16 (BOM), UTF-8, OEM, ANSI (mbcs).
+
+    ConPTY entrega UTF-8. Pipes de cmd.exe usam a OEM code page do processo
+    (GetOEMCP), não UTF-8. ``/U`` em internos redirecionados pode ser UTF-16LE.
+    """
+    if not b:
+        return ""
+    if b.startswith(b"\xff\xfe") or b.startswith(b"\xfe\xff"):
+        try:
+            return b.decode("utf-16")
+        except Exception:
+            pass
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    oem = _oem_encoding()
+    if oem:
+        try:
+            return b.decode(oem, errors="replace")
+        except Exception:
+            pass
     try:
         return b.decode("mbcs", errors="replace")
     except Exception:
@@ -105,6 +135,8 @@ class Executor(QObject):
         self.process: Optional[subprocess.Popen] = None
         self._conpty_terminate = None
         self._conpty_write = None
+        self._conpty_resize = None
+        self._conpty_size = (120, 30)
         self._cancel_requested = False
         self._last_result: Optional[ExecutionResult] = None
         self._passwords: List[str] = []
@@ -141,6 +173,7 @@ class Executor(QObject):
             self._cancel_requested = False
             self._conpty_terminate = None
             self._conpty_write = None
+            self._conpty_resize = None
             self._run_generation += 1
             generation = self._run_generation
             self._passwords = [p for p in (passwords or []) if p]
@@ -157,6 +190,20 @@ class Executor(QObject):
     def send_control(self, code: str = "\x03") -> bool:
         """Envia controle ao ConPTY (padrão: Ctrl+C)."""
         return self._write_conpty(code)
+
+    def resize_conpty(self, cols: int, rows: int) -> None:
+        """Ajusta o pseudo-console ativo (no-op se não houver ConPTY)."""
+        cols = max(20, int(cols))
+        rows = max(5, int(rows))
+        with self._lock:
+            self._conpty_size = (cols, rows)
+            resize = self._conpty_resize
+        if resize is None:
+            return
+        try:
+            resize(cols, rows)
+        except Exception:
+            pass
 
     def _write_conpty(self, data: str) -> bool:
         with self._lock:
@@ -356,6 +403,7 @@ class Executor(QObject):
                     self._last_result = result
                     self._conpty_terminate = None
                     self._conpty_write = None
+                    self._conpty_resize = None
             self._set_interactive(False)
 
     def _run_conpty(
@@ -370,7 +418,9 @@ class Executor(QObject):
     ) -> ExecutionResult:
         from remoteops.core.conpty import ConPtySession
 
-        session = ConPtySession(argv)
+        with self._lock:
+            cols, rows = self._conpty_size
+        session = ConPtySession(argv, cols=cols, rows=rows)
         try:
             session.start()
         except FileNotFoundError:
@@ -396,6 +446,7 @@ class Executor(QObject):
                 return result.finalize()
             self._conpty_terminate = session.terminate
             self._conpty_write = session.write_input
+            self._conpty_resize = session.resize
 
         self._set_interactive(True)
 
@@ -434,6 +485,7 @@ class Executor(QObject):
                 if generation == self._run_generation:
                     self._conpty_terminate = None
                     self._conpty_write = None
+                    self._conpty_resize = None
             self._set_interactive(False)
             session.close()
 
@@ -491,6 +543,7 @@ class Executor(QObject):
             fut = self.future
             terminate_conpty = self._conpty_terminate
             self._conpty_write = None
+            self._conpty_resize = None
         if terminate_conpty is not None:
             try:
                 terminate_conpty()
