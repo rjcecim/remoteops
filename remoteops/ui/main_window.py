@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import sys
-
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
@@ -26,7 +23,6 @@ from remoteops.services.ops import (
     RustDeskService,
 )
 from remoteops.ui.branding import APP_DISPLAY_NAME, app_icon, app_mark_pixmap
-from remoteops.ui.style import make_icon_button
 from remoteops.ui.tabs.appsearch import AppSearchTab
 from remoteops.ui.tabs.cmd import CmdTab
 from remoteops.ui.tabs.hostapps import HostAppsTab
@@ -99,21 +95,10 @@ class MainWindow(QMainWindow):
 
         # Preview e Log: stretch 1 cada — dividem o espaço vertical restante
         self.command_preview = CommandPreviewWidget()
-        vbox.addWidget(self.command_preview, 1)
-
-        # Botões executar/parar/reiniciar: mesmo tamanho/estilo do RustDesk e demais ícones
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-        # \uE768 = Play, \uE71A = Stop, \uE72C = Refresh (Segoe MDL2 Assets)
-        self.run_button = make_icon_button("\uE768", self.tr("Executar"), parent=self)
-        self.stop_button = make_icon_button("\uE71A", self.tr("Parar"), parent=self)
+        self.run_button = self.command_preview.run_button
+        self.stop_button = self.command_preview.stop_button
         self.stop_button.setEnabled(False)
-        self.restart_button = make_icon_button("\uE72C", self.tr("Reiniciar"), parent=self)
-        button_layout.addWidget(self.run_button)
-        button_layout.addWidget(self.stop_button)
-        button_layout.addWidget(self.restart_button)
-        button_layout.setSpacing(4)
-        vbox.addLayout(button_layout, 0)
+        vbox.addWidget(self.command_preview, 1)
 
         vbox.addWidget(self.log_output, 1)
         self._main_layout = vbox
@@ -209,9 +194,8 @@ class MainWindow(QMainWindow):
         self.cmd_tab.s_checkbox.stateChanged.connect(self.update_command)
         self.cmd_tab.command_edit.textChanged.connect(self.update_command)
         self.psexec_tab.remote_cmd_edit.textChanged.connect(self.on_remote_cmd_edit_changed)
-        self.run_button.clicked.connect(self.on_run)
-        self.stop_button.clicked.connect(self.on_stop)
-        self.restart_button.clicked.connect(self.on_restart)
+        self.command_preview.runRequested.connect(self.on_run)
+        self.command_preview.stopRequested.connect(self.on_stop)
         self.executor.outputReceived.connect(self.log_output.append_log)
         self.executor.errorReceived.connect(self.log_output.append_log)
         self.executor.partialOutput.connect(self.log_output.set_partial_line)
@@ -856,9 +840,6 @@ class MainWindow(QMainWindow):
         )
         self.command_preview.setVisible(not is_fullscreen)
         self.log_output.setVisible(not is_fullscreen)
-        self.run_button.setVisible(not is_fullscreen)
-        self.stop_button.setVisible(not is_fullscreen)
-        self.restart_button.setVisible(not is_fullscreen)
         self._redistribute_expandable_space()
         if self.size() != frozen:
             self.resize(frozen)
@@ -1267,11 +1248,6 @@ class MainWindow(QMainWindow):
         self.update_tab_visibility(is_msi, is_exe)
         self._sync_psexec_copy_allowed()
         self.update_command()
-
-    def on_restart(self):
-        """Reinicia o aplicativo completamente."""
-        python = sys.executable
-        os.execl(python, python, *sys.argv)
 
     def closeEvent(self, event):
         # Encerra workers Qt antes de destruir widgets (evita

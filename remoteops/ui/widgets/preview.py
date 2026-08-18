@@ -16,6 +16,9 @@ class CommandPreviewWidget(CardWidget):
         self.set_expanding(True)
         self.set_collapsible(True, collapsed=False)
         self.set_copyable(True)
+        self.set_runnable(True)
+        self._run_btn.setToolTip(self.tr("Executar"))
+        self._stop_btn.setToolTip(self.tr("Parar"))
         self.copyRequested.connect(self._copy_to_clipboard)
 
         self.preview = QPlainTextEdit()

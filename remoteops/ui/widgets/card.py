@@ -76,6 +76,8 @@ class CardWidget(QWidget):
     downloadRequested = pyqtSignal()
     copyRequested = pyqtSignal()
     resetRequested = pyqtSignal()
+    runRequested = pyqtSignal()
+    stopRequested = pyqtSignal()
 
     def __init__(self, icon_char: str, title: str, parent=None):
         super().__init__(parent)
@@ -138,6 +140,30 @@ class CardWidget(QWidget):
         self._download_btn.clicked.connect(self.downloadRequested.emit)
         self._download_btn.hide()
 
+        self._run_btn = QToolButton()
+        self._run_btn.setObjectName("cardRun")
+        self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._run_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._run_btn.setAutoRaise(True)
+        self._run_btn.setFixedSize(22, 22)
+        self._run_btn.setFont(QFont("Segoe MDL2 Assets", 10))
+        self._run_btn.setText("\uE768")  # Play
+        self._run_btn.setToolTip("Executar")
+        self._run_btn.clicked.connect(self.runRequested.emit)
+        self._run_btn.hide()
+
+        self._stop_btn = QToolButton()
+        self._stop_btn.setObjectName("cardStop")
+        self._stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._stop_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._stop_btn.setAutoRaise(True)
+        self._stop_btn.setFixedSize(22, 22)
+        self._stop_btn.setFont(QFont("Segoe MDL2 Assets", 10))
+        self._stop_btn.setText("\uE71A")  # Stop
+        self._stop_btn.setToolTip("Parar")
+        self._stop_btn.clicked.connect(self.stopRequested.emit)
+        self._stop_btn.hide()
+
         self._copy_btn = QToolButton()
         self._copy_btn.setObjectName("cardCopy")
         self._copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -176,6 +202,8 @@ class CardWidget(QWidget):
         header.addWidget(self._title_label)
         header.addStretch()
         header.addWidget(self._download_btn)
+        header.addWidget(self._run_btn)
+        header.addWidget(self._stop_btn)
         header.addWidget(self._copy_btn)
         header.addWidget(self._reset_btn)
         header.addWidget(self._toggle_btn)
@@ -211,6 +239,20 @@ class CardWidget(QWidget):
 
     def set_copyable(self, copyable: bool = True) -> None:
         self._copy_btn.setVisible(bool(copyable))
+
+    def set_runnable(self, runnable: bool = True) -> None:
+        """Mostra Executar/Parar no cabeçalho, no mesmo tamanho dos demais ícones."""
+        visible = bool(runnable)
+        self._run_btn.setVisible(visible)
+        self._stop_btn.setVisible(visible)
+
+    @property
+    def run_button(self) -> QToolButton:
+        return self._run_btn
+
+    @property
+    def stop_button(self) -> QToolButton:
+        return self._stop_btn
 
     def set_resettable(self, resettable: bool = True, tooltip: str = "") -> None:
         """Mostra o botão de restaurar no cabeçalho, ao lado de recolher/expandir."""
@@ -402,14 +444,18 @@ class CardWidget(QWidget):
                 color: palette(mid);
                 background: transparent;
             }
-            QToolButton#cardCopy {
+            QToolButton#cardCopy, QToolButton#cardRun, QToolButton#cardStop {
                 border: none;
                 background: transparent;
                 color: palette(highlight);
             }
-            QToolButton#cardCopy:hover {
+            QToolButton#cardCopy:hover, QToolButton#cardRun:hover, QToolButton#cardStop:hover {
                 background: palette(light);
                 border-radius: 4px;
+            }
+            QToolButton#cardRun:disabled, QToolButton#cardStop:disabled {
+                color: palette(mid);
+                background: transparent;
             }
             QToolButton#cardReset {
                 border: none;
