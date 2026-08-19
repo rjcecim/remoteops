@@ -35,7 +35,6 @@ from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.mdl2_tab_bar import Mdl2TabBar
 from remoteops.ui.winget.controllers.exec_log import ExecLogRouter
 from remoteops.ui.winget.controllers.progress_controller import ProgressController
-from remoteops.ui.winget.icon_buttons import ICON_SIZE_TOP, icon_button
 from remoteops.ui.winget.parsers.winget_text import (
     parse_winget_list,
     parse_winget_search,
@@ -417,6 +416,19 @@ class WinGetTab(QWidget):
 
     def _build_search_card(self) -> CardWidget:
         card = CardWidget("\uE721", "Buscar e instalar (winget search)")
+        self.btn_search = card.make_header_button(
+            "\uE721",
+            "Buscar pacotes (winget search)",
+        )
+        self.btn_search.clicked.connect(self._on_search)
+        card.add_header_button(self.btn_search)
+        self.btn_search_install_sel = card.make_header_button(
+            "\uE896",
+            "Instalar selecionados (winget install --id ...)",
+        )
+        self.btn_search_install_sel.clicked.connect(self._on_install_search_selected)
+        card.add_header_button(self.btn_search_install_sel)
+
         g = grid_in_card(card)
 
         self.search_query = QLineEdit()
@@ -424,17 +436,7 @@ class WinGetTab(QWidget):
         self.search_query.returnPressed.connect(self._on_search)
         self.search_query.textChanged.connect(self._refresh_live_preview)
         self.search_query.installEventFilter(self)
-        self.btn_search = icon_button("\uE721", "Buscar pacotes (winget search)")
-        self.btn_search.clicked.connect(self._on_search)
-
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
-        row.addWidget(self.search_query)
-        row.addWidget(self.btn_search)
-        container = QWidget()
-        container.setLayout(row)
-        add_row(g, 0, "Termo", container)
+        add_row(g, 0, "Termo", self.search_query)
 
         self.search_table = QTableWidget(0, 6)
         self.search_table.setHorizontalHeaderLabels(["", "Nome", "Id", "Versão", "Match", "Fonte"])
@@ -455,15 +457,12 @@ class WinGetTab(QWidget):
         self.search_mark_all.toggled.connect(self._toggle_all_search)
         self.search_count = QLabel("0 itens")
         self.search_count.setStyleSheet("opacity: 0.75;")
-        self.btn_search_install_sel = icon_button("\uE896", "Instalar selecionados (winget install --id ...)", size=ICON_SIZE_TOP)
-        self.btn_search_install_sel.clicked.connect(self._on_install_search_selected)
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(8)
         top.addWidget(self.search_mark_all)
         top.addWidget(self.search_count)
         top.addStretch()
-        top.addWidget(self.btn_search_install_sel)
 
         wrap = QVBoxLayout()
         wrap.setContentsMargins(0, 0, 0, 0)
@@ -477,25 +476,29 @@ class WinGetTab(QWidget):
 
     def _build_installed_card(self) -> CardWidget:
         card = CardWidget("\uE8B7", "Pacotes instalados (winget list)")
-        g = grid_in_card(card)
+        self.btn_refresh_installed = card.make_header_button(
+            "\uE8FD",
+            "Atualizar lista (winget list)",
+        )
+        self.btn_refresh_installed.clicked.connect(self._on_installed_list)
+        card.add_header_button(self.btn_refresh_installed)
+        self.btn_inst_uninstall_sel = card.make_header_button(
+            "\uE74D",
+            "Desinstalar selecionados (winget uninstall --id ...)",
+        )
+        self.btn_inst_uninstall_sel.clicked.connect(self._on_uninstall_installed_selected)
+        card.add_header_button(self.btn_inst_uninstall_sel)
 
         self.inst_mark_all = QCheckBox("Marcar tudo")
         self.inst_mark_all.toggled.connect(self._toggle_all_installed)
         self.inst_count = QLabel("0 itens")
         self.inst_count.setStyleSheet("opacity: 0.75;")
-        # \uE8FD = ViewList — listar pacotes instalados
-        self.btn_refresh_installed = icon_button("\uE8FD", "Atualizar lista (winget list)", size=ICON_SIZE_TOP)
-        self.btn_refresh_installed.clicked.connect(self._on_installed_list)
-        self.btn_inst_uninstall_sel = icon_button("\uE74D", "Desinstalar selecionados (winget uninstall --id ...)", size=ICON_SIZE_TOP)
-        self.btn_inst_uninstall_sel.clicked.connect(self._on_uninstall_installed_selected)
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(8)
         top.addWidget(self.inst_mark_all)
         top.addWidget(self.inst_count)
         top.addStretch()
-        top.addWidget(self.btn_refresh_installed)
-        top.addWidget(self.btn_inst_uninstall_sel)
 
         self.inst_table = QTableWidget(0, 6)
         self.inst_table.setHorizontalHeaderLabels(["", "Nome", "Id", "Versão", "Disponível", "Fonte"])
