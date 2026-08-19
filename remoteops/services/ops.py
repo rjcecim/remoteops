@@ -299,7 +299,7 @@ class UninstallLaunchResult:
 
 class RemoteUninstallService:
     """
-    Desinstalação remota via PsExec (-h -s) em terminal externo.
+    Desinstalação remota via PsExec (-s) em terminal externo.
 
     Intencionalmente NÃO usa ConPTY — o botão Desinstalar do PsInfo/Pesquisa
     abre console externo (janela permanece aberta). Nunca grava senha em
@@ -342,7 +342,7 @@ class RemoteUninstallService:
         else:
             remote_argv = ["cmd", "/c", remote_cmd]
 
-        extra_flags = ["-h", "-s", "-accepteula", "-nobanner"]
+        extra_flags = ["-s", "-accepteula", "-nobanner"]
         real_argv = build_psexec_argv(
             psexec_exe=psexec_exe,
             host=host,
