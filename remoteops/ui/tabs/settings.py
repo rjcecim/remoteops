@@ -377,6 +377,9 @@ class SettingsTab(QWidget):
                 "e inventário via registro remoto). Vale na próxima consulta."
             ),
         )
+        ref_w = self.rr_timeout_spin.sizeHint().width()
+        self.rr_timeout_spin.setFixedWidth(ref_w)
+        self.search_workers_spin.setFixedWidth(ref_w)
         root.addWidget(card_search)
         finish_card_stack(root)
 
