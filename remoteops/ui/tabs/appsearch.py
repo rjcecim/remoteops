@@ -352,7 +352,7 @@ class AppSearchTab(QWidget):
         status_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         status_wrap.setToolTip(
             self.tr(
-                "Definido em Configurações. Com faixa de IP salva, varre a rede; "
+                "Definido em Configurações. Com a faixa de IP ativada, varre a rede; "
                 "senão usa hosts.json."
             )
         )

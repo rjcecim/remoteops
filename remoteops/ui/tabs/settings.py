@@ -277,7 +277,7 @@ class SettingsTab(QWidget):
         self.hosts_edit.setToolTip(
             self.tr(
                 "Arquivo JSON com a lista de computadores. "
-                "Não é usado quando a faixa de IP acima está salva."
+                "Não é usado enquanto a faixa de IP acima estiver ativada."
             )
         )
         self.hosts_browse_btn = make_icon_button("\uED25", self.tr("Selecionar outro hosts.json"))
@@ -340,7 +340,7 @@ class SettingsTab(QWidget):
                 "Define quantos computadores podem ser consultados ao mesmo tempo. "
                 "Valores maiores podem acelerar a pesquisa, mas aumentam o número de "
                 "conexões simultâneas. A alteração será aplicada na próxima pesquisa. "
-                "Se a faixa de IP acima estiver salva, a pesquisa varre a rede e "
+                "Se a faixa de IP acima estiver ativada, a pesquisa varre a rede e "
                 "ignora o hosts.json."
             ),
         )

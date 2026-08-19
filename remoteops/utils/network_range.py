@@ -12,6 +12,7 @@ from typing import Any, Iterable, Optional, Sequence
 
 from remoteops.utils.app_settings import load_setting, save_portable_settings
 
+KEY_NET_ENABLED = "network/enabled"
 KEY_NET_START_IP = "network/start_ip"
 KEY_NET_END_IP = "network/end_ip"
 KEY_NET_IGNORED_SUBNETS = "network/ignored_subnets"
@@ -27,6 +28,7 @@ _runtime: Optional["NetworkRangeConfig"] = None
 
 @dataclass(frozen=True)
 class NetworkRangeConfig:
+    enabled: bool = True
     start_ip: str = ""
     end_ip: str = ""
     ignored_subnets: str = ""
@@ -48,6 +50,22 @@ def normalize_scan_threads(value: Any) -> int:
     except (TypeError, ValueError):
         return DEFAULT_SCAN_THREADS
     return max(MIN_SCAN_THREADS, min(MAX_SCAN_THREADS, n))
+
+
+def parse_enabled(value: Any, default: bool = True) -> bool:
+    """Interpreta o flag do settings.ini (QSettings pode devolver str/int/bool)."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off", ""):
+        return False
+    return default
 
 
 def snap_scan_threads(value: Any) -> int:
@@ -140,6 +158,7 @@ def ips_for_config(cfg: NetworkRangeConfig) -> tuple[list[str], Optional[str]]:
 
 def _load_config_from_settings() -> NetworkRangeConfig:
     return NetworkRangeConfig(
+        enabled=parse_enabled(load_setting(KEY_NET_ENABLED, True), True),
         start_ip=str(load_setting(KEY_NET_START_IP, "") or "").strip(),
         end_ip=str(load_setting(KEY_NET_END_IP, "") or "").strip(),
         ignored_subnets=str(load_setting(KEY_NET_IGNORED_SUBNETS, "") or "").strip(),
@@ -155,18 +174,21 @@ def get_network_range_config() -> NetworkRangeConfig:
 
 
 def is_network_range_configured() -> bool:
-    return get_network_range_config().configured
+    cfg = get_network_range_config()
+    return bool(cfg.enabled) and cfg.configured
 
 
 def network_range_search_mode() -> tuple[str, Optional[str], int]:
     """Como a Pesquisa de Apps deve obter os hosts.
 
     Retorna ``(mode, erro, quantidade_de_ips)``:
-    - ``json``: faixa vazia → usa hosts.json
-    - ``network``: faixa válida → varre a rede
-    - ``invalid``: usuário preencheu a faixa, mas ela não pode ser usada
+    - ``json``: faixa desativada ou vazia → usa hosts.json
+    - ``network``: faixa ativada e válida → varre a rede
+    - ``invalid``: faixa ativada, mas não pode ser usada
     """
     cfg = get_network_range_config()
+    if not cfg.enabled:
+        return "json", None, 0
     start = (cfg.start_ip or "").strip()
     end = (cfg.end_ip or "").strip()
     if not start and not end:
@@ -181,6 +203,7 @@ def network_range_search_mode() -> tuple[str, Optional[str], int]:
 
 def set_network_range_config(
     *,
+    enabled: Optional[bool] = None,
     start_ip: Optional[str] = None,
     end_ip: Optional[str] = None,
     ignored_subnets: Optional[str] = None,
@@ -189,11 +212,13 @@ def set_network_range_config(
     """Atualiza e persiste a faixa. Em falha de gravação propaga SettingsWriteError."""
     global _runtime
     current = get_network_range_config()
+    use = current.enabled if enabled is None else parse_enabled(enabled, current.enabled)
     start = current.start_ip if start_ip is None else str(start_ip).strip()
     end = current.end_ip if end_ip is None else str(end_ip).strip()
     ignored = current.ignored_subnets if ignored_subnets is None else str(ignored_subnets).strip()
     threads = current.scan_threads if scan_threads is None else snap_scan_threads(scan_threads)
     cfg = NetworkRangeConfig(
+        enabled=bool(use),
         start_ip=start,
         end_ip=end,
         ignored_subnets=ignored,
@@ -201,6 +226,7 @@ def set_network_range_config(
     )
     save_portable_settings(
         {
+            KEY_NET_ENABLED: bool(cfg.enabled),
             KEY_NET_START_IP: cfg.start_ip,
             KEY_NET_END_IP: cfg.end_ip,
             KEY_NET_IGNORED_SUBNETS: cfg.ignored_subnets,

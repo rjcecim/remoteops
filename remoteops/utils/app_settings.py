@@ -75,6 +75,7 @@ def _collect_current_settings() -> Dict[str, Any]:
     """Monta o snapshot das preferências atuais (imports locais evitam ciclos)."""
     from remoteops.utils.app_logging import is_file_logging_enabled
     from remoteops.utils.network_range import (
+        KEY_NET_ENABLED,
         KEY_NET_END_IP,
         KEY_NET_IGNORED_SUBNETS,
         KEY_NET_SCAN_THREADS,
@@ -92,6 +93,7 @@ def _collect_current_settings() -> Dict[str, Any]:
         KEY_SEARCH_HOSTS_PATH: get_search_hosts_path(),
         KEY_LOGS_FILE_ENABLED: bool(is_file_logging_enabled()),
         KEY_REMOTE_REGISTRY_TIMEOUT: float(get_remote_registry_timeout()),
+        KEY_NET_ENABLED: bool(net.enabled),
         KEY_NET_START_IP: net.start_ip,
         KEY_NET_END_IP: net.end_ip,
         KEY_NET_IGNORED_SUBNETS: net.ignored_subnets,

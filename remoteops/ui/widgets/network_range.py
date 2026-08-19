@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -17,7 +18,13 @@ from PyQt6.QtWidgets import (
 )
 
 from remoteops.ui.style import COLOR_ACCENT, COLOR_BORDER_HOVER, SIZE_UI_SMALL
-from remoteops.ui.widgets.card import CardWidget, add_row, grid_in_card
+from remoteops.ui.widgets.card import (
+    CardWidget,
+    add_row,
+    add_row_full_width,
+    grid_in_card,
+    make_field_label,
+)
 from remoteops.utils.app_settings import SettingsWriteError
 from remoteops.utils.network_range import (
     DEFAULT_SCAN_THREADS,
@@ -59,18 +66,41 @@ class NetworkRangeConfigWidget(CardWidget):
         g = grid_in_card(self)
         row = 0
 
+        self.enabled_check = QCheckBox(self.tr("Usar faixa de IP na pesquisa"))
+        self.enabled_check.setToolTip(
+            self.tr(
+                "Marcada: a Pesquisa de Aplicativos varre a faixa abaixo. "
+                "Desmarcada: usa o hosts.json. Os IPs configurados permanecem salvos."
+            )
+        )
+        self.enabled_check.toggled.connect(self._on_enabled_toggled)
+        add_row_full_width(g, row, self.enabled_check)
+        row += 1
+
         self.start_ip_edit = QLineEdit()
         self.start_ip_edit.setPlaceholderText(self.tr("Ex.: 192.168.1.1"))
         self.start_ip_edit.setToolTip(self.tr("Primeiro endereço IPv4 da faixa (inclusivo)"))
         self.start_ip_edit.editingFinished.connect(self._on_ips_edited)
-        add_row(g, row, self.tr("IP de início"), self.start_ip_edit)
-        row += 1
 
         self.end_ip_edit = QLineEdit()
         self.end_ip_edit.setPlaceholderText(self.tr("Ex.: 192.168.1.255"))
         self.end_ip_edit.setToolTip(self.tr("Último endereço IPv4 da faixa (inclusivo)"))
         self.end_ip_edit.editingFinished.connect(self._on_ips_edited)
-        add_row(g, row, self.tr("IP de fim"), self.end_ip_edit)
+
+        self._end_ip_label = make_field_label(self.tr("IP de fim"))
+        self._end_ip_label.setMinimumWidth(0)
+        self._end_ip_label.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred
+        )
+
+        ips_wrap = QWidget()
+        ips_row = QHBoxLayout(ips_wrap)
+        ips_row.setContentsMargins(0, 0, 0, 0)
+        ips_row.setSpacing(10)
+        ips_row.addWidget(self.start_ip_edit, 1)
+        ips_row.addWidget(self._end_ip_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        ips_row.addWidget(self.end_ip_edit, 1)
+        add_row(g, row, self.tr("IP de início"), ips_wrap)
         row += 1
 
         self.ignored_edit = QLineEdit()
@@ -160,6 +190,9 @@ class NetworkRangeConfigWidget(CardWidget):
         cfg = get_network_range_config()
         self._saving = True
         try:
+            self.enabled_check.blockSignals(True)
+            self.enabled_check.setChecked(bool(cfg.enabled))
+            self.enabled_check.blockSignals(False)
             self.start_ip_edit.setText(cfg.start_ip)
             self.end_ip_edit.setText(cfg.end_ip)
             self.ignored_edit.setText(cfg.ignored_subnets)
@@ -168,6 +201,7 @@ class NetworkRangeConfigWidget(CardWidget):
             self.threads_slider.setValue(threads)
             self.threads_slider.blockSignals(False)
             self.threads_value.setText(str(threads))
+            self._apply_enabled_state(bool(cfg.enabled))
         finally:
             self._saving = False
         self._refresh_mode_caption()
@@ -175,6 +209,7 @@ class NetworkRangeConfigWidget(CardWidget):
     def reset_to_defaults(self) -> None:
         """Limpa a faixa, exclusões e volta as threads ao padrão."""
         self._persist(
+            enabled=True,
             start_ip="",
             end_ip="",
             ignored_subnets="",
@@ -182,12 +217,32 @@ class NetworkRangeConfigWidget(CardWidget):
         )
         self.reload()
 
+    def _apply_enabled_state(self, enabled: bool) -> None:
+        for widget in (
+            self.start_ip_edit,
+            self.end_ip_edit,
+            self._end_ip_label,
+            self.ignored_edit,
+            self.threads_slider,
+            self.threads_value,
+        ):
+            widget.setEnabled(enabled)
+
     def _refresh_mode_caption(self) -> None:
+        cfg = get_network_range_config()
+        if not cfg.enabled:
+            self.mode_caption.setText(
+                self.tr(
+                    "Faixa desativada: a Pesquisa de Aplicativos usa o hosts.json. "
+                    "Os IPs configurados permanecem salvos."
+                )
+            )
+            return
         mode, err, count = network_range_search_mode()
         if mode == "network":
             self.mode_caption.setText(
                 self.tr(
-                    f"Faixa salva ({count} IP(s)): a Pesquisa de Aplicativos varre "
+                    f"Faixa ativa ({count} IP(s)): a Pesquisa de Aplicativos varre "
                     "a rede e não usa o hosts.json."
                 )
             )
@@ -199,6 +254,10 @@ class NetworkRangeConfigWidget(CardWidget):
                     "Sem faixa válida: a Pesquisa de Aplicativos usa o hosts.json."
                 )
             )
+
+    def _on_enabled_toggled(self, checked: bool) -> None:
+        self._apply_enabled_state(bool(checked))
+        self._persist(enabled=bool(checked))
 
     def _persist(self, **kwargs) -> None:
         if self._saving:
