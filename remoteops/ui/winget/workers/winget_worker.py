@@ -62,11 +62,9 @@ class WinGetWorker(QThread):
         is_multi = self.action in MULTI_ITEM_EXEC_ACTIONS and len(self.ids) > 1
         progress_cb = self.item_progress.emit if is_exec else None
 
-        emit_item_signals = is_exec
+        emit_item_signals = is_exec and self.action != "upgrade_all"
         if emit_item_signals:
-            if self.action == "upgrade_all":
-                self.item_started.emit(1, 1, "--all")
-            elif is_multi:
+            if is_multi:
                 self.item_started.emit(1, len(self.ids), self.ids[0])
             elif self.ids:
                 self.item_started.emit(1, 1, self.ids[0])
@@ -81,12 +79,7 @@ class WinGetWorker(QThread):
 
         if emit_item_signals:
             results = payload.get("Results") or []
-            if self.action == "upgrade_all":
-                r0 = results[0] if results else {}
-                exit_code = result_exit_code(r0.get("ExitCode"))
-                output = str(r0.get("Output", "") or "")
-                self.item_finished.emit(1, 1, "--all", exit_code, output)
-            elif is_multi:
+            if is_multi:
                 total = len(self.ids)
                 for idx, r in enumerate(results, start=1):
                     pkg_id = str(r.get("Id") or (self.ids[idx - 1] if idx <= len(self.ids) else ""))
@@ -99,7 +92,7 @@ class WinGetWorker(QThread):
                 r0 = results[0] if results else {}
                 exit_code = result_exit_code(r0.get("ExitCode"))
                 output = str(r0.get("Output", "") or "")
-                item_label = "--all" if self.action == "upgrade_all" else (self.ids[0] if self.ids else self.action)
+                item_label = self.ids[0] if self.ids else self.action
                 self.item_finished.emit(1, 1, item_label, exit_code, output)
 
         self.finished_ok.emit(payload)

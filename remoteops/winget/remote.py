@@ -315,8 +315,8 @@ def run_remote_winget(
     cancel_event: threading.Event | None = None,
 ) -> dict:
     """Executa ``winget`` no host remoto via PsExec+PowerShell e devolve o dict JSON."""
-    svc_name = "WINGETRM" + uuid.uuid4().hex[:6].upper()
-    artifacts = build_remote_paths(host, svc_name)
+    run_id = "WINGETRM" + uuid.uuid4().hex[:6].upper()
+    artifacts = build_remote_paths(host, run_id)
 
     script = build_remote_script(
         action=action,
@@ -333,7 +333,6 @@ def run_remote_winget(
         host=host,
         username=username,
         password=password,
-        svc_name=svc_name,
         ps_command=ps_command,
     )
     cmdline_len = len(subprocess.list2cmdline(args))
@@ -347,7 +346,6 @@ def run_remote_winget(
     exe = args[0]
     target = args[1]
     _emit(log_cb, f"[{_now_hms()}] Executando: {exe} {target} (ação={action})")
-    _emit(log_cb, f"[{_now_hms()}] Serviço remoto: {svc_name} (-r WINGETRM<auto>)")
 
     proc = _spawn(args)
     tail_stop = threading.Event()

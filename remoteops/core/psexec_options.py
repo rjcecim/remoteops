@@ -4,8 +4,6 @@ Camadas:
     Interface  →  compute_psexec_option_state()
     Validação  →  validate_psexec_options()
     Builder    →  build_psexec_option_argv()  (sempre sanitiza)
-
-Parâmetros proibidos neste projeto (nunca emitir): ``-r``, ``-w``, ``-x``.
 """
 
 from __future__ import annotations
@@ -23,8 +21,6 @@ PRIORITIES = (
     "-realtime",
     "-background",
 )
-
-FORBIDDEN_PSEXEC_FLAGS = ("-r", "-w", "-x")
 
 # Pares mutuamente exclusivos: (A, B, motivo)
 CONFLICT_PAIRS: tuple[tuple[str, str, str], ...] = (
@@ -134,7 +130,7 @@ TOOLTIPS = {
     ),
     "extra_args": (
         "Argumentos do programa executado no host remoto — não são parâmetros "
-        "do PsExec. Não use este campo para flags como -s, -h ou -x."
+        "do PsExec. Não use este campo para flags como -s ou -h."
     ),
     "priority": "Prioridade do processo remoto. Apenas uma opção por vez.",
     "-low": "Prioridade baixa.",
@@ -593,8 +589,7 @@ def build_psexec_option_argv(opts: PsExecOptions) -> list[str]:
     """
     Gera somente as flags do PsExec (sem exe, host, -u/-p, cmd ou args extras).
 
-    Sempre sanitiza antes de emitir — nunca devolve combinações impossíveis
-    nem ``-r``/``-w``/``-x``.
+    Sempre sanitiza antes de emitir — nunca devolve combinações impossíveis.
     """
     opts = sanitize_psexec_options(opts)
     cmd: list[str] = []
@@ -644,10 +639,6 @@ def build_psexec_option_argv(opts: PsExecOptions) -> list[str]:
 
     if opts.flag_arm:
         cmd.append("-arm")
-
-    for forbidden in FORBIDDEN_PSEXEC_FLAGS:
-        if forbidden in cmd:
-            cmd = [tok for tok in cmd if tok != forbidden]
 
     return cmd
 

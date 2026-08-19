@@ -106,7 +106,26 @@ _INSTALL_START_RE = re.compile(
 
 _PACKAGE_HEADER_RE = re.compile(r"^---\s+(.+?)\s+---$")
 
+# `winget upgrade --all`: "(1/3) Found Google Chrome [Google.Chrome] Version ..."
+# pt-BR: "(1/3) Encontrado Google Chrome [Google.Chrome] Versão ..."
+_FOUND_PACKAGE_RE = re.compile(
+    r"^(?:\((?P<idx>\d+)\s*/\s*(?P<total>\d+)\)\s+)?"
+    r"(?:Found|Encontrad[oa])\s+"
+    r"(?P<name>.+?)\s+"
+    r"\[(?P<id>[^\]]+)\]",
+    re.IGNORECASE,
+)
+
 _DOWNLOAD_START_RE = re.compile(r"^Downloading\s+https?://", re.IGNORECASE)
+_BAIXANDO_START_RE = re.compile(r"^Baixando\s+https?://", re.IGNORECASE)
+
+_LISTING_PKG_ID_RE = re.compile(
+    r"([A-Za-z0-9][A-Za-z0-9+._\-]*\.[A-Za-z0-9][A-Za-z0-9+._\-]*)"
+)
+_UPGRADES_AVAILABLE_RE = re.compile(
+    r"(\bupgrades?\s+available\b|\batualiza(?:ç|c)(?:õ|o)es\s+dispon(?:í|i)veis\b)",
+    re.IGNORECASE,
+)
 
 _ITEM_COMPLETE_RE = re.compile(
     r"("
@@ -134,12 +153,72 @@ def parse_package_header(line: str) -> str | None:
     return pkg_id or None
 
 
+def parse_found_package(line: str) -> tuple[str, str, int | None, int | None] | None:
+    """Extrai nome/ID de ``Found Name [Id]`` (e ``(n/m)``) do ``upgrade --all``.
+
+    Devolve ``(display_name, pkg_id, idx, total)`` ou ``None``.
+    """
+    stripped = normalize_winget_line(line)
+    m = _FOUND_PACKAGE_RE.match(stripped)
+    if not m:
+        return None
+    pkg_id = (m.group("id") or "").strip()
+    name = (m.group("name") or "").strip()
+    if not pkg_id or " " in pkg_id:
+        return None
+    # Evita "Found an existing package already installed" e similares.
+    if "." not in pkg_id and not re.fullmatch(r"(?:9[A-Z0-9]{10,}|XP[A-Z0-9]{10,})", pkg_id, re.I):
+        return None
+    idx = int(m.group("idx")) if m.group("idx") else None
+    total = int(m.group("total")) if m.group("total") else None
+    return (name or pkg_id, pkg_id, idx, total)
+
+
+def parse_upgrade_listing_row(line: str) -> tuple[str, str] | None:
+    """Nome completo + Id de uma linha da tabela do ``winget upgrade --all``.
+
+    O ``Found Name [Id]`` costuma truncar o nome (``Java 8`` em vez de
+    ``Java 8 Update 501 (64-bit)``). A tabela listada antes traz o Nome.
+    """
+    stripped = normalize_winget_line(line)
+    if not stripped or is_winget_table_chrome(line):
+        return None
+    if parse_found_package(stripped) or parse_package_header(stripped):
+        return None
+    if _UPGRADES_AVAILABLE_RE.search(stripped):
+        return None
+    if "://" in stripped:
+        return None
+    low = stripped.lower()
+    if low.startswith("downloading") or low.startswith("baixando"):
+        return None
+
+    best: tuple[int, str] | None = None
+    for m in _LISTING_PKG_ID_RE.finditer(stripped):
+        pkg_id = m.group(1)
+        if " " in pkg_id or not re.search(r"[A-Za-z]", pkg_id):
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+){1,5}", pkg_id):
+            continue
+        best = (m.start(), pkg_id)
+    if not best:
+        return None
+    start, pkg_id = best
+    name = stripped[:start].rstrip(" .…").strip()
+    right = stripped[start + len(pkg_id) :].strip()
+    if not name or len(name) < 2:
+        return None
+    if not re.search(r"\d+(?:\.\d+)+", right):
+        return None
+    return name, pkg_id
+
+
 def is_winget_download_start(line: str) -> bool:
     """True quando o winget começa a baixar o instalador."""
     stripped = normalize_winget_line(line)
     if not stripped:
         return False
-    return bool(_DOWNLOAD_START_RE.match(stripped))
+    return bool(_DOWNLOAD_START_RE.match(stripped) or _BAIXANDO_START_RE.match(stripped))
 
 
 def is_winget_item_complete(line: str) -> bool:

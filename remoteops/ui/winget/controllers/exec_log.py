@@ -17,7 +17,9 @@ from remoteops.winget.winget_output import (
     is_winget_item_complete,
     is_winget_table_chrome,
     normalize_winget_line,
+    parse_found_package,
     parse_package_header,
+    parse_upgrade_listing_row,
 )
 
 
@@ -31,14 +33,26 @@ class ExecLogRouter:
         self.stream_seen_ids: list[str] = []
         self.stream_finished_ids: set[str] = set()
         self.saw_realtime_output = False
+        self.package_names: dict[str, str] = {}
 
-    def begin_exec(self, action: str, ids: list[str]) -> None:
+    def begin_exec(
+        self,
+        action: str,
+        ids: list[str],
+        package_names: dict[str, str] | None = None,
+    ) -> None:
         self.exec_action = action
         self.exec_ids = list(ids or [])
         self.stream_seen_ids = []
         self.stream_finished_ids = set()
         self.saw_realtime_output = False
-        self._progress.begin_exec(exec_ids=self.exec_ids)
+        self.package_names = {
+            str(k).strip(): str(v).strip()
+            for k, v in (package_names or {}).items()
+            if str(k).strip() and str(v).strip()
+        }
+        initial = "Iniciando…" if action == "upgrade_all" else ""
+        self._progress.begin_exec(exec_ids=self.exec_ids, initial_label=initial)
 
     def reset(self) -> None:
         self.exec_action = None
@@ -46,7 +60,24 @@ class ExecLogRouter:
         self.stream_seen_ids = []
         self.stream_finished_ids = set()
         self.saw_realtime_output = False
+        self.package_names = {}
         self._progress.reset()
+
+    def _remember_name(self, pkg_id: str, name: str) -> None:
+        pkg_id = (pkg_id or "").strip()
+        name = (name or "").strip()
+        if not pkg_id or not name:
+            return
+        existing = self.package_names.get(pkg_id, "")
+        if len(name) > len(existing):
+            self.package_names[pkg_id] = name
+
+    def _display_name(self, pkg_id: str, fallback: str = "") -> str:
+        mapped = (self.package_names.get(pkg_id) or "").strip()
+        fb = (fallback or "").strip()
+        if mapped and (not fb or len(mapped) >= len(fb)):
+            return mapped
+        return fb or pkg_id
 
     def strip_realtime_prefix(self, text: str) -> tuple[str, bool]:
         if (text or "").startswith(REALTIME_LOG_PREFIX):
@@ -73,6 +104,10 @@ class ExecLogRouter:
         if cleaned in SPINNER_LINES:
             return None
 
+        listing = parse_upgrade_listing_row(text)
+        if listing:
+            self._remember_name(listing[1], listing[0])
+
         if realtime and cleaned:
             self.saw_realtime_output = True
             self._handle_stream_event(text, cleaned)
@@ -91,15 +126,45 @@ class ExecLogRouter:
         pkg_id = parse_package_header(raw)
         if pkg_id and (not self.exec_ids or pkg_id in self.exec_ids):
             self._on_package_started(pkg_id)
-        elif is_winget_item_complete(raw):
+            return
+
+        found = parse_found_package(raw)
+        if found:
+            name, found_id, idx, total = found
+            if not self.exec_ids or found_id in self.exec_ids:
+                self._remember_name(found_id, name)
+                self._on_package_started(
+                    found_id,
+                    display=self._display_name(found_id, name),
+                    idx=idx,
+                    total=total,
+                )
+                return
+
+        listing = parse_upgrade_listing_row(raw)
+        if listing:
+            self._remember_name(listing[1], listing[0])
+            return
+
+        if is_winget_item_complete(raw):
             self._on_package_finished(cleaned)
         elif is_winget_download_start(raw):
             self._progress.on_download_start()
 
-    def _on_package_started(self, package_id: str) -> None:
+    def _on_package_started(
+        self,
+        package_id: str,
+        *,
+        display: str | None = None,
+        idx: int | None = None,
+        total: int | None = None,
+    ) -> None:
         if package_id not in self.stream_seen_ids:
             self.stream_seen_ids.append(package_id)
         if package_id == self._progress.current_pkg_id and self._progress.item_in_progress:
+            label = self._display_name(package_id, display or "")
+            if label:
+                self._progress.set_current_display(label)
             return
         if (
             self._progress.item_in_progress
@@ -108,9 +173,19 @@ class ExecLogRouter:
         ):
             self._finalize_package(self._progress.current_pkg_id, "")
 
-        idx = self.stream_seen_ids.index(package_id) + 1
-        total = len(self.exec_ids) if self.exec_ids else max(idx, self._progress.current_pkg_total)
-        self._progress.on_item_started(idx, total, package_id)
+        resolved_idx = idx if idx is not None else self.stream_seen_ids.index(package_id) + 1
+        if self.exec_ids:
+            resolved_total = len(self.exec_ids)
+        elif total is not None and total > 0:
+            resolved_total = total
+        else:
+            resolved_total = max(resolved_idx, self._progress.current_pkg_total)
+        self._progress.on_item_started(
+            resolved_idx,
+            resolved_total,
+            package_id,
+            display=self._display_name(package_id, display or ""),
+        )
 
     def _on_package_finished(self, hint: str) -> None:
         if not self._progress.item_in_progress or not self._progress.current_pkg_id:

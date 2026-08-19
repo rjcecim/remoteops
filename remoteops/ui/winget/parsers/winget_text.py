@@ -79,16 +79,22 @@ def _parse_row_by_pkg_id(
     raw: str,
     *,
     expect_available: bool,
+    require_source: bool = True,
+    default_source: str = "winget",
 ) -> dict | None:
     """Fallback: localiza o Id por padrão Publisher.Package e versões à direita."""
     line = normalize_winget_table_text(raw).rstrip()
     if not line:
         return None
     src_m = _SOURCE_RE.search(line)
-    if not src_m:
+    if src_m:
+        source = src_m.group(1)
+        body = line[: src_m.start()].rstrip()
+    elif require_source:
         return None
-    source = src_m.group(1)
-    body = line[: src_m.start()].rstrip()
+    else:
+        source = default_source
+        body = line
     id_matches = [m for m in _PKG_ID_RE.finditer(body) if _looks_like_pkg_id(m.group(1))]
     if not id_matches:
         return None
@@ -299,51 +305,104 @@ def _search_column_positions(header_line: str) -> tuple[int, int, int, int]:
 
 
 def _parse_search_row_tokens(raw: str) -> tuple[str, str, str, str, str] | None:
-    """Fallback para linhas compactas com apenas um espaco entre colunas."""
+    """Fallback para linhas compactas; aceita tabela sem coluna Origem."""
     parts = _split_spaced(raw)
-    if len(parts) >= 4:
-        name, pkg_id, version = parts[0], parts[1], parts[2]
-        match = parts[3] if len(parts) >= 5 else ""
-        source = parts[4] if len(parts) >= 5 else parts[3]
-        if name and pkg_id and version and source:
-            return name, pkg_id, version, match, source
+    if len(parts) >= 5:
+        name, pkg_id, version, match, source = parts[0], parts[1], parts[2], parts[3], parts[4]
+        if name and pkg_id and version:
+            if _looks_like_source(source):
+                return name, pkg_id, version, match, source
+            if _looks_like_source(match) and not _looks_like_source(source):
+                return name, pkg_id, version, "", match
+    if len(parts) == 4:
+        name, pkg_id, version, last = parts
+        if name and pkg_id and version:
+            if _looks_like_source(last):
+                return name, pkg_id, version, "", last
+            return name, pkg_id, version, last, "winget"
+    if len(parts) == 3:
+        name, pkg_id, version = parts
+        if name and pkg_id and version:
+            return name, pkg_id, version, "", "winget"
 
     tokens = (raw or "").split()
+    if len(tokens) == 3:
+        name, pkg_id, version = tokens
+        if name and pkg_id and version:
+            return name, pkg_id, version, "", "winget"
     if len(tokens) == 4:
-        name, pkg_id, version, source = tokens
-        if name and pkg_id and version and source:
-            return name, pkg_id, version, "", source
+        name, pkg_id, version, last = tokens
+        if name and pkg_id and version:
+            if _looks_like_source(last):
+                return name, pkg_id, version, "", last
+            return name, pkg_id, version, last, "winget"
     if len(tokens) >= 5:
         name, pkg_id, version, match, source = tokens[0], tokens[1], tokens[2], tokens[3], tokens[4]
-        if name and pkg_id and version and source:
-            return name, pkg_id, version, match, source
+        if name and pkg_id and version:
+            if _looks_like_source(source):
+                return name, pkg_id, version, match, source
+            if _looks_like_source(match):
+                return name, pkg_id, version, "", match
+            return name, pkg_id, version, match, "winget"
     return None
 
 
 def parse_winget_search(lines: list[str]) -> list[dict]:
-    """Parse do ``winget search`` → ``Name/Id/Version/Match/Source``."""
+    """Parse do ``winget search`` → ``Name/Id/Version/Match/Source``.
+
+    Com ``--source winget`` a coluna Origem (e às vezes Match) some, e o
+    cabeçalho pode faltar no texto capturado. Aceita tabela 3/4/5 colunas.
+    """
     lines = [normalize_winget_table_text(x) for x in lines]
     header_idx = _header_index(lines, require_available=False)
-    if header_idx < 0:
-        return []
+    data_start = 0
+    use_slices_5 = False
+    use_slices_4_src = False
+    use_slices_4_match = False
+    use_slices_3 = False
+    id_pos = ver_pos = match_pos = src_pos = -1
 
-    header = lines[header_idx]
-    id_pos, ver_pos, match_pos, src_pos = _search_column_positions(header)
-    use_slices_5 = (
-        all(p >= 0 for p in (id_pos, ver_pos, match_pos, src_pos))
-        and id_pos < ver_pos < match_pos < src_pos
-    )
-    use_slices_4 = (
-        all(p >= 0 for p in (id_pos, ver_pos, src_pos))
-        and match_pos < 0
-        and id_pos < ver_pos < src_pos
-    )
+    if header_idx >= 0:
+        header = lines[header_idx]
+        id_pos, ver_pos, match_pos, src_pos = _search_column_positions(header)
+        use_slices_5 = (
+            all(p >= 0 for p in (id_pos, ver_pos, match_pos, src_pos))
+            and id_pos < ver_pos < match_pos < src_pos
+        )
+        use_slices_4_src = (
+            not use_slices_5
+            and all(p >= 0 for p in (id_pos, ver_pos, src_pos))
+            and match_pos < 0
+            and id_pos < ver_pos < src_pos
+        )
+        use_slices_4_match = (
+            not use_slices_5
+            and not use_slices_4_src
+            and all(p >= 0 for p in (id_pos, ver_pos, match_pos))
+            and src_pos < 0
+            and id_pos < ver_pos < match_pos
+        )
+        use_slices_3 = (
+            not use_slices_5
+            and not use_slices_4_src
+            and not use_slices_4_match
+            and all(p >= 0 for p in (id_pos, ver_pos))
+            and match_pos < 0
+            and src_pos < 0
+            and id_pos < ver_pos
+        )
+        data_start = header_idx + 1
+        if data_start < len(lines) and _is_separator_or_empty(lines[data_start]):
+            data_start += 1
 
     out: list[dict] = []
-    for raw in lines[header_idx + 2 :]:
+    for raw in lines[data_start:]:
         raw = (raw or "").rstrip()
         if _is_separator_or_empty(raw):
             continue
+        low = raw.lower().strip()
+        if "no package found" in low or "nenhum pacote encontrado" in low:
+            break
 
         parsed: tuple[str, str, str, str, str] | None = None
         if use_slices_5:
@@ -351,13 +410,24 @@ def parse_winget_search(lines: list[str]) -> list[dict]:
                 raw, [0, id_pos, ver_pos, match_pos, src_pos]
             )
             pkg_id = _clean_pkg_id(pkg_id)
-            if name and pkg_id and version and source and _looks_like_pkg_id(pkg_id):
-                parsed = (name, pkg_id, version, match, source)
-        elif use_slices_4:
+            if name and pkg_id and version and _looks_like_pkg_id(pkg_id):
+                parsed = (name, pkg_id, version, match, source if _looks_like_source(source) else "winget")
+        elif use_slices_4_src:
             name, pkg_id, version, source = _slice_row(raw, [0, id_pos, ver_pos, src_pos])
             pkg_id = _clean_pkg_id(pkg_id)
-            if name and pkg_id and version and source and _looks_like_pkg_id(pkg_id):
-                parsed = (name, pkg_id, version, "", source)
+            if name and pkg_id and version and _looks_like_pkg_id(pkg_id):
+                parsed = (name, pkg_id, version, "", source if _looks_like_source(source) else "winget")
+        elif use_slices_4_match:
+            name, pkg_id, version, match = _slice_row(raw, [0, id_pos, ver_pos, match_pos])
+            pkg_id = _clean_pkg_id(pkg_id)
+            if name and pkg_id and version and _looks_like_pkg_id(pkg_id):
+                parsed = (name, pkg_id, version, match, "winget")
+        elif use_slices_3:
+            name, pkg_id, version = _slice_row(raw, [0, id_pos, ver_pos])
+            pkg_id = _clean_pkg_id(pkg_id)
+            if name and pkg_id and version and _looks_like_pkg_id(pkg_id):
+                parsed = (name, pkg_id, version, "", "winget")
+
         if parsed is None:
             parsed = _parse_search_row_tokens(raw)
             if parsed is not None:
@@ -366,7 +436,9 @@ def parse_winget_search(lines: list[str]) -> list[dict]:
                 if not _looks_like_pkg_id(pkg_id):
                     parsed = None
         if parsed is None:
-            resilient = _parse_row_by_pkg_id(raw, expect_available=False)
+            resilient = _parse_row_by_pkg_id(
+                raw, expect_available=False, require_source=False
+            )
             if resilient is None:
                 continue
             out.append(
@@ -375,7 +447,7 @@ def parse_winget_search(lines: list[str]) -> list[dict]:
                     "Id": resilient["Id"],
                     "Version": resilient["Version"],
                     "Match": "",
-                    "Source": resilient["Source"],
+                    "Source": resilient["Source"] or "winget",
                 }
             )
             continue
@@ -387,7 +459,7 @@ def parse_winget_search(lines: list[str]) -> list[dict]:
                 "Id": pkg_id,
                 "Version": version,
                 "Match": match,
-                "Source": source,
+                "Source": source or "winget",
             }
         )
     return out
@@ -400,33 +472,48 @@ _UPGRADE_FOOTER_RE = re.compile(
 
 
 def parse_winget_upgrade(lines: list[str]) -> list[dict]:
-    """Parse do ``winget upgrade`` → ``Name/Id/Version/Available/Source``."""
+    """Parse do ``winget upgrade`` → ``Name/Id/Version/Available/Source``.
+
+    Com ``--source winget`` a coluna Origem some e, no log filtrado, o cabeçalho
+    também pode faltar. Aceita tabela com ou sem Source e com ou sem header.
+    """
     lines = [normalize_winget_table_text(x) for x in lines]
     header_idx = _header_index(lines, require_available=True)
-    if header_idx < 0:
-        return []
+    data_start = 0
+    use_slices_5 = False
+    use_slices_4 = False
+    id_pos = ver_pos = avail_pos = src_pos = -1
 
-    header = lines[header_idx]
-    id_pos, ver_pos, avail_pos, src_pos = _column_positions(
-        header, [" id", "version", "available", "source"]
-    )
-    if id_pos < 0:
-        id_pos = _column_positions(header, ["id"])[0]
-    if ver_pos < 0:
-        ver_pos = _column_positions(header, ["versão"])[0]
-    if avail_pos < 0:
-        avail_pos = _column_positions(header, ["disponível"])[0]
+    if header_idx >= 0:
+        header = lines[header_idx]
+        id_pos, ver_pos, avail_pos, src_pos = _column_positions(
+            header, [" id", "version", "available", "source"]
+        )
+        if id_pos < 0:
+            id_pos = _column_positions(header, ["id"])[0]
+        if ver_pos < 0:
+            ver_pos = _column_positions(header, ["versão"])[0]
         if avail_pos < 0:
-            avail_pos = _column_positions(header, ["disponivel"])[0]
-    if src_pos < 0:
-        src_pos = _column_positions(header, ["origem"])[0]
-
-    use_slices = all(p >= 0 for p in (id_pos, ver_pos, avail_pos, src_pos)) and (
-        id_pos < ver_pos < avail_pos < src_pos
-    )
+            avail_pos = _column_positions(header, ["disponível"])[0]
+            if avail_pos < 0:
+                avail_pos = _column_positions(header, ["disponivel"])[0]
+        if src_pos < 0:
+            src_pos = _column_positions(header, ["origem"])[0]
+        use_slices_5 = all(p >= 0 for p in (id_pos, ver_pos, avail_pos, src_pos)) and (
+            id_pos < ver_pos < avail_pos < src_pos
+        )
+        use_slices_4 = (
+            not use_slices_5
+            and all(p >= 0 for p in (id_pos, ver_pos, avail_pos))
+            and src_pos < 0
+            and id_pos < ver_pos < avail_pos
+        )
+        data_start = header_idx + 1
+        if data_start < len(lines) and _is_separator_or_empty(lines[data_start]):
+            data_start += 1
 
     out: list[dict] = []
-    for raw in lines[header_idx + 2 :]:
+    for raw in lines[data_start:]:
         raw = (raw or "").rstrip()
         if _is_separator_or_empty(raw):
             continue
@@ -434,7 +521,7 @@ def parse_winget_upgrade(lines: list[str]) -> list[dict]:
             break
 
         row: dict | None = None
-        if use_slices:
+        if use_slices_5:
             name, pkg_id, version, available, source = _slice_row(
                 raw, [0, id_pos, ver_pos, avail_pos, src_pos]
             )
@@ -454,6 +541,26 @@ def parse_winget_upgrade(lines: list[str]) -> list[dict]:
                     "Version": version.strip().split()[0],
                     "Available": available.strip().split()[0],
                     "Source": source.strip().split()[0],
+                }
+        elif use_slices_4:
+            name, pkg_id, version, available = _slice_row(
+                raw, [0, id_pos, ver_pos, avail_pos]
+            )
+            pkg_id = _clean_pkg_id(pkg_id)
+            if (
+                name
+                and pkg_id
+                and version
+                and _looks_like_pkg_id(pkg_id)
+                and _looks_like_version(version)
+                and _looks_like_version(available)
+            ):
+                row = {
+                    "Name": name.rstrip(" .…"),
+                    "Id": pkg_id,
+                    "Version": version.strip().split()[0],
+                    "Available": available.strip().split()[0],
+                    "Source": "winget",
                 }
         else:
             parts = _split_spaced(raw)
@@ -476,9 +583,29 @@ def parse_winget_upgrade(lines: list[str]) -> list[dict]:
                         "Available": available.strip().split()[0],
                         "Source": source.strip().split()[0],
                     }
+            elif len(parts) == 4:
+                name, pkg_id, version, available = parts
+                pkg_id = _clean_pkg_id(pkg_id)
+                if (
+                    name
+                    and pkg_id
+                    and version
+                    and _looks_like_pkg_id(pkg_id)
+                    and _looks_like_version(version)
+                    and _looks_like_version(available)
+                ):
+                    row = {
+                        "Name": name.rstrip(" .…"),
+                        "Id": pkg_id,
+                        "Version": version.strip().split()[0],
+                        "Available": available.strip().split()[0],
+                        "Source": "winget",
+                    }
 
         if row is None:
-            row = _parse_row_by_pkg_id(raw, expect_available=True)
+            row = _parse_row_by_pkg_id(
+                raw, expect_available=True, require_source=False
+            )
         if row is None:
             continue
         out.append(row)

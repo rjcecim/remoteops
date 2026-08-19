@@ -49,6 +49,7 @@ from remoteops.ui.winget.workers.winget_worker import WinGetWorker
 from remoteops.utils.pstools import get_pstools_dir, resolve_pstools_tool
 from remoteops.winget.clixml import clixml_to_text, looks_like_clixml, summarize_one_line
 from remoteops.winget.constants import is_winget_success_exit
+from remoteops.winget.winget_flags import unique_valid_ids
 from remoteops.winget.winget_output import (
     format_exec_result_line,
     is_winget_spinner_status,
@@ -438,8 +439,8 @@ class WinGetTab(QWidget):
         self.search_query.installEventFilter(self)
         add_row(g, 0, "Termo", self.search_query)
 
-        self.search_table = QTableWidget(0, 6)
-        self.search_table.setHorizontalHeaderLabels(["", "Nome", "Id", "Versão", "Match", "Fonte"])
+        self.search_table = QTableWidget(0, 5)
+        self.search_table.setHorizontalHeaderLabels(["", "Nome", "Id", "Versão", "Fonte"])
         self.search_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.search_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.search_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -661,7 +662,30 @@ class WinGetTab(QWidget):
                 item = self.table.item(row, 2)
                 if item and item.text().strip():
                     ids.append(item.text().strip())
-        return ids
+        return unique_valid_ids(ids)
+
+    def _table_name_map(self, table) -> dict[str, str]:
+        """Mapa Id → Nome da coluna Nome da tabela."""
+        out: dict[str, str] = {}
+        if table is None:
+            return out
+        for row in range(table.rowCount()):
+            name_item = table.item(row, 1)
+            id_item = table.item(row, 2)
+            pkg_id = (id_item.text() if id_item else "").strip()
+            name = (name_item.text() if name_item else "").strip()
+            if pkg_id and name:
+                out[pkg_id] = name
+        return out
+
+    def _package_names_for_action(self, action: str) -> dict[str, str]:
+        if action in ("upgrade", "upgrade_all"):
+            return self._table_name_map(getattr(self, "table", None))
+        if action == "install":
+            return self._table_name_map(getattr(self, "search_table", None))
+        if action == "uninstall":
+            return self._table_name_map(getattr(self, "inst_table", None))
+        return {}
 
     def _all_upgrades_selected(self) -> bool:
         """True quando todos os itens da lista de atualizações estão marcados."""
@@ -803,7 +827,7 @@ class WinGetTab(QWidget):
                 item = self.inst_table.item(row, 2)
                 if item and item.text().strip():
                     ids.append(item.text().strip())
-        return ids
+        return unique_valid_ids(ids)
 
     def _row_checkbox_search(self, row: int) -> QCheckBox | None:
         return self._checkbox_in_cell(self.search_table, row)
@@ -816,7 +840,7 @@ class WinGetTab(QWidget):
                 item = self.search_table.item(row, 2)
                 if item and item.text().strip():
                     ids.append(item.text().strip())
-        return ids
+        return unique_valid_ids(ids)
 
     def _start_worker(
         self,
@@ -849,7 +873,9 @@ class WinGetTab(QWidget):
             self._reset_results_ui()
             self._last_host = host
         self._reset_progress_ui()
-        self._exec_log.begin_exec(action, ids or [])
+        self._exec_log.begin_exec(
+            action, ids or [], package_names=self._package_names_for_action(action)
+        )
 
         # Um comando por vez: console só desta aba / comando atual
         self.log_output.clear_log()
@@ -1028,7 +1054,9 @@ class WinGetTab(QWidget):
                 if line:
                     self._append_log(line)
             self._append_log(f"{status_prefix} {summary}")
-            self._progress.complete_exec(item_count=len(results))
+            self._progress.complete_exec(
+                item_count=len(self._exec_log.stream_seen_ids) or len(results)
+            )
         else:
             self._append_log("[OK] Ação concluída.")
         self._set_busy(False)
@@ -1097,8 +1125,7 @@ class WinGetTab(QWidget):
             self.search_table.setItem(row, 1, self._text_item(r.get("Name", "")))
             self.search_table.setItem(row, 2, self._text_item(r.get("Id", "")))
             self.search_table.setItem(row, 3, self._text_item(r.get("Version", "")))
-            self.search_table.setItem(row, 4, self._text_item(r.get("Match", "")))
-            self.search_table.setItem(row, 5, self._text_item(r.get("Source", "")))
+            self.search_table.setItem(row, 4, self._text_item(r.get("Source", "")))
 
         self.search_table.setSortingEnabled(True)
         self.search_count.setText(f"{self.search_table.rowCount()} itens")

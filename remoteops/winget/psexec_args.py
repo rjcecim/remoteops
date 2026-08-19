@@ -22,7 +22,6 @@ def build_psexec_args(
     host: str,
     username: str,
     password: str,
-    svc_name: str,
     ps_command: str,
 ) -> list[str]:
     """Retorna a lista de argumentos para invocar o PsExec com PowerShell remoto."""
@@ -34,19 +33,13 @@ def build_psexec_args(
         target,
         "-accepteula",
         "-nobanner",
-        "-r",
-        svc_name,
-        "-n",
-        "60",
-        "-h",
+        "-s",
     ]
 
     if username.strip():
         args += ["-u", username.strip()]
         if password.strip():
             args += ["-p", password]
-    else:
-        args += ["-s"]
 
     args += [
         "powershell",

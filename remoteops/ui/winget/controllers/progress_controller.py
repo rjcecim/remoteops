@@ -30,6 +30,7 @@ class ProgressController:
         self.phase: str | None = None
         self.item_in_progress = False
         self.current_pkg_id = ""
+        self.current_display = ""
         self.current_pkg_idx = 0
         self.current_pkg_total = 0
 
@@ -39,6 +40,7 @@ class ProgressController:
         self.phase = None
         self.item_in_progress = False
         self.current_pkg_id = ""
+        self.current_display = ""
         self.current_pkg_idx = 0
         self.current_pkg_total = 0
         self.lbl_step.setText("0 de 0 (00/00)")
@@ -48,16 +50,21 @@ class ProgressController:
         self.pb_current.setFormat("%p%")
         self.pb_total.setValue(0)
 
-    def begin_exec(self, *, exec_ids: list[str]) -> None:
+    def begin_exec(self, *, exec_ids: list[str], initial_label: str = "") -> None:
         self.reset()
         self.current_pkg_total = max(len(exec_ids), 1)
+        if initial_label:
+            self.lbl_current.setText(initial_label)
 
-    def on_item_started(self, idx: int, total: int, package_id: str) -> None:
+    def on_item_started(
+        self, idx: int, total: int, package_id: str, *, display: str | None = None
+    ) -> None:
         self.current_pkg_id = package_id
+        self.current_display = (display or package_id).strip() or package_id
         self.current_pkg_idx = idx
         self.current_pkg_total = total
         self.lbl_step.setText(f"{idx} de {total} ({idx:02d}/{total:02d})")
-        self.lbl_current.setText(package_id)
+        self.lbl_current.setText(self.current_display)
         self._seen_real = False
         self.phase = None
         self.item_in_progress = True
@@ -66,11 +73,19 @@ class ProgressController:
         self.pb_current.setFormat("%p%")
         self.pb_total.setValue(int(((idx - 1) / max(total, 1)) * 100))
 
+    def set_current_display(self, display: str) -> None:
+        text = (display or "").strip()
+        if not text:
+            return
+        self.current_display = text
+        self.lbl_current.setText(text)
+
     def on_item_finished(self, idx: int, total: int, package_id: str, status_suffix: str, *, stream_done: bool) -> None:
         self.item_in_progress = False
         self.phase = None
         self.lbl_step.setText(f"{idx} de {total} ({idx:02d}/{total:02d})")
-        self.lbl_current.setText(f"{package_id} — {status_suffix}")
+        label = self.current_display or package_id
+        self.lbl_current.setText(f"{label} — {status_suffix}")
         self.pb_total.setValue(int((idx / max(total, 1)) * 100))
         if not stream_done:
             self.pb_current.setRange(0, 100)
@@ -85,7 +100,7 @@ class ProgressController:
         self.pb_current.setRange(0, 100)
         self.pb_current.setValue(0)
         self.pb_current.setFormat("%p%")
-        label = self.current_pkg_id or self.lbl_current.text().split(" — ")[0]
+        label = self.current_display or self.current_pkg_id or self.lbl_current.text().split(" — ")[0]
         self.lbl_current.setText(label)
         if not self._seen_real:
             self._start_animation()
@@ -122,7 +137,9 @@ class ProgressController:
         total = self.current_pkg_total
         self.pb_total.setValue(int((idx / max(total, 1)) * 100))
         self.lbl_step.setText(f"{idx} de {total} ({idx:02d}/{total:02d})")
-        self.lbl_current.setText(f"{package_id} — {hint}" if hint else package_id)
+        label = self.current_display if self.current_pkg_id == package_id else package_id
+        label = label or package_id
+        self.lbl_current.setText(f"{label} — {hint}" if hint else label)
 
     def stop_animation(self) -> None:
         self._stop_animation()

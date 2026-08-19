@@ -23,20 +23,20 @@ class RemoteArtifacts(NamedTuple):
     cancel_c: str
 
 
-def build_remote_paths(host: str, svc_name: str) -> RemoteArtifacts:
+def build_remote_paths(host: str, run_id: str) -> RemoteArtifacts:
     """Retorna os caminhos do JSON, do log incremental e do sinal de cancel."""
     host = host.strip()
-    base_remote = f"C:\\Windows\\Temp\\{svc_name}"
+    base_remote = f"C:\\Windows\\Temp\\{run_id}"
     return RemoteArtifacts(
         json_path=base_remote + ".json",
-        json_admin=f"\\\\{host}\\ADMIN$\\Temp\\{svc_name}.json",
-        json_c=f"\\\\{host}\\C$\\Windows\\Temp\\{svc_name}.json",
+        json_admin=f"\\\\{host}\\ADMIN$\\Temp\\{run_id}.json",
+        json_c=f"\\\\{host}\\C$\\Windows\\Temp\\{run_id}.json",
         log_path=base_remote + ".log",
-        log_admin=f"\\\\{host}\\ADMIN$\\Temp\\{svc_name}.log",
-        log_c=f"\\\\{host}\\C$\\Windows\\Temp\\{svc_name}.log",
+        log_admin=f"\\\\{host}\\ADMIN$\\Temp\\{run_id}.log",
+        log_c=f"\\\\{host}\\C$\\Windows\\Temp\\{run_id}.log",
         cancel_path=base_remote + ".cancel",
-        cancel_admin=f"\\\\{host}\\ADMIN$\\Temp\\{svc_name}.cancel",
-        cancel_c=f"\\\\{host}\\C$\\Windows\\Temp\\{svc_name}.cancel",
+        cancel_admin=f"\\\\{host}\\ADMIN$\\Temp\\{run_id}.cancel",
+        cancel_c=f"\\\\{host}\\C$\\Windows\\Temp\\{run_id}.cancel",
     )
 
 
@@ -72,7 +72,7 @@ def read_remote_result_file(
     sleep_s: float = 0.25,
     log_cb: Callable[[str], None] | None = None,
 ) -> str | None:
-    """Tenta ler ``svc_name.json`` via ``ADMIN$`` e ``C$`` com retry curto."""
+    """Tenta ler o JSON de resultado via ``ADMIN$`` e ``C$`` com retry curto."""
     paths = [unc_admin, unc_c]
     last_err: Exception | None = None
     for _ in range(max(1, attempts)):

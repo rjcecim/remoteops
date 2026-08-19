@@ -16,6 +16,9 @@ from .winget_flags import (
     COMMON_QUERY_FLAGS,
     COMMON_UNINSTALL_FLAGS,
     COMMON_UPGRADE_ALL_FLAGS,
+    SEARCH_QUERY_FLAGS,
+    UPGRADE_QUERY_FLAGS,
+    unique_valid_ids,
 )
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
@@ -468,6 +471,8 @@ function Invoke-WingetIdsAction {
 }
 
 $commonQuery     = @@COMMON_QUERY@@
+$commonUpgradeQuery = @@COMMON_UPGRADE_QUERY@@
+$commonSearchQuery = @@COMMON_SEARCH_QUERY@@
 $commonExec      = @@COMMON_EXEC@@
 $commonUpgradeAll = @@COMMON_UPGRADE_ALL@@
 $commonUninstall = @@COMMON_UNINSTALL@@
@@ -503,7 +508,7 @@ if (-not $winget) {
 try {
   switch ($action) {
     'list' {
-      $txt = Invoke-WingetCapture -WingetPath $winget -ArgumentList (@('upgrade') + $commonQuery)
+      $txt = Invoke-WingetCapture -WingetPath $winget -ArgumentList (@('upgrade') + $commonUpgradeQuery)
       J([pscustomobject]@{ Ok=$true; Action='list'; Meta=$meta; Text=$txt })
       exit 0
     }
@@ -512,7 +517,7 @@ try {
         J([pscustomobject]@{ Ok=$false; Action='search'; Meta=$meta; Error='Informe um termo para busca.' })
         exit 6
       }
-      $txt = Invoke-WingetCapture -WingetPath $winget -ArgumentList (@('search', $query) + $commonQuery)
+      $txt = Invoke-WingetCapture -WingetPath $winget -ArgumentList (@('search', $query) + $commonSearchQuery)
       J([pscustomobject]@{ Ok=$true; Action='search'; Meta=$meta; Query=$query; Text=$txt })
       exit 0
     }
@@ -590,13 +595,18 @@ def build_remote_script(
 ) -> str:
     """Constrói o script PowerShell final (string)."""
     include_conpty = (action or "").lower() in EXEC_ACTIONS
+    ids_list = list(ids or [])
+    if (action or "").lower() in ("upgrade", "install", "uninstall"):
+        ids_list = unique_valid_ids(ids_list)
     replacements = {
         "@@CONPTY_INIT@@": _conpty_init(include_conpty),
         "@@COMMON_QUERY@@": _ps_array(COMMON_QUERY_FLAGS),
+        "@@COMMON_UPGRADE_QUERY@@": _ps_array(UPGRADE_QUERY_FLAGS),
+        "@@COMMON_SEARCH_QUERY@@": _ps_array(SEARCH_QUERY_FLAGS),
         "@@COMMON_EXEC@@": _ps_array(COMMON_EXEC_FLAGS),
         "@@COMMON_UPGRADE_ALL@@": _ps_array(COMMON_UPGRADE_ALL_FLAGS),
         "@@COMMON_UNINSTALL@@": _ps_array(COMMON_UNINSTALL_FLAGS),
-        "@@IDS@@": _ps_array(list(ids or [])),
+        "@@IDS@@": _ps_array(ids_list),
         "@@QUERY@@": _ps_single_quote(query or ""),
         "@@RESULT_PATH@@": _ps_single_quote(result_path or ""),
         "@@LOG_PATH@@": _ps_single_quote(log_path or ""),
