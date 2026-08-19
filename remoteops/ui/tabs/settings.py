@@ -13,7 +13,6 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QSizePolicy,
-    QSpinBox,
     QWidget,
 )
 
@@ -27,6 +26,7 @@ from remoteops.ui.widgets.card import (
     make_card_stack,
 )
 from remoteops.ui.widgets.network_range import NetworkRangeConfigWidget
+from remoteops.ui.widgets.spinbox import StepSpinBox
 from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
 from remoteops.ui.widgets.status_dot import StatusDot as _StatusDot
 from remoteops.utils.app_logging import (
@@ -128,12 +128,9 @@ class SettingsTab(QWidget):
         self.pstools_browse_btn.clicked.connect(self._browse_pstools)
         self.pstools_open_btn = make_icon_button("\uED43", self.tr("Abrir pasta no Explorer"))
         self.pstools_open_btn.clicked.connect(self._open_pstools_folder)
-        self.pstools_refresh_btn = make_icon_button("\uE72C", self.tr("Atualizar status"))
-        self.pstools_refresh_btn.clicked.connect(self.refresh_pstools_status)
         path_row.addWidget(self.pstools_edit, 1)
         path_row.addWidget(self.pstools_browse_btn)
         path_row.addWidget(self.pstools_open_btn)
-        path_row.addWidget(self.pstools_refresh_btn)
         path_wrap = QWidget()
         path_wrap.setLayout(path_row)
         path_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -177,6 +174,8 @@ class SettingsTab(QWidget):
         # ── Card 2 — RustDesk (Program Files, não PSTools) ────────────────────
         card_rd = CardWidget("\uE774", self.tr("RustDesk"))
         card_rd.set_collapsible(True, collapsed=False)
+        card_rd.set_resettable(True, self.tr("Atualizar status do RustDesk"))
+        card_rd.resetRequested.connect(self.refresh_rustdesk_status)
         g_rd = grid_in_card(card_rd)
 
         rd_status_row = QHBoxLayout()
@@ -202,11 +201,8 @@ class SettingsTab(QWidget):
         self.rustdesk_edit.setReadOnly(True)
         self.rustdesk_open_btn = make_icon_button("\uED43", self.tr("Abrir pasta do RustDesk"))
         self.rustdesk_open_btn.clicked.connect(self._open_rustdesk_folder)
-        self.rustdesk_refresh_btn = make_icon_button("\uE72C", self.tr("Atualizar status do RustDesk"))
-        self.rustdesk_refresh_btn.clicked.connect(self.refresh_rustdesk_status)
         rd_path_row.addWidget(self.rustdesk_edit, 1)
         rd_path_row.addWidget(self.rustdesk_open_btn)
-        rd_path_row.addWidget(self.rustdesk_refresh_btn)
         rd_path_wrap = QWidget()
         rd_path_wrap.setLayout(rd_path_row)
         add_row(g_rd, 1, self.tr("Caminho"), rd_path_wrap)
@@ -319,7 +315,7 @@ class SettingsTab(QWidget):
         workers_row = QHBoxLayout()
         workers_row.setSpacing(4)
         workers_row.setContentsMargins(0, 0, 0, 0)
-        self.search_workers_spin = QSpinBox()
+        self.search_workers_spin = StepSpinBox()
         self.search_workers_spin.setRange(MIN_SEARCH_MAX_WORKERS, MAX_SEARCH_MAX_WORKERS)
         self.search_workers_spin.setSingleStep(1)
         self.search_workers_spin.setToolTip(
@@ -352,7 +348,7 @@ class SettingsTab(QWidget):
         timeout_row = QHBoxLayout()
         timeout_row.setSpacing(4)
         timeout_row.setContentsMargins(0, 0, 0, 0)
-        self.rr_timeout_spin = QSpinBox()
+        self.rr_timeout_spin = StepSpinBox()
         self.rr_timeout_spin.setRange(
             int(MIN_REMOTE_REGISTRY_TIMEOUT_SECONDS),
             int(MAX_REMOTE_REGISTRY_TIMEOUT_SECONDS),

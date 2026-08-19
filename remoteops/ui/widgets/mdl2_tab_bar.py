@@ -1,23 +1,46 @@
-"""TabBar com ícones Segoe MDL2 e botão fechar colado ao título."""
+"""TabBar com ícones Segoe MDL2, abas arredondadas e indicador animado."""
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QRect, QSize, Qt
-from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPalette
-from PyQt6.QtWidgets import QStyle, QStyleOptionTab, QTabBar
+from PyQt6.QtCore import (
+    QAbstractAnimation,
+    QEasingCurve,
+    QParallelAnimationGroup,
+    QPropertyAnimation,
+    QRect,
+    QSize,
+    Qt,
+    QTimer,
+    pyqtProperty,
+)
+from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPen
+from PyQt6.QtWidgets import QTabBar
 
-from remoteops.ui.style import ICON_FONT_PT
+from remoteops.ui.style import (
+    ANIM_TAB,
+    COLOR_ACCENT,
+    COLOR_BG,
+    COLOR_HOVER,
+    COLOR_SURFACE,
+    COLOR_TEXT,
+    COLOR_TEXT_SECONDARY,
+    ICON_FONT_PT,
+    RADIUS_LARGE,
+    anim_ms,
+    animations_enabled,
+)
 
 
 class Mdl2TabBar(QTabBar):
     """TabBar que desenha ícone + texto; X de fechar fica colado ao título."""
 
-    _PAD_LEFT = 8
-    _PAD_GAP = 4
-    _CLOSE_GAP = 2
-    _PAD_RIGHT = 8
+    _PAD_LEFT = 10
+    _PAD_GAP = 6
+    _CLOSE_GAP = 4
+    _PAD_RIGHT = 10
     _CLOSE_CHAR = "\uE711"
     _CLOSE_FONT_PT = 9
+    _TAB_H = 32
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -25,11 +48,21 @@ class Mdl2TabBar(QTabBar):
         self._close_font = QFont("Segoe MDL2 Assets", self._CLOSE_FONT_PT)
         self._close_rects: dict[int, QRect] = {}
         self._pressed_close: int | None = None
+        self._ind_x = 0.0
+        self._ind_w = 0.0
+        self._ind_anim: QParallelAnimationGroup | None = None
+        self._snap_gen = 0
         self.setExpanding(False)
         self.setElideMode(Qt.TextElideMode.ElideNone)
         self.setUsesScrollButtons(True)
         self.setMovable(False)
         self.setMouseTracking(True)
+        self.setDrawBase(False)
+        self.setAutoFillBackground(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        # O QSS global não deve somar padding: o sizeHint já inclui ícone/X.
+        self.setStyleSheet("QTabBar::tab { padding: 0; margin: 0; min-width: 0; border: none; }")
+        self.currentChanged.connect(self._on_current_changed)
 
     def _tab_icon(self, index: int) -> str:
         data = self.tabData(index)
@@ -47,6 +80,17 @@ class Mdl2TabBar(QTabBar):
             self.setTabData(index, {"icon": icon or "", "closable": True})
         else:
             self.setTabData(index, icon or "")
+        # setTabData não relayouta: sem isto o indicador usa a largura só do texto.
+        self.setTabText(index, self.tabText(index))
+        if index == self.currentIndex():
+            self._schedule_snap()
+
+    def refresh_layout(self) -> None:
+        """Força layoutTabs() e realinha o indicador à largura real das abas."""
+        for i in range(self.count()):
+            self.setTabText(i, self.tabText(i))
+        self.updateGeometry()
+        self._schedule_snap()
 
     def _close_glyph_width(self) -> int:
         return QFontMetrics(self._close_font).horizontalAdvance(self._CLOSE_CHAR)
@@ -76,13 +120,11 @@ class Mdl2TabBar(QTabBar):
             + close_w
             + self._PAD_RIGHT
         )
-        width += self.style().pixelMetric(
-            QStyle.PixelMetric.PM_TabBarTabHSpace, None, self
-        )
-        return max(60, width)
+        # Não somar PM_TabBarTabHSpace: o Fusion infla cada aba e a janela cresce.
+        return max(64, width)
 
     def tabSizeHint(self, index):
-        return QSize(self._tab_content_width(index), super().tabSizeHint(index).height())
+        return QSize(self._tab_content_width(index), self._TAB_H)
 
     def minimumTabSizeHint(self, index):
         return self.tabSizeHint(index)
@@ -120,40 +162,152 @@ class Mdl2TabBar(QTabBar):
             if hit is not None
             else QCursor(Qt.CursorShape.ArrowCursor)
         )
+        self.update()
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event):
         self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        self.update()
         super().leaveEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._schedule_snap()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._ind_anim is not None:
+            self._ind_anim.stop()
+            self._ind_anim = None
+        self._snap_indicator()
+
+    def _indicator_geom(self, index: int) -> tuple[float, float]:
+        if index < 0 or index >= self.count():
+            return 0.0, 0.0
+        rect = self.tabRect(index)
+        # Mesma inset do fundo selecionado — cobre o rótulo inteiro (ícone+texto+X).
+        inset = 2
+        return float(rect.x() + inset), float(max(12, rect.width() - inset * 2))
+
+    def _snap_indicator(self) -> None:
+        x, w = self._indicator_geom(self.currentIndex())
+        self._ind_x = x
+        self._ind_w = w
+        self.update()
+
+    def _schedule_snap(self) -> None:
+        self._snap_gen += 1
+        gen = self._snap_gen
+        QTimer.singleShot(0, lambda: self._snap_after_layout(gen))
+
+    def _snap_after_layout(self, gen: int) -> None:
+        if gen != self._snap_gen:
+            return
+        if self._ind_anim is not None:
+            self._ind_anim.stop()
+            self._ind_anim = None
+        self._snap_indicator()
+
+    def tabInserted(self, index):  # noqa: N802
+        super().tabInserted(index)
+        self._schedule_snap()
+
+    def tabRemoved(self, index):  # noqa: N802
+        super().tabRemoved(index)
+        self._schedule_snap()
+
+    def _on_current_changed(self, index: int) -> None:
+        x, w = self._indicator_geom(index)
+        ms = anim_ms(ANIM_TAB)
+        hint_w = float(self.tabSizeHint(index).width()) if 0 <= index < self.count() else 0.0
+        # tabRect ainda sem ícone/X (setTabData sem relayout) → linha curta.
+        rect_short = hint_w > 0 and (w + 4) < hint_w * 0.9
+        if ms <= 0 or not self.isVisible() or self._ind_w <= 1 or rect_short:
+            self._ind_x = x
+            self._ind_w = w
+            self.update()
+            self._schedule_snap()
+            return
+        if self._ind_anim is not None:
+            self._ind_anim.stop()
+            self._ind_anim = None
+        ax = QPropertyAnimation(self, b"indicatorX")
+        ax.setDuration(ms)
+        ax.setStartValue(self._ind_x)
+        ax.setEndValue(x)
+        ax.setEasingCurve(QEasingCurve.Type.OutCubic)
+        aw = QPropertyAnimation(self, b"indicatorW")
+        aw.setDuration(ms)
+        aw.setStartValue(self._ind_w)
+        aw.setEndValue(w)
+        aw.setEasingCurve(QEasingCurve.Type.OutCubic)
+        group = QParallelAnimationGroup(self)
+        group.addAnimation(ax)
+        group.addAnimation(aw)
+        group.finished.connect(self._on_indicator_anim_finished)
+        self._ind_anim = group
+        group.start(QAbstractAnimation.DeletionPolicy.KeepWhenStopped)
+
+    def _on_indicator_anim_finished(self) -> None:
+        self._ind_anim = None
+        self._snap_indicator()
+
+    def _get_ind_x(self) -> float:
+        return self._ind_x
+
+    def _set_ind_x(self, value: float) -> None:
+        self._ind_x = float(value)
+        self.update()
+
+    def _get_ind_w(self) -> float:
+        return self._ind_w
+
+    def _set_ind_w(self, value: float) -> None:
+        self._ind_w = float(value)
+        self.update()
+
+    indicatorX = pyqtProperty(float, _get_ind_x, _set_ind_x)
+    indicatorW = pyqtProperty(float, _get_ind_w, _set_ind_w)
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setClipRect(event.rect() if event is not None else self.rect())
+        painter.fillRect(self.rect(), QColor(COLOR_BG))
+
         current = self.currentIndex()
-        tab_font = self.font()
+        hover = -1
+        if self.underMouse():
+            hover = self.tabAt(self.mapFromGlobal(QCursor.pos()))
+        tab_font = QFont(self.font())
         tab_font_bold = QFont(tab_font)
         tab_font_bold.setBold(True)
-        highlight = self.palette().color(QPalette.ColorRole.Highlight)
-        text_color = self.palette().color(QPalette.ColorRole.WindowText)
         self._close_rects = {}
 
         for i in range(self.count()):
-            opt = QStyleOptionTab()
-            self.initStyleOption(opt, i)
-            rect = self.tabRect(i)
+            rect = self.tabRect(i).adjusted(2, 3, -2, 1)
+            is_selected = i == current
+            is_hover = i == hover and not is_selected
+
+            if is_selected:
+                painter.setPen(QPen(QColor(COLOR_SURFACE), 0))
+                painter.setBrush(QColor(COLOR_SURFACE))
+                painter.drawRoundedRect(rect, RADIUS_LARGE, RADIUS_LARGE)
+            elif is_hover:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(COLOR_HOVER))
+                painter.drawRoundedRect(rect, RADIUS_LARGE, RADIUS_LARGE)
+
             icon_char = self._tab_icon(i)
             text = self.tabText(i) or ""
             closable = self._tab_closable(i)
-            opt.text = ""
-            self.style().drawControl(QStyle.ControlElement.CE_TabBarTab, opt, painter, self)
-
-            is_selected = i == current
             text_font = tab_font_bold if is_selected else tab_font
-            x = rect.left() + self._PAD_LEFT
+            x = rect.left() + self._PAD_LEFT - 2
             mid_y = rect.center().y()
 
             if icon_char:
                 painter.setFont(self._icon_font)
-                painter.setPen(highlight)
+                painter.setPen(QColor(COLOR_ACCENT))
                 icon_w = painter.fontMetrics().horizontalAdvance(icon_char)
                 icon_h = painter.fontMetrics().height()
                 painter.drawText(
@@ -164,7 +318,7 @@ class Mdl2TabBar(QTabBar):
                 x += icon_w + self._PAD_GAP
 
             painter.setFont(text_font)
-            painter.setPen(text_color)
+            painter.setPen(QColor(COLOR_TEXT if is_selected else COLOR_TEXT_SECONDARY))
             text_w = painter.fontMetrics().horizontalAdvance(text)
             text_h = painter.fontMetrics().height()
             painter.drawText(
@@ -177,7 +331,7 @@ class Mdl2TabBar(QTabBar):
             if closable:
                 x += self._CLOSE_GAP
                 painter.setFont(self._close_font)
-                painter.setPen(highlight)
+                painter.setPen(QColor(COLOR_ACCENT))
                 close_w = painter.fontMetrics().horizontalAdvance(self._CLOSE_CHAR)
                 close_h = painter.fontMetrics().height()
                 close_rect = QRect(x, mid_y - close_h // 2, close_w, close_h)
@@ -187,3 +341,9 @@ class Mdl2TabBar(QTabBar):
                     self._CLOSE_CHAR,
                 )
                 self._close_rects[i] = close_rect.adjusted(-2, -2, 4, 2)
+
+        if self.count() > 0 and self._ind_w > 0:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(COLOR_ACCENT))
+            y = self.height() - 3
+            painter.drawRoundedRect(int(self._ind_x), y, int(self._ind_w), 2, 1, 1)

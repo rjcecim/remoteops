@@ -25,7 +25,15 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from remoteops.ui.style import ICON_FONT_PT, make_icon_button
+from remoteops.ui.style import (
+    COLOR_HOVER,
+    COLOR_TEXT,
+    COLOR_TEXT_MUTED,
+    ICON_FONT_PT,
+    RADIUS_SMALL,
+    make_icon_button,
+    table_frame_qss,
+)
 from remoteops.ui.widgets.card import CardWidget, make_card_stack, make_field_label
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.spinner import DotsSpinner
@@ -162,10 +170,8 @@ class HostAppsTab(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(4, 36)
         self.table.setStyleSheet(
-            """
-            QTableWidget { border: 1px solid palette(mid); border-radius: 4px; }
-            QTableWidget::item { padding: 4px 6px; }
-            """
+            table_frame_qss()
+            + "QTableWidget::item { padding: 4px 6px; }"
         )
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setMinimumHeight(80)
@@ -393,18 +399,18 @@ class HostAppsTab(QWidget):
             trash.setAutoRaise(True)
             trash.setFixedSize(26, 26)
             trash.setStyleSheet(
-                """
-                QToolButton {
+                f"""
+                QToolButton {{
                     border: none;
                     background: transparent;
-                    color: palette(windowText);
-                }
-                QToolButton:hover {
-                    background: palette(light);
-                    border-radius: 4px;
+                    color: {COLOR_TEXT};
+                }}
+                QToolButton:hover {{
+                    background: {COLOR_HOVER};
+                    border-radius: {RADIUS_SMALL}px;
                     color: #c42b1c;
-                }
-                QToolButton:disabled { color: palette(mid); }
+                }}
+                QToolButton:disabled {{ color: {COLOR_TEXT_MUTED}; }}
                 """
             )
             if can_uninstall:

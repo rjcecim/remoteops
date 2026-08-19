@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from remoteops.ui.style import accent_button_qss
 from remoteops.ui.widgets.card import CardWidget, add_row, grid_in_card, make_card_stack
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.mdl2_tab_bar import Mdl2TabBar
@@ -68,6 +69,7 @@ class WinGetTab(QWidget):
         self._host_source = host_source
         self._creds_provider = creds_provider
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumWidth(0)
 
         self._root_layout = make_card_stack(self)
         self._collapsible_cards: list[CardWidget] = []
@@ -168,7 +170,7 @@ class WinGetTab(QWidget):
             bar_h = max(28, tabs.tabBar().sizeHint().height())
             tabs.setMinimumHeight(bar_h if not tabs_open else 120)
             tabs.setSizePolicy(
-                QSizePolicy.Policy.Preferred,
+                QSizePolicy.Policy.Expanding,
                 QSizePolicy.Policy.Maximum if not tabs_open else QSizePolicy.Policy.Expanding,
             )
             if not tabs_open:
@@ -278,9 +280,13 @@ class WinGetTab(QWidget):
 
     def _build_tabs(self) -> QTabWidget:
         tabs = QTabWidget()
-        tabs.setTabBar(Mdl2TabBar(tabs))
+        inner_bar = Mdl2TabBar(tabs)
+        inner_bar.setExpanding(False)
+        tabs.setTabBar(inner_bar)
         tabs.setDocumentMode(True)
-        tabs.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        tabs.setUsesScrollButtons(True)
+        tabs.setMinimumWidth(0)
+        tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         upgrades = QWidget()
         up_v = QVBoxLayout(upgrades)
@@ -301,14 +307,15 @@ class WinGetTab(QWidget):
         i_v.addWidget(self._register_card(self._build_installed_card()), stretch=1)
 
         idx_up = tabs.addTab(upgrades, "Atualizações")
-        tabs.tabBar().setTabData(idx_up, "\uE8A7")  # UpdateRestore
+        inner_bar.set_tab_meta(idx_up, "\uE8A7")  # UpdateRestore
         tabs.setTabToolTip(idx_up, "Lista atualizações disponíveis (winget upgrade)")
         idx_s = tabs.addTab(search, "Busca")
-        tabs.tabBar().setTabData(idx_s, "\uE721")  # Search
+        inner_bar.set_tab_meta(idx_s, "\uE721")  # Search
         tabs.setTabToolTip(idx_s, "Buscar pacotes no winget (winget search)")
         idx_i = tabs.addTab(installed, "Instalados")
-        tabs.tabBar().setTabData(idx_i, "\uE8B7")  # Copy/List (ícone neutro)
+        inner_bar.set_tab_meta(idx_i, "\uE8B7")  # Copy/List (ícone neutro)
         tabs.setTabToolTip(idx_i, "Lista pacotes instalados (winget list)")
+        inner_bar.refresh_layout()
         self._tab_idx_upgrades = idx_up
         self._tab_idx_search = idx_s
         self._tab_idx_installed = idx_i
@@ -338,6 +345,10 @@ class WinGetTab(QWidget):
         self.preview.setFont(QFont("Consolas", 9))
         self.preview.setMinimumHeight(70)
         self.preview.setMaximumHeight(110)
+        self.preview.setMinimumWidth(0)
+        self.preview.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self.preview.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         v.addWidget(self.preview)
         card.content_layout.addLayout(v)
@@ -355,6 +366,20 @@ class WinGetTab(QWidget):
 
     def _build_upgrades_card(self) -> CardWidget:
         card = CardWidget("\uE8A7", "Atualizações disponíveis")
+        # \uE8FD = ViewList — verificar atualizações; \uE895 = Download — atualizar
+        self.btn_info_list = card.make_header_button(
+            "\uE8FD",
+            "Verificar atualizações disponíveis (winget upgrade)",
+        )
+        self.btn_info_list.clicked.connect(self._on_list_from_info)
+        card.add_header_button(self.btn_info_list)
+        self.btn_upg = card.make_header_button(
+            "\uE895",
+            "Atualizar todos (winget upgrade --all)",
+        )
+        self.btn_upg.clicked.connect(self._on_upgrade)
+        card.add_header_button(self.btn_upg)
+
         v = QVBoxLayout()
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(4)
@@ -367,7 +392,8 @@ class WinGetTab(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
         apply_interactive_list_headers(self.table)
-        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.table.setMinimumWidth(0)
+        self.table.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         apply_flat_list_table_style(self.table, object_name="wingetTblUpgrades")
 
         top = QHBoxLayout()
@@ -378,20 +404,9 @@ class WinGetTab(QWidget):
         self.chk_all.toggled.connect(self._toggle_all)
         self.lbl_count = QLabel("0 itens")
         self.lbl_count.setStyleSheet("opacity: 0.75;")
-        # \uE8FD = Refresh — mesmo ícone de "Atualizar lista" em Instalados
-        self.btn_info_list = icon_button(
-            "\uE8FD",
-            "Verificar atualizações disponíveis (winget upgrade)",
-            size=ICON_SIZE_TOP,
-        )
-        self.btn_info_list.clicked.connect(self._on_list_from_info)
-        self.btn_upg = icon_button("\uE895", "Atualizar todos (winget upgrade --all)", size=ICON_SIZE_TOP)
-        self.btn_upg.clicked.connect(self._on_upgrade)
         top.addWidget(self.chk_all)
         top.addWidget(self.lbl_count)
         top.addStretch()
-        top.addWidget(self.btn_info_list)
-        top.addWidget(self.btn_upg)
 
         v.addLayout(top)
         v.addWidget(self.table)
@@ -429,7 +444,11 @@ class WinGetTab(QWidget):
         self.search_table.verticalHeader().setVisible(False)
         self.search_table.setShowGrid(False)
         apply_interactive_list_headers(self.search_table)
+        self.search_table.setMinimumWidth(0)
         self.search_table.setMinimumHeight(160)
+        self.search_table.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
+        )
         apply_flat_list_table_style(self.search_table, object_name="wingetTblSearch")
 
         self.search_mark_all = QCheckBox("Marcar tudo")
@@ -486,7 +505,11 @@ class WinGetTab(QWidget):
         self.inst_table.verticalHeader().setVisible(False)
         self.inst_table.setShowGrid(False)
         apply_interactive_list_headers(self.inst_table)
+        self.inst_table.setMinimumWidth(0)
         self.inst_table.setMinimumHeight(180)
+        self.inst_table.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
+        )
         apply_flat_list_table_style(self.inst_table, object_name="wingetTblInstalled")
 
         wrap = QVBoxLayout()
@@ -529,23 +552,7 @@ class WinGetTab(QWidget):
             "Interrompe a operação no host remoto (sinal de cancelamento) e, se preciso, o PsExec local"
         )
         self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_cancel.setStyleSheet(
-            """
-            QPushButton {
-                border: 1px solid palette(mid);
-                border-radius: 4px;
-                background: palette(button);
-                color: palette(highlight);
-                padding: 4px 12px;
-            }
-            QPushButton:hover {
-                background: palette(light);
-                border-color: palette(highlight);
-            }
-            QPushButton:pressed { background: palette(dark); }
-            QPushButton:disabled { color: palette(mid); }
-            """
-        )
+        self.btn_cancel.setStyleSheet(accent_button_qss(padding="4px 12px"))
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self._on_cancel_operation)
         cancel_row = QWidget()

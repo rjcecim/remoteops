@@ -70,9 +70,14 @@ def enable_mica_for_widget(widget: QWidget) -> None:
             ctypes.sizeof(val),
         )
 
+    # Apenas aplica o backdrop Mica; não força dark mode.
+    # Title bar clara para combinar com o tema claro da UI.
+    DWMWA_USE_IMMERSIVE_DARK_MODE = 20
     try:
-        # Apenas aplica o backdrop Mica; não força dark mode,
-        # para não mudar o tema de fundo da janela.
+        _set_attr(DWMWA_USE_IMMERSIVE_DARK_MODE, 0)
+    except Exception:
+        pass
+    try:
         _set_attr(DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_MAINWINDOW)
     except Exception:
         # Não falha o app se o recurso não estiver disponível

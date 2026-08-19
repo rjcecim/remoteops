@@ -1,46 +1,40 @@
 from __future__ import annotations
 
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QApplication, QHeaderView, QTableWidget
 
-# Mantém a mesma base do psexecgui
-FONT_UI = "Segoe UI"
-FONT_UI_FALLBACK = "Segoe UI, sans-serif"
-FONT_MONO = "Consolas"
-SIZE_UI = 10
-SIZE_UI_SMALL = 9
-SIZE_MONO = 9
-ICON_FONT_PT = 13
+from remoteops.ui.style import (
+    COLOR_SURFACE,
+    COLOR_TEXT,
+    apply_ui_defaults as apply_app_ui_defaults,
+    table_frame_qss,
+)
 
 CARD_GRID_VERTICAL_SPACING = 2
-
-# Tabelas das abas: sem zebra, sem realce de hover/seleção na linha (ação = checkbox + botão).
 
 
 def _list_table_stylesheet(object_name: str) -> str:
     n = object_name
-    return f"""
+    return table_frame_qss(f"QTableWidget#{n}") + f"""
 QTableWidget#{n} {{
-    background: palette(base);
-    alternate-background-color: palette(base);
-    selection-background-color: palette(base);
-    selection-color: palette(windowText);
+    alternate-background-color: {COLOR_SURFACE};
+    selection-background-color: {COLOR_SURFACE};
+    selection-color: {COLOR_TEXT};
     outline: none;
 }}
 QTableWidget#{n}::item {{
-    background: palette(base);
-    color: palette(windowText);
+    background: {COLOR_SURFACE};
+    color: {COLOR_TEXT};
 }}
 QTableWidget#{n}::item:alternate {{
-    background: palette(base);
+    background: {COLOR_SURFACE};
 }}
 QTableWidget#{n}::item:hover,
 QTableWidget#{n}::item:selected,
 QTableWidget#{n}::item:selected:hover,
 QTableWidget#{n}::item:focus,
 QTableWidget#{n}::item:selected:focus {{
-    background: palette(base);
-    color: palette(windowText);
+    background: {COLOR_SURFACE};
+    color: {COLOR_TEXT};
 }}
 """
 
@@ -75,40 +69,4 @@ def apply_interactive_list_headers(
 
 
 def apply_ui_defaults(app: QApplication) -> None:
-    font = QFont(FONT_UI, SIZE_UI)
-    font.setStyleHint(QFont.StyleHint.SansSerif)
-    app.setFont(font)
-
-    base = app.styleSheet() or ""
-    app.setStyleSheet(
-        base
-        + """
-        QLineEdit {
-            font-family: "Segoe UI";
-            min-height: 22px;
-            border: 1px solid palette(mid);
-            border-radius: 4px;
-            padding: 4px 8px;
-        }
-        QLineEdit:focus {
-            border-color: palette(highlight);
-        }
-        QComboBox, QSpinBox, QCheckBox {
-            font-family: "Segoe UI";
-            min-height: 22px;
-        }
-        QPlainTextEdit, QTextEdit {
-            padding: 2px;
-        }
-        QPushButton, QToolButton {
-            min-height: 22px;
-        }
-        /* Ícones ao lado de QLineEdit: não herdar altura mínima genérica (evita retângulo largo). */
-        QPushButton#fieldIconButton {
-            min-width: 0px;
-            min-height: 0px;
-            padding: 0px;
-        }
-        """
-    )
-
+    apply_app_ui_defaults(app)

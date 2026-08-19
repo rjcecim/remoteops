@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
 )
 
-from remoteops.ui.style import ICON_FONT_PT
+from remoteops.ui.style import make_icon_button, multiline_edit_qss, table_frame_qss
 from remoteops.ui.widgets.card import CardWidget
 from remoteops.ui.widgets.spinner import DotsSpinner
 from remoteops.utils.pstools import get_pstools_dir
@@ -51,27 +51,7 @@ PSINFO_TIMEOUT_SECONDS = 90.0
 
 
 def _icon_button(icon_char: str, tooltip: str = "", size: int = 32) -> QPushButton:
-    btn = QPushButton(icon_char)
-    font = QFont("Segoe MDL2 Assets", ICON_FONT_PT)
-    btn.setFont(font)
-    btn.setFixedSize(size, size)
-    btn.setToolTip(tooltip)
-    btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setStyleSheet(
-        """
-        QPushButton {
-            border: 1px solid palette(mid);
-            border-radius: 4px;
-            background: palette(button);
-            color: palette(highlight);
-            padding: 0;
-        }
-        QPushButton:hover { background: palette(light); border-color: palette(highlight); }
-        QPushButton:pressed { background: palette(dark); }
-        QPushButton:disabled { color: palette(mid); }
-        """
-    )
-    return btn
+    return make_icon_button(icon_char, tooltip, size=size)
 
 
 class _PsInfoWorker(QThread):
@@ -488,7 +468,7 @@ class PsInfoTab(QWidget):
         editor.setReadOnly(True)
         editor.setPlainText(text or "")
         editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        editor.setStyleSheet("QPlainTextEdit { border: 1px solid palette(mid); border-radius: 4px; }")
+        editor.setStyleSheet(multiline_edit_qss())
         editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         card.content_layout.addWidget(editor, 1)
         self._add_result_card(card, 1)
@@ -589,9 +569,7 @@ class PsInfoTab(QWidget):
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        table.setStyleSheet(
-            "QTableWidget { border: 1px solid palette(mid); border-radius: 4px; }"
-        )
+        table.setStyleSheet(table_frame_qss())
         table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         table.setMinimumHeight(80)
 
@@ -759,7 +737,7 @@ class PsInfoTab(QWidget):
         table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
-        table.setStyleSheet("QTableWidget { border: 1px solid palette(mid); border-radius: 4px; }")
+        table.setStyleSheet(table_frame_qss())
 
         bold = QFont(table.font())
         bold.setBold(True)

@@ -37,6 +37,7 @@ from remoteops.ui.style import (
     INPUT_HEIGHT,
     SIZE_MONO,
     SIZE_UI_SMALL,
+    multiline_edit_qss,
 )
 from remoteops.ui.widgets.card import (
     CardWidget,
@@ -145,10 +146,7 @@ class CmdTab(QWidget):
         self.command_edit.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
-        self.command_edit.setStyleSheet(
-            "QPlainTextEdit { border: 1px solid palette(mid); border-radius: 4px; padding: 6px; }"
-            "QPlainTextEdit:focus { border-color: palette(highlight); }"
-        )
+        self.command_edit.setStyleSheet(multiline_edit_qss())
         add_row(g2, 0, self.tr("Comando"), self.command_edit)
         self._cmd_caption = _caption("cmdChainCaption")
         g2.addWidget(self._cmd_caption, 1, 1, Qt.AlignmentFlag.AlignTop)

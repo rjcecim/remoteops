@@ -6,32 +6,20 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QPushButton, QSizePolicy, QToolButton
 
-from remoteops.ui.style import ICON_FONT_PT
+from remoteops.ui.style import (
+    COLOR_ACCENT,
+    COLOR_HOVER,
+    COLOR_PRESSED,
+    ICON_FONT_PT,
+    RADIUS_MEDIUM,
+    RADIUS_SMALL,
+    accent_button_qss,
+)
 
 ICON_SIZE_ROW = 24
 ICON_SIZE_TOP = 32
 
 _MDL2_FONT = QFont("Segoe MDL2 Assets", ICON_FONT_PT)
-
-
-def _field_button_style(sel: str, size: int, radius: int) -> str:
-    return f"""
-    {sel} {{
-        border: 1px solid palette(mid);
-        border-radius: {radius}px;
-        background: palette(button);
-        color: palette(highlight);
-        padding: 0px;
-        margin: 0px;
-        min-width: {size}px;
-        max-width: {size}px;
-        min-height: {size}px;
-        max-height: {size}px;
-    }}
-    {sel}:hover {{ background: palette(light); border-color: palette(highlight); }}
-    {sel}:pressed {{ background: palette(dark); }}
-    {sel}:disabled {{ color: palette(mid); background: palette(button); }}
-    """
 
 
 def _glyph_point_size(size: int) -> int:
@@ -62,9 +50,8 @@ def icon_button(
     btn.setMaximumSize(size, size)
     btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-    radius = max(2, min(4, size // 6))
     sel = "QPushButton#fieldIconButton" if field_compact else "QPushButton"
-    btn.setStyleSheet(_field_button_style(sel, size, radius))
+    btn.setStyleSheet(accent_button_qss(sel, radius=RADIUS_MEDIUM, size=size))
     return btn
 
 
@@ -78,25 +65,7 @@ def action_button(icon_char: str, tooltip: str, parent=None) -> QPushButton:
     btn.setFont(f)
     btn.setFixedSize(40, 40)
     btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-    btn.setStyleSheet(
-        """
-        QPushButton {
-            border: 1px solid palette(mid);
-            border-radius: 6px;
-            background: palette(button);
-            color: palette(highlight);
-            padding: 0;
-            min-width: 40px;
-            min-height: 40px;
-        }
-        QPushButton:hover {
-            background: palette(light);
-            border-color: palette(highlight);
-        }
-        QPushButton:pressed { background: palette(dark); }
-        QPushButton:disabled { color: palette(mid); background: palette(button); }
-        """
-    )
+    btn.setStyleSheet(accent_button_qss(radius=RADIUS_MEDIUM, size=40))
     return btn
 
 
@@ -111,20 +80,20 @@ def cell_icon(icon_char: str, tooltip: str, *, size: int = ICON_SIZE_ROW) -> QTo
     btn.setFont(QFont("Segoe MDL2 Assets", pt))
     btn.setFixedSize(size, size)
     btn.setStyleSheet(
-        """
-        QToolButton {
+        f"""
+        QToolButton {{
             border: none;
             background: transparent;
-            color: palette(highlight);
-        }
-        QToolButton:hover {
-            background: palette(light);
-            border-radius: 4px;
-        }
-        QToolButton:pressed {
-            background: palette(dark);
-            border-radius: 4px;
-        }
+            color: {COLOR_ACCENT};
+        }}
+        QToolButton:hover {{
+            background: {COLOR_HOVER};
+            border-radius: {RADIUS_SMALL}px;
+        }}
+        QToolButton:pressed {{
+            background: {COLOR_PRESSED};
+            border-radius: {RADIUS_SMALL}px;
+        }}
         """
     )
     return btn

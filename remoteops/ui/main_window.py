@@ -20,6 +20,7 @@ from remoteops.services.ops import (
     RustDeskService,
 )
 from remoteops.ui.branding import APP_DISPLAY_NAME, app_icon
+from remoteops.ui.style import SPACE_SM
 from remoteops.ui.tabs.appsearch import AppSearchTab
 from remoteops.ui.tabs.cmd import CmdTab
 from remoteops.ui.tabs.hostapps import HostAppsTab
@@ -45,13 +46,14 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._updating_remote_cmd = False
         self._last_tab_widget = None
+        self._keep_window_size = None
         self.setWindowTitle(APP_DISPLAY_NAME)
         icon = app_icon()
         if not icon.isNull():
             self.setWindowIcon(icon)
         central = QWidget()
         vbox = QVBoxLayout(central)
-        vbox.setSpacing(3)
+        vbox.setSpacing(SPACE_SM)
         vbox.setContentsMargins(4, 4, 4, 4)
 
         self.file_selector = FileSelectorWidget(self)
@@ -416,6 +418,8 @@ class MainWindow(QMainWindow):
             self.log_output.append_log(self.tr("[PSINFO] Preencha o Host remoto antes de abrir o PsInfo."))
             return
 
+        self._remember_window_size()
+
         # Se já existe, apenas focar
         if self.psinfo_tab is not None:
             idx = self.tabs.indexOf(self.psinfo_tab)
@@ -452,6 +456,8 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._remember_window_size()
+
         if self.hostapps_tab is not None:
             idx = self.tabs.indexOf(self.hostapps_tab)
             if idx != -1:
@@ -483,6 +489,8 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._remember_window_size()
+
         if self.winget_tab is not None:
             idx = self.tabs.indexOf(self.winget_tab)
             if idx != -1:
@@ -510,6 +518,7 @@ class MainWindow(QMainWindow):
 
     def open_appsearch_tab(self) -> None:
         """Cria a aba Pesquisa de Aplicativos sob demanda e foca nela."""
+        self._remember_window_size()
         if self.appsearch_tab is not None:
             idx = self.tabs.indexOf(self.appsearch_tab)
             if idx != -1:
@@ -662,6 +671,7 @@ class MainWindow(QMainWindow):
 
     def open_settings_tab(self) -> None:
         """Cria a aba Configurações sob demanda e foca nela."""
+        self._remember_window_size()
         if self.settings_tab is not None:
             idx = self.tabs.indexOf(self.settings_tab)
             if idx != -1:
@@ -715,7 +725,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._apply_form_layout_change)
 
     def _apply_form_layout_change(self) -> None:
-        frozen = self.size()
+        frozen = self._keep_window_size if self._keep_window_size is not None else self.size()
         self.tabs.sync_content_height()
         if self._main_layout is not None:
             self._main_layout.activate()
@@ -810,15 +820,33 @@ class MainWindow(QMainWindow):
         if self.centralWidget() is not None:
             self.centralWidget().updateGeometry()
 
+    def _remember_window_size(self) -> None:
+        """Guarda o tamanho atual para restaurar após addTab/layout de tela cheia."""
+        if self._keep_window_size is None:
+            self._keep_window_size = self.size()
+
+    def _restore_kept_window_size(self) -> None:
+        frozen = self._keep_window_size
+        if frozen is not None and self.size() != frozen:
+            self.resize(frozen)
+
+    def _finish_kept_window_size(self) -> None:
+        self._restore_kept_window_size()
+        self._keep_window_size = None
+
     def _update_psinfo_mode_ui(self) -> None:
         """
         Abas de inventário/pesquisa/configurações ocupam a janela;
         preview, log e Run ficam ocultos.
 
         Mantém o tamanho da janela — esconder Preview/Log não deve
-        redimensionar o app (nem ao abrir PsInfo).
+        redimensionar o app (nem ao abrir PsInfo/WinGet).
         """
-        frozen = self.size()
+        frozen = (
+            self._keep_window_size
+            if self._keep_window_size is not None
+            else self.size()
+        )
         current = self.tabs.currentWidget()
         is_fullscreen = (
             (self.psinfo_tab is not None and current == self.psinfo_tab)
@@ -832,6 +860,8 @@ class MainWindow(QMainWindow):
         self._redistribute_expandable_space()
         if self.size() != frozen:
             self.resize(frozen)
+        if self._keep_window_size is not None:
+            QTimer.singleShot(0, self._finish_kept_window_size)
 
     def _apply_initial_geometry(self):
         """Abre em 720×960 (reduz se a área útil da tela for menor)."""
@@ -995,10 +1025,13 @@ class MainWindow(QMainWindow):
         bar.setExpanding(False)
         bar.setElideMode(Qt.TextElideMode.ElideNone)
         bar.setUsesScrollButtons(True)
-        # setTabText dispara layoutTabs() no Qt — necessário após setTabData (ícone)
-        for i in range(bar.count()):
-            bar.setTabText(i, bar.tabText(i))
-        bar.updateGeometry()
+        if isinstance(bar, Mdl2TabBar):
+            bar.refresh_layout()
+        else:
+            for i in range(bar.count()):
+                bar.setTabText(i, bar.tabText(i))
+            bar.updateGeometry()
+        bar.raise_()
         self.tabs.updateGeometry()
 
     def build_command_for_execution(self):

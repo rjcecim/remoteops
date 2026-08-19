@@ -34,6 +34,7 @@ from remoteops.ui.style import (
     INPUT_HEIGHT,
     SIZE_MONO,
     SIZE_UI_SMALL,
+    multiline_edit_qss,
 )
 from remoteops.ui.widgets.card import (
     CardWidget,
@@ -62,10 +63,7 @@ def _mono_edit(min_rows: int = 3) -> QPlainTextEdit:
     edit.setMinimumHeight(INPUT_HEIGHT * min_rows)
     edit.setMaximumHeight(INPUT_HEIGHT * 8)
     edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-    edit.setStyleSheet(
-        "QPlainTextEdit { border: 1px solid palette(mid); border-radius: 4px; padding: 6px; }"
-        "QPlainTextEdit:focus { border-color: palette(highlight); }"
-    )
+    edit.setStyleSheet(multiline_edit_qss())
     return edit
 
 

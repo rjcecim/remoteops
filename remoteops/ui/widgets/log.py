@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from remoteops.ui.style import FONT_MONO, INPUT_HEIGHT, SIZE_MONO, SIZE_UI_SMALL
+from remoteops.ui.style import FONT_MONO, HEADER_BTN_SIZE, INPUT_HEIGHT, SIZE_MONO, SIZE_UI_SMALL
 from remoteops.ui.widgets.card import CardWidget
 
 _SESSION_LABELS = {
@@ -84,7 +84,7 @@ class LogOutputWidget(CardWidget):
         self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._clear_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._clear_btn.setAutoRaise(True)
-        self._clear_btn.setFixedSize(22, 22)
+        self._clear_btn.setFixedSize(HEADER_BTN_SIZE, HEADER_BTN_SIZE)
         self._clear_btn.setFont(QFont("Segoe MDL2 Assets", 10))
         self._clear_btn.setText("\uE74D")  # Delete
         self._clear_btn.setToolTip(self.tr("Limpar console (apenas na tela)"))

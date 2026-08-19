@@ -1,11 +1,39 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QSizePolicy,
-    QGridLayout, QToolButton,
+    QGridLayout, QToolButton, QMainWindow, QTabWidget,
 )
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtCore import (
+    QAbstractAnimation,
+    QEasingCurve,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QFont
 
-from remoteops.ui.style import FONT_UI, SIZE_UI, CARD_GRID_VERTICAL_SPACING
+from remoteops.ui.style import (
+    ANIM_CARD,
+    CARD_GRID_VERTICAL_SPACING,
+    COLOR_ACCENT,
+    COLOR_BORDER,
+    COLOR_HOVER,
+    COLOR_SURFACE,
+    COLOR_TEXT,
+    COLOR_TEXT_MUTED,
+    COLOR_TEXT_SECONDARY,
+    FONT_UI,
+    HEADER_BTN_SIZE,
+    HEADER_HEIGHT,
+    RADIUS_CARD,
+    RADIUS_SMALL,
+    SIZE_UI,
+    SPACE_LG,
+    SPACE_MD,
+    SPACE_SM,
+    anim_ms,
+    animations_enabled,
+)
 
 # Limite padrão do Qt para "sem máximo"
 _QWIDGETSIZE_MAX = 16777215
@@ -17,7 +45,7 @@ def make_field_label(text: str) -> QLabel:
     lbl.setObjectName("fieldLabel")
     lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
     lbl.setMinimumWidth(120)
-    lbl.setStyleSheet("QLabel#fieldLabel { color: palette(windowText); opacity: 0.75; }")
+    lbl.setStyleSheet(f"QLabel#fieldLabel {{ color: {COLOR_TEXT_SECONDARY}; }}")
     return lbl
 
 
@@ -54,7 +82,7 @@ def make_card_stack(parent: QWidget) -> QVBoxLayout:
     """
     layout = QVBoxLayout(parent)
     layout.setContentsMargins(4, 4, 4, 4)
-    layout.setSpacing(3)
+    layout.setSpacing(SPACE_SM)
     return layout
 
 
@@ -88,6 +116,9 @@ class CardWidget(QWidget):
         # 0 = formulário (não estica). Cards expansíveis chamam set_layout_stretch.
         self._layout_stretch = 0
         self._divider_spacing_idx: int | None = None
+        self._collapse_anim: QPropertyAnimation | None = None
+        self._anim_hint_h: int | None = None
+        self._collapse_target: bool | None = None
         # Padrão: altura = conteúdo; cards ficam empilhados sem se espalhar
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
 
@@ -102,12 +133,13 @@ class CardWidget(QWidget):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
         )
         self._container_layout = QVBoxLayout(self._container)
-        self._container_layout.setContentsMargins(8, 4, 8, 5)
+        self._container_layout.setContentsMargins(SPACE_LG, SPACE_SM, SPACE_LG, SPACE_MD)
         self._container_layout.setSpacing(0)
 
         # Cabeçalho (altura fixa para todos os cards ficarem iguais)
         self._header_widget = QWidget()
-        self._header_widget.setFixedHeight(22)
+        self._header_widget.setObjectName("cardHeader")
+        self._header_widget.setFixedHeight(HEADER_HEIGHT)
         header = QHBoxLayout(self._header_widget)
         header.setSpacing(6)
         header.setContentsMargins(0, 0, 0, 0)
@@ -133,7 +165,7 @@ class CardWidget(QWidget):
         self._download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._download_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._download_btn.setAutoRaise(True)
-        self._download_btn.setFixedSize(22, 22)
+        self._download_btn.setFixedSize(HEADER_BTN_SIZE, HEADER_BTN_SIZE)
         self._download_btn.setFont(QFont("Segoe MDL2 Assets", 10))
         self._download_btn.setText("\uE896")  # Download
         self._download_btn.setToolTip("Baixar informações deste card")
@@ -145,7 +177,7 @@ class CardWidget(QWidget):
         self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._run_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._run_btn.setAutoRaise(True)
-        self._run_btn.setFixedSize(22, 22)
+        self._run_btn.setFixedSize(HEADER_BTN_SIZE, HEADER_BTN_SIZE)
         self._run_btn.setFont(QFont("Segoe MDL2 Assets", 10))
         self._run_btn.setText("\uE768")  # Play
         self._run_btn.setToolTip("Executar")
@@ -157,7 +189,7 @@ class CardWidget(QWidget):
         self._stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._stop_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._stop_btn.setAutoRaise(True)
-        self._stop_btn.setFixedSize(22, 22)
+        self._stop_btn.setFixedSize(HEADER_BTN_SIZE, HEADER_BTN_SIZE)
         self._stop_btn.setFont(QFont("Segoe MDL2 Assets", 10))
         self._stop_btn.setText("\uE71A")  # Stop
         self._stop_btn.setToolTip("Parar")
@@ -169,7 +201,7 @@ class CardWidget(QWidget):
         self._copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._copy_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._copy_btn.setAutoRaise(True)
-        self._copy_btn.setFixedSize(22, 22)
+        self._copy_btn.setFixedSize(HEADER_BTN_SIZE, HEADER_BTN_SIZE)
         self._copy_btn.setFont(QFont("Segoe MDL2 Assets", 10))
         self._copy_btn.setText("\uE8C8")  # Copy
         self._copy_btn.setToolTip("Copiar para a área de transferência")
@@ -181,7 +213,7 @@ class CardWidget(QWidget):
         self._reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._reset_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._reset_btn.setAutoRaise(True)
-        self._reset_btn.setFixedSize(22, 22)
+        self._reset_btn.setFixedSize(HEADER_BTN_SIZE, HEADER_BTN_SIZE)
         self._reset_btn.setFont(QFont("Segoe MDL2 Assets", 10))
         self._reset_btn.setText("\uE777")  # Reset
         self._reset_btn.setToolTip("Restaurar padrões deste card")
@@ -193,7 +225,7 @@ class CardWidget(QWidget):
         self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._toggle_btn.setAutoRaise(True)
-        self._toggle_btn.setFixedSize(22, 22)
+        self._toggle_btn.setFixedSize(HEADER_BTN_SIZE, HEADER_BTN_SIZE)
         self._toggle_btn.setFont(QFont("Segoe MDL2 Assets", 10))
         self._toggle_btn.clicked.connect(self.toggle_collapsed)
         self._toggle_btn.hide()
@@ -273,7 +305,7 @@ class CardWidget(QWidget):
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn.setAutoRaise(True)
-        btn.setFixedSize(22, 22)
+        btn.setFixedSize(HEADER_BTN_SIZE, HEADER_BTN_SIZE)
         btn.setFont(QFont("Segoe MDL2 Assets", 10))
         btn.setText(icon_char)
         if tooltip:
@@ -323,6 +355,9 @@ class CardWidget(QWidget):
         return header_h + m.top() + m.bottom() + 2
 
     def sizeHint(self) -> QSize:  # noqa: N802
+        if self._anim_hint_h is not None:
+            base = super().sizeHint()
+            return QSize(base.width(), self._anim_hint_h)
         if self._is_collapsible and self._is_collapsed:
             base = super().sizeHint()
             return QSize(base.width(), self._header_only_height())
@@ -333,6 +368,9 @@ class CardWidget(QWidget):
         return super().sizeHint()
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
+        if self._anim_hint_h is not None:
+            base = super().minimumSizeHint()
+            return QSize(base.width(), self._anim_hint_h)
         if self._is_collapsible and self._is_collapsed:
             base = super().minimumSizeHint()
             return QSize(base.width(), self._header_only_height())
@@ -342,12 +380,16 @@ class CardWidget(QWidget):
         return super().minimumSizeHint()
 
     def hasHeightForWidth(self) -> bool:  # noqa: N802
+        if self._anim_hint_h is not None:
+            return False
         if self._is_collapsible and self._is_collapsed:
             return False
         lay = self.layout()
         return bool(lay is not None and lay.hasHeightForWidth())
 
     def heightForWidth(self, width: int) -> int:  # noqa: N802
+        if self._anim_hint_h is not None:
+            return self._anim_hint_h
         if self._is_collapsible and self._is_collapsed:
             return self._header_only_height()
         lay = self.layout()
@@ -356,18 +398,127 @@ class CardWidget(QWidget):
         return super().sizeHint().height()
 
     def set_collapsed(self, collapsed: bool) -> None:
-        self._is_collapsed = bool(collapsed)
         if not self._is_collapsible:
+            self._is_collapsed = False
             self._content_widget.setVisible(True)
             self._divider.setVisible(True)
             self._set_divider_spacing_visible(True)
             self._toggle_btn.hide()
             return
 
+        collapsed = bool(collapsed)
+        self._toggle_btn.setText("\uE70E" if collapsed else "\uE70D")
+        self._toggle_btn.setToolTip("Expandir" if collapsed else "Ocultar")
+
+        animate = (
+            animations_enabled()
+            and self.isVisible()
+            and not self._wants_expanding
+            and collapsed != self._is_collapsed
+        )
+        if not animate:
+            self._stop_collapse_anim()
+            self._apply_collapsed_state(collapsed)
+            self._notify_geometry()
+            self.collapsedChanged.emit(self._is_collapsed)
+            return
+
+        self._animate_collapsed(collapsed)
+
+    def toggle_collapsed(self) -> None:
+        if not self._is_collapsible:
+            return
+        if self._collapse_anim is not None and self._collapse_target is not None:
+            self.set_collapsed(not self._collapse_target)
+            return
+        self.set_collapsed(not self._is_collapsed)
+
+    def _stop_collapse_anim(self) -> None:
+        if self._collapse_anim is not None:
+            self._collapse_anim.stop()
+            self._collapse_anim = None
+        self._anim_hint_h = None
+        self._content_widget.setMaximumHeight(_QWIDGETSIZE_MAX)
+
+    def _content_target_height(self) -> int:
+        lay = self._content_widget.layout()
+        width = max(1, self._content_widget.width(), self.width() - 24)
+        hint = self._content_widget.sizeHint().height()
+        if lay is not None and lay.hasHeightForWidth():
+            hint = max(hint, lay.heightForWidth(width))
+        return max(1, hint)
+
+    def _composed_height(self, content_h: int) -> int:
+        extra = 0
+        if content_h > 0:
+            extra = 1 + 2 + int(content_h)
+        return self._header_only_height() + extra
+
+    def _animate_collapsed(self, collapsed: bool) -> None:
+        self._stop_collapse_anim()
+        self._collapse_target = collapsed
+        content = self._content_widget
+        if collapsed:
+            start = max(0, content.height())
+            end = 0
+            content.setVisible(True)
+            self._divider.setVisible(True)
+            self._set_divider_spacing_visible(True)
+            content.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
+            content.setMaximumHeight(start)
+        else:
+            self._is_collapsed = False
+            content.setVisible(True)
+            self._divider.setVisible(True)
+            self._set_divider_spacing_visible(True)
+            content.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
+            start = 0
+            end = self._content_target_height()
+            content.setMaximumHeight(0)
+
+        ms = anim_ms(ANIM_CARD)
+        if ms <= 0 or start == end:
+            self._apply_collapsed_state(collapsed)
+            self._notify_geometry()
+            self.collapsedChanged.emit(self._is_collapsed)
+            return
+
+        self._anim_hint_h = self._composed_height(start)
+        anim = QPropertyAnimation(content, b"maximumHeight", self)
+        anim.setDuration(ms)
+        anim.setStartValue(int(start))
+        anim.setEndValue(int(end))
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.valueChanged.connect(self._on_collapse_anim_value)
+        anim.finished.connect(lambda: self._on_collapse_anim_finished(collapsed))
+        self._collapse_anim = anim
+        anim.start(QAbstractAnimation.DeletionPolicy.KeepWhenStopped)
+
+    def _on_collapse_anim_value(self, value) -> None:
+        try:
+            h = int(value)
+        except (TypeError, ValueError):
+            h = int(self._content_widget.maximumHeight())
+        self._anim_hint_h = self._composed_height(h)
+        self._propagate_geometry()
+
+    def _on_collapse_anim_finished(self, collapsed: bool) -> None:
+        self._collapse_anim = None
+        self._anim_hint_h = None
+        self._content_widget.setMaximumHeight(_QWIDGETSIZE_MAX)
+        self._apply_collapsed_state(collapsed)
+        self._notify_geometry()
+        self.collapsedChanged.emit(self._is_collapsed)
+
+    def _apply_collapsed_state(self, collapsed: bool) -> None:
+        self._is_collapsed = bool(collapsed)
         self._content_widget.setVisible(not self._is_collapsed)
         self._divider.setVisible(not self._is_collapsed)
         self._set_divider_spacing_visible(not self._is_collapsed)
-        # \uE70D = ChevronDown, \uE70E = ChevronUp
         self._toggle_btn.setText("\uE70E" if self._is_collapsed else "\uE70D")
         self._toggle_btn.setToolTip("Expandir" if self._is_collapsed else "Ocultar")
 
@@ -378,34 +529,51 @@ class CardWidget(QWidget):
 
         if self._is_collapsed:
             self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-            self._container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-            self._content_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+            self._container.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
+            )
+            self._content_widget.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored
+            )
             self._container_layout.setStretchFactor(self._content_widget, 0)
             self._apply_parent_stretch(0)
         else:
             if self._wants_expanding:
                 self.set_expanding(True)
             else:
-                self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-                self._container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+                self.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
+                )
+                self._container.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
+                )
                 self._content_widget.setSizePolicy(
                     QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
                 )
                 self._container_layout.setStretchFactor(self._content_widget, 0)
             self._apply_parent_stretch(self._layout_stretch)
 
+    def _notify_geometry(self) -> None:
         self.updateGeometry()
         parent = self.parentWidget()
         if parent is not None and parent.layout() is not None:
             parent.layout().invalidate()
             parent.layout().activate()
             parent.updateGeometry()
-        self.collapsedChanged.emit(self._is_collapsed)
 
-    def toggle_collapsed(self) -> None:
-        if not self._is_collapsible:
-            return
-        self.set_collapsed(not self._is_collapsed)
+    def _propagate_geometry(self) -> None:
+        self.updateGeometry()
+        w = self.parentWidget()
+        depth = 0
+        while w is not None and depth < 8:
+            if w.layout() is not None:
+                w.layout().invalidate()
+                w.updateGeometry()
+            if isinstance(w, (QTabWidget, QMainWindow)):
+                w.updateGeometry()
+                break
+            w = w.parentWidget()
+            depth += 1
 
     def _set_divider_spacing_visible(self, visible: bool) -> None:
         idx = self._divider_spacing_idx
@@ -440,70 +608,56 @@ class CardWidget(QWidget):
         lay.setStretch(idx, stretch)
 
     def _setup_style(self):
-        self.setStyleSheet("""
-            QWidget#cardContainer {
-                background-color: palette(base);
-                border: 1px solid palette(mid);
-                border-radius: 6px;
-            }
-            QLabel#cardIcon {
-                color: palette(highlight);
-            }
-            QLabel#cardTitle {
-                color: palette(windowText);
-            }
-            QToolButton#cardToggle {
+        r_btn = RADIUS_SMALL
+        self.setStyleSheet(f"""
+            QWidget#cardContainer {{
+                background-color: {COLOR_SURFACE};
+                border: 1px solid {COLOR_BORDER};
+                border-radius: {RADIUS_CARD}px;
+            }}
+            QWidget#cardHeader {{
+                background: transparent;
+                border-radius: {r_btn}px;
+            }}
+            QWidget#cardHeader:hover {{
+                background: {COLOR_HOVER};
+            }}
+            QLabel#cardIcon {{
+                color: {COLOR_ACCENT};
+            }}
+            QLabel#cardTitle {{
+                color: {COLOR_TEXT};
+            }}
+            QToolButton#cardToggle {{
                 border: none;
                 background: transparent;
-                color: palette(windowText);
-                opacity: 0.75;
-            }
-            QToolButton#cardToggle:hover {
-                background: palette(light);
-                border-radius: 4px;
-                opacity: 1.0;
-            }
-            QToolButton#cardDownload {
+                color: {COLOR_TEXT_SECONDARY};
+            }}
+            QToolButton#cardToggle:hover {{
+                background: {COLOR_HOVER};
+                border-radius: {r_btn}px;
+                color: {COLOR_TEXT};
+            }}
+            QToolButton#cardDownload, QToolButton#cardCopy, QToolButton#cardRun,
+            QToolButton#cardStop, QToolButton#cardHeaderAction, QToolButton#cardReset {{
                 border: none;
                 background: transparent;
-                color: palette(highlight);
-            }
-            QToolButton#cardDownload:hover {
-                background: palette(light);
-                border-radius: 4px;
-            }
-            QToolButton#cardDownload:disabled {
-                color: palette(mid);
+                color: {COLOR_ACCENT};
+            }}
+            QToolButton#cardDownload:hover, QToolButton#cardCopy:hover,
+            QToolButton#cardRun:hover, QToolButton#cardStop:hover,
+            QToolButton#cardHeaderAction:hover, QToolButton#cardReset:hover {{
+                background: {COLOR_HOVER};
+                border-radius: {r_btn}px;
+            }}
+            QToolButton#cardDownload:disabled, QToolButton#cardRun:disabled,
+            QToolButton#cardStop:disabled, QToolButton#cardHeaderAction:disabled {{
+                color: {COLOR_TEXT_MUTED};
                 background: transparent;
-            }
-            QToolButton#cardCopy, QToolButton#cardRun, QToolButton#cardStop,
-            QToolButton#cardHeaderAction {
+            }}
+            QFrame#cardDivider {{
+                color: {COLOR_BORDER};
+                background-color: {COLOR_BORDER};
                 border: none;
-                background: transparent;
-                color: palette(highlight);
-            }
-            QToolButton#cardCopy:hover, QToolButton#cardRun:hover, QToolButton#cardStop:hover,
-            QToolButton#cardHeaderAction:hover {
-                background: palette(light);
-                border-radius: 4px;
-            }
-            QToolButton#cardRun:disabled, QToolButton#cardStop:disabled,
-            QToolButton#cardHeaderAction:disabled {
-                color: palette(mid);
-                background: transparent;
-            }
-            QToolButton#cardReset {
-                border: none;
-                background: transparent;
-                color: palette(highlight);
-            }
-            QToolButton#cardReset:hover {
-                background: palette(light);
-                border-radius: 4px;
-            }
-            QFrame#cardDivider {
-                color: palette(mid);
-                background-color: palette(mid);
-                border: none;
-            }
+            }}
         """)

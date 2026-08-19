@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QSize
-from PyQt6.QtWidgets import QSizePolicy, QStyle, QTabWidget
+from PyQt6.QtCore import QSize, QTimer
+from PyQt6.QtWidgets import QSizePolicy, QStyle, QTabBar, QTabWidget
+
+from remoteops.ui.motion import fade_in
+from remoteops.ui.style import ANIM_PAGE
 
 _QWIDGETSIZE_MAX = 16777215
 
@@ -24,8 +27,11 @@ class ContentSizedTabWidget(QTabWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._fill_available = False
+        self._fade_ready = False
+        self.setDocumentMode(True)
         self.currentChanged.connect(self._on_current_changed)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        QTimer.singleShot(0, lambda: setattr(self, "_fade_ready", True))
 
     def set_fill_available(self, fill: bool) -> None:
         """True = ocupar o espaço vertical (PsInfo/Configurações/…); False = altura do conteúdo."""
@@ -95,6 +101,18 @@ class ContentSizedTabWidget(QTabWidget):
         if parent is not None and parent.layout() is not None:
             parent.layout().activate()
             parent.updateGeometry()
+        bar = self.tabBar()
+        if bar is not None:
+            bar.raise_()
+        page = self.currentWidget()
+        # QGraphicsOpacityEffect em página com QTabBar aninhada (WinGet)
+        # pinta o indicador interno por cima da barra principal.
+        if (
+            self._fade_ready
+            and page is not None
+            and page.findChild(QTabBar) is None
+        ):
+            fade_in(page, duration_ms=ANIM_PAGE, start=0.5, end=1.0)
 
     def _chrome_height(self) -> int:
         bar = self.tabBar()
@@ -108,17 +126,16 @@ class ContentSizedTabWidget(QTabWidget):
         return bar_h + m.top() + m.bottom() + frame
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        hint = super().sizeHint()
+        # Largura 0: a página mais larga (WinGet/tabelas/preview NoWrap)
+        # não deve esticar a janela. Expanding ocupa o espaço já dado.
         if self._fill_available:
-            # Não ditar altura da janela em modo tela cheia (PsInfo, etc.).
-            return QSize(hint.width(), max(hint.height(), 1))
-        return QSize(hint.width(), self._content_height())
+            return QSize(0, 0)
+        return QSize(0, self._content_height())
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
-        hint = super().minimumSizeHint()
         if self._fill_available:
-            return QSize(hint.width(), 0)
-        return QSize(hint.width(), self._content_height())
+            return QSize(0, 0)
+        return QSize(0, self._content_height())
 
     def hasHeightForWidth(self) -> bool:  # noqa: N802
         page = self.currentWidget()

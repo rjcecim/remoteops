@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from remoteops.ui.style import SIZE_UI_SMALL
+from remoteops.ui.style import COLOR_ACCENT, COLOR_BORDER_HOVER, SIZE_UI_SMALL
 from remoteops.ui.widgets.card import CardWidget, add_row, grid_in_card
 from remoteops.utils.app_settings import SettingsWriteError
 from remoteops.utils.network_range import (
@@ -117,23 +117,23 @@ class NetworkRangeConfigWidget(CardWidget):
             )
         )
         self.threads_slider.setStyleSheet(
-            """
-            QSlider::groove:horizontal {
+            f"""
+            QSlider::groove:horizontal {{
                 height: 4px;
-                background: palette(mid);
+                background: {COLOR_BORDER_HOVER};
                 border-radius: 2px;
-            }
-            QSlider::sub-page:horizontal {
-                background: palette(highlight);
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {COLOR_ACCENT};
                 border-radius: 2px;
-            }
-            QSlider::handle:horizontal {
+            }}
+            QSlider::handle:horizontal {{
                 width: 14px;
                 height: 14px;
                 margin: -6px 0;
                 border-radius: 7px;
-                background: palette(highlight);
-            }
+                background: {COLOR_ACCENT};
+            }}
             """
         )
         self.threads_slider.valueChanged.connect(self._on_threads_changed)

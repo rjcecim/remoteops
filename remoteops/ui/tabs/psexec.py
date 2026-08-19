@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QSizePolicy,
-    QSpinBox,
     QToolButton,
     QWidget,
 )
@@ -29,8 +28,13 @@ from remoteops.ui.style import (
     INPUT_HEIGHT,
     SIZE_UI,
     SIZE_UI_SMALL,
+    COLOR_ACCENT,
+    COLOR_TEXT_SECONDARY,
+    RADIUS_SMALL,
+    composite_field_qss,
 )
 from remoteops.ui.widgets.card import CardWidget, make_card_stack
+from remoteops.ui.widgets.spinbox import StepSpinBox
 from remoteops.ui.widgets.flow import FlowLayout
 from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
 from remoteops.ui.widgets.status_dot import StatusDot as _StatusDot
@@ -109,7 +113,7 @@ def _make_label(text: str, *, min_width: int = 120) -> QLabel:
     if min_width > 0:
         lbl.setMinimumWidth(min_width)
     # opacidade reduzida via stylesheet
-    lbl.setStyleSheet("QLabel#fieldLabel { color: palette(windowText); opacity: 0.75; }")
+    lbl.setStyleSheet(f"QLabel#fieldLabel {{ color: {COLOR_TEXT_SECONDARY}; }}")
     return lbl
 
 
@@ -151,21 +155,7 @@ def _line_edit_with_clear_icon(password: bool = False):
     container.setObjectName("AuthField")
     container.setFixedHeight(INPUT_HEIGHT)
     container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    container.setStyleSheet(f"""
-        QWidget#AuthField {{
-            border: 1px solid palette(mid);
-            border-radius: 4px;
-            background: palette(base);
-        }}
-        QWidget#AuthField:focus-within {{ border-color: palette(highlight); }}
-        QWidget#AuthField QLineEdit {{
-            border: none;
-            background: transparent;
-            padding: 0;
-            min-height: 0px;
-            max-height: {INPUT_HEIGHT}px;
-        }}
-    """)
+    container.setStyleSheet(composite_field_qss("AuthField"))
     layout = QHBoxLayout(container)
     layout.setContentsMargins(8, 0, 4, 0)
     layout.setSpacing(2)
@@ -179,10 +169,10 @@ def _line_edit_with_clear_icon(password: bool = False):
     clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     clear_btn.setToolTip("Limpar")
     clear_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-    clear_btn.setStyleSheet("""
-        QToolButton { border: none; background: transparent; color: palette(highlight); }
-        QToolButton:hover { background: palette(light); border-radius: 11px; }
-        QToolButton:pressed { background: palette(dark); }
+    clear_btn.setStyleSheet(f"""
+        QToolButton {{ border: none; background: transparent; color: {COLOR_ACCENT}; }}
+        QToolButton:hover {{ background: transparent; border-radius: {RADIUS_SMALL}px; }}
+        QToolButton:pressed {{ background: transparent; }}
     """)
     clear_btn.hide()
 
@@ -451,13 +441,10 @@ class PsExecTab(QWidget):
         timeout_row = QHBoxLayout()
         timeout_row.setSpacing(6)
         timeout_row.setContentsMargins(0, 0, 0, 0)
-        self.timeout_spin = QSpinBox()
+        self.timeout_spin = StepSpinBox()
         self.timeout_spin.setRange(0, 9999)
         self.timeout_spin.setValue(0)
         self.timeout_spin.setToolTip(self.tr("Timeout em segundos (0 = sem timeout)"))
-        self.timeout_spin.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
         timeout_suffix = QLabel(self.tr("segundos"))
         timeout_suffix.setStyleSheet("color: palette(windowText);")
         timeout_row.addWidget(self.timeout_spin)

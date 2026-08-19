@@ -17,7 +17,6 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QProgressBar,
-    QPushButton,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -25,7 +24,14 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from remoteops.ui.style import ICON_FONT_PT, INPUT_HEIGHT, SIZE_UI_SMALL
+from remoteops.ui.style import (
+    COLOR_HOVER,
+    COLOR_TEXT,
+    COLOR_TEXT_MUTED,
+    RADIUS_SMALL,
+    SIZE_UI_SMALL,
+    table_frame_qss,
+)
 from remoteops.ui.widgets.card import (
     CardWidget,
     add_row,
@@ -94,30 +100,6 @@ def row_matches_app_results_filter(
     if exclude and any(term in text for term in exclude):
         return False
     return True
-
-
-def _icon_button(icon_char: str, tooltip: str = "", size: int = INPUT_HEIGHT) -> QPushButton:
-    btn = QPushButton(icon_char)
-    font = QFont("Segoe MDL2 Assets", ICON_FONT_PT)
-    btn.setFont(font)
-    btn.setFixedSize(size, size)
-    btn.setToolTip(tooltip)
-    btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setStyleSheet(
-        """
-        QPushButton {
-            border: 1px solid palette(mid);
-            border-radius: 4px;
-            background: palette(button);
-            color: palette(highlight);
-            padding: 0;
-        }
-        QPushButton:hover { background: palette(light); border-color: palette(highlight); }
-        QPushButton:pressed { background: palette(dark); }
-        QPushButton:disabled { color: palette(mid); }
-        """
-    )
-    return btn
 
 
 @dataclass
@@ -335,25 +317,23 @@ class AppSearchTab(QWidget):
         # ── Card Pesquisa ──────────────────────────────────────────────
         search_card = CardWidget("\uE721", self.tr("Pesquisa"))
         search_card.set_collapsible(True, collapsed=False)
+        self.search_btn = search_card.make_header_button(
+            "\uE721", self.tr("Pesquisar")
+        )
+        self.search_btn.clicked.connect(self.start_search)
+        search_card.add_header_button(self.search_btn)
+        self.stop_btn = search_card.make_header_button(
+            "\uE71A", self.tr("Parar pesquisa")
+        )
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.stop_search)
+        search_card.add_header_button(self.stop_btn)
         grid = grid_in_card(search_card)
 
         self.app_edit = QLineEdit()
         self.app_edit.setPlaceholderText(self.tr("Nome completo ou parte do nome do aplicativo"))
-        # \uE721 = Find / lupa ; \uE71A = Stop (Segoe MDL2 Assets)
-        self.search_btn = _icon_button("\uE721", self.tr("Pesquisar"))
-        self.search_btn.clicked.connect(self.start_search)
-        self.stop_btn = _icon_button("\uE71A", self.tr("Parar pesquisa"))
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.clicked.connect(self.stop_search)
         self.app_edit.returnPressed.connect(self.start_search)
-        app_wrap = QWidget()
-        app_lay = QHBoxLayout(app_wrap)
-        app_lay.setContentsMargins(0, 0, 0, 0)
-        app_lay.setSpacing(6)
-        app_lay.addWidget(self.app_edit, 1)
-        app_lay.addWidget(self.search_btn)
-        app_lay.addWidget(self.stop_btn)
-        add_row(grid, 0, self.tr("Aplicativo a pesquisar"), app_wrap)
+        add_row(grid, 0, self.tr("Aplicativo a pesquisar"), self.app_edit)
 
         status_row = QHBoxLayout()
         status_row.setSpacing(8)
@@ -503,10 +483,8 @@ class AppSearchTab(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(5, 48)
         self.table.setStyleSheet(
-            """
-            QTableWidget { border: 1px solid palette(mid); border-radius: 4px; }
-            QTableWidget::item { padding: 4px 6px; }
-            """
+            table_frame_qss()
+            + "QTableWidget::item { padding: 4px 6px; }"
         )
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setMinimumHeight(80)
@@ -1273,18 +1251,18 @@ class AppSearchTab(QWidget):
         trash.setAutoRaise(True)
         trash.setFixedSize(26, 26)
         trash.setStyleSheet(
-            """
-            QToolButton {
+            f"""
+            QToolButton {{
                 border: none;
                 background: transparent;
-                color: palette(windowText);
-            }
-            QToolButton:hover {
-                background: palette(light);
-                border-radius: 4px;
+                color: {COLOR_TEXT};
+            }}
+            QToolButton:hover {{
+                background: {COLOR_HOVER};
+                border-radius: {RADIUS_SMALL}px;
                 color: #c42b1c;
-            }
-            QToolButton:disabled { color: palette(mid); }
+            }}
+            QToolButton:disabled {{ color: {COLOR_TEXT_MUTED}; }}
             """
         )
         if can_uninstall:
