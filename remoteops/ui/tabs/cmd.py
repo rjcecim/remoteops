@@ -211,6 +211,11 @@ class CmdTab(QWidget):
         self.command_edit.clear()
         self.update_cmd_option_state()
 
+    def reset_all(self) -> None:
+        self.set_command_field_enabled(True)
+        self._reset_card_opcoes()
+        self._reset_card_comando()
+
     def snapshot_options(self) -> CmdOptions:
         return sanitize_cmd_options(
             CmdOptions(

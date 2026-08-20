@@ -139,3 +139,12 @@ class MsiTab(QWidget):
         index = self.restart_combo.currentIndex()
         if 0 <= index < len(self.restart_tooltips):
             self.restart_combo.setToolTip(self.restart_tooltips[index])
+
+    def reset_to_defaults(self) -> None:
+        self.action_combo.setCurrentIndex(0)
+        self.interface_combo.setCurrentIndex(0)
+        self.restart_combo.setCurrentIndex(0)
+        self.log_checkbox.setChecked(False)
+        self.log_file_edit.clear()
+        self.repair_spin.clear()
+        self.update_edit.clear()

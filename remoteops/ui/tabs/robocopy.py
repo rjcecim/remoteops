@@ -67,3 +67,8 @@ class RobocopyTab(QWidget):
             'dest': self.dest_edit.text(),
             'switches': switches,
         }
+
+    def reset_to_defaults(self) -> None:
+        self.dest_edit.setText("C:\\temp")
+        for cb in self.switches:
+            cb.setChecked(True)

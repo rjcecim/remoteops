@@ -42,6 +42,7 @@ from remoteops.ui.widgets.card import (
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
 from remoteops.ui.widgets.status_dot import StatusDot as _StatusDot
+from remoteops.ui.widgets.table import enable_header_sorting, pause_table_sorting
 from remoteops.utils.app_catalog import resolve_uninstall_extras
 from remoteops.utils.hosts import load_hosts_file, save_hosts_file
 from remoteops.utils.network_range import (
@@ -482,6 +483,7 @@ class AppSearchTab(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(5, 48)
+        enable_header_sorting(self.table, skip_columns=(5,))
         self.table.setStyleSheet(
             table_frame_qss()
             + "QTableWidget::item { padding: 4px 6px; }"
@@ -1227,62 +1229,63 @@ class AppSearchTab(QWidget):
         except ValueError:
             can_uninstall = False
 
-        row = self.table.rowCount()
-        self.table.insertRow(row)
+        with pause_table_sorting(self.table):
+            row = self.table.rowCount()
+            self.table.insertRow(row)
 
-        host_item = QTableWidgetItem(hit.host)
-        name_item = QTableWidgetItem(name)
-        name_item.setData(Qt.ItemDataRole.UserRole, hit)
-        pub_item = QTableWidgetItem(app.publisher or "")
-        ver_item = QTableWidgetItem(app.version or "")
-        kind_item = QTableWidgetItem(kind)
-        kind_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            host_item = QTableWidgetItem(hit.host)
+            name_item = QTableWidgetItem(name)
+            name_item.setData(Qt.ItemDataRole.UserRole, hit)
+            pub_item = QTableWidgetItem(app.publisher or "")
+            ver_item = QTableWidgetItem(app.version or "")
+            kind_item = QTableWidgetItem(kind)
+            kind_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.table.setItem(row, 0, host_item)
-        self.table.setItem(row, 1, name_item)
-        self.table.setItem(row, 2, pub_item)
-        self.table.setItem(row, 3, ver_item)
-        self.table.setItem(row, 4, kind_item)
+            self.table.setItem(row, 0, host_item)
+            self.table.setItem(row, 1, name_item)
+            self.table.setItem(row, 2, pub_item)
+            self.table.setItem(row, 3, ver_item)
+            self.table.setItem(row, 4, kind_item)
 
-        trash = QToolButton()
-        trash.setText("\uE74D")
-        trash.setFont(QFont("Segoe MDL2 Assets", 11))
-        trash.setCursor(Qt.CursorShape.PointingHandCursor)
-        trash.setAutoRaise(True)
-        trash.setFixedSize(26, 26)
-        trash.setStyleSheet(
-            f"""
-            QToolButton {{
-                border: none;
-                background: transparent;
-                color: {COLOR_TEXT};
-            }}
-            QToolButton:hover {{
-                background: {COLOR_HOVER};
-                border-radius: {RADIUS_SMALL}px;
-                color: #c42b1c;
-            }}
-            QToolButton:disabled {{ color: {COLOR_TEXT_MUTED}; }}
-            """
-        )
-        if can_uninstall:
-            extras_now = resolve_uninstall_extras(app, self._current_extras())
-            trash.setToolTip(describe_uninstall(app, extras_now))
-            trash._installed_app = app  # type: ignore[attr-defined]
-            self._trash_buttons.append(trash)
-            trash.clicked.connect(
-                lambda _checked=False, h=hit: self._on_uninstall_clicked(h)
+            trash = QToolButton()
+            trash.setText("\uE74D")
+            trash.setFont(QFont("Segoe MDL2 Assets", 11))
+            trash.setCursor(Qt.CursorShape.PointingHandCursor)
+            trash.setAutoRaise(True)
+            trash.setFixedSize(26, 26)
+            trash.setStyleSheet(
+                f"""
+                QToolButton {{
+                    border: none;
+                    background: transparent;
+                    color: {COLOR_TEXT};
+                }}
+                QToolButton:hover {{
+                    background: {COLOR_HOVER};
+                    border-radius: {RADIUS_SMALL}px;
+                    color: #c42b1c;
+                }}
+                QToolButton:disabled {{ color: {COLOR_TEXT_MUTED}; }}
+                """
             )
-        else:
-            trash.setEnabled(False)
-            trash.setToolTip(self.tr("Desinstalação indisponível (sem UninstallString)"))
+            if can_uninstall:
+                extras_now = resolve_uninstall_extras(app, self._current_extras())
+                trash.setToolTip(describe_uninstall(app, extras_now))
+                trash._installed_app = app  # type: ignore[attr-defined]
+                self._trash_buttons.append(trash)
+                trash.clicked.connect(
+                    lambda _checked=False, h=hit: self._on_uninstall_clicked(h)
+                )
+            else:
+                trash.setEnabled(False)
+                trash.setToolTip(self.tr("Desinstalação indisponível (sem UninstallString)"))
 
-        cell = QWidget()
-        cell_lay = QHBoxLayout(cell)
-        cell_lay.setContentsMargins(0, 0, 0, 0)
-        cell_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        cell_lay.addWidget(trash)
-        self.table.setCellWidget(row, 5, cell)
+            cell = QWidget()
+            cell_lay = QHBoxLayout(cell)
+            cell_lay.setContentsMargins(0, 0, 0, 0)
+            cell_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cell_lay.addWidget(trash)
+            self.table.setCellWidget(row, 5, cell)
 
     def _current_extras(self) -> str:
         if self.extras_edit is None or sip.isdeleted(self.extras_edit):

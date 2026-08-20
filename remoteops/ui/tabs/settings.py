@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import List, Optional
+from typing import List
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -35,7 +35,6 @@ from remoteops.utils.app_logging import (
     set_file_logging_enabled,
 )
 from remoteops.utils.app_settings import SETTINGS_SAVE_ERROR_MSG, SettingsWriteError
-from remoteops.utils.hosts import default_hosts_path, load_hosts_file
 from remoteops.utils.pstools import (
     DEFAULT_PSTOOLS_DIR,
     get_pstools_dir,
@@ -55,8 +54,6 @@ from remoteops.utils.search_settings import (
     MAX_SEARCH_MAX_WORKERS,
     MIN_SEARCH_MAX_WORKERS,
     get_search_max_workers,
-    resolve_configured_hosts_path,
-    set_search_hosts_path,
     set_search_max_workers,
 )
 
@@ -255,62 +252,18 @@ class SettingsTab(QWidget):
         )
         root.addWidget(card_logs)
 
-        # ── Card — Faixa de IP (widget reutilizável)
+        # ── Card — Origem dos hosts (faixa de IP ou hosts.json)
         self.network_range = NetworkRangeConfigWidget(self)
         self.network_range.configChanged.connect(self.networkRangeChanged.emit)
         self.network_range.saveFailed.connect(self._show_settings_save_error)
         root.addWidget(self.network_range)
 
-        # ── Card 5 — Pesquisa de aplicativos ──────────────────────────────────
-        # \uE721 = Find / Search (mesmo ícone da pesquisa)
-        card_search = CardWidget("\uE721", self.tr("Pesquisa de aplicativos"))
+        # ── Card 5 — Remote Registry (Pesquisa, Aplicativos, Instalação em Lote)
+        card_search = CardWidget("\uE71D", self.tr("Remote Registry"))
         card_search.set_collapsible(True, collapsed=False)
         card_search.set_resettable(True, self.tr("Restaurar padrões deste card"))
         card_search.resetRequested.connect(self._reset_search_card)
         g3 = grid_in_card(card_search)
-
-        hosts_row = QHBoxLayout()
-        hosts_row.setSpacing(4)
-        hosts_row.setContentsMargins(0, 0, 0, 0)
-        self.hosts_edit = QLineEdit()
-        self.hosts_edit.setReadOnly(True)
-        self.hosts_edit.setToolTip(
-            self.tr(
-                "Arquivo JSON com a lista de computadores. "
-                "Não é usado enquanto a faixa de IP acima estiver ativada."
-            )
-        )
-        self.hosts_browse_btn = make_icon_button("\uED25", self.tr("Selecionar outro hosts.json"))
-        self.hosts_browse_btn.clicked.connect(self._browse_hosts_file)
-        self.hosts_open_btn = make_icon_button("\uED43", self.tr("Abrir pasta do hosts.json"))
-        self.hosts_open_btn.clicked.connect(lambda: _open_in_explorer(self.hosts_edit.text()))
-        hosts_row.addWidget(self.hosts_edit, 1)
-        hosts_row.addWidget(self.hosts_browse_btn)
-        hosts_row.addWidget(self.hosts_open_btn)
-        hosts_wrap = QWidget()
-        hosts_wrap.setLayout(hosts_row)
-        add_row(g3, 0, self.tr("hosts.json"), hosts_wrap)
-
-        hosts_status_row = QHBoxLayout()
-        hosts_status_row.setSpacing(8)
-        hosts_status_row.setContentsMargins(2, 0, 0, 0)
-        self.hosts_status_dot = _StatusDot()
-        self.hosts_status_label = QLabel()
-        self.hosts_status_label.setObjectName("hostsStatus")
-        self.hosts_status_label.setStyleSheet(
-            f"QLabel#hostsStatus {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
-        )
-        hosts_status_row.addWidget(
-            self.hosts_status_dot, 0, Qt.AlignmentFlag.AlignVCenter
-        )
-        hosts_status_row.addWidget(
-            self.hosts_status_label, 0, Qt.AlignmentFlag.AlignVCenter
-        )
-        hosts_status_row.addStretch()
-        hosts_status_wrap = QWidget()
-        hosts_status_wrap.setLayout(hosts_status_row)
-        add_row(g3, 1, self.tr("Status"), hosts_status_wrap)
-        self._refresh_hosts_ui()
 
         workers_row = QHBoxLayout()
         workers_row.setSpacing(4)
@@ -320,8 +273,9 @@ class SettingsTab(QWidget):
         self.search_workers_spin.setSingleStep(1)
         self.search_workers_spin.setToolTip(
             self.tr(
-                "Quantidade máxima de computadores consultados ao mesmo tempo "
-                f"(padrão {DEFAULT_SEARCH_MAX_WORKERS})."
+                "Máximo de consultas Remote Registry em paralelo "
+                f"(padrão {DEFAULT_SEARCH_MAX_WORKERS}). "
+                "Vale na Pesquisa de Aplicativos e na Instalação em Lote."
             )
         )
         self.search_workers_spin.blockSignals(True)
@@ -332,16 +286,15 @@ class SettingsTab(QWidget):
         workers_row.addStretch()
         workers_wrap = QWidget()
         workers_wrap.setLayout(workers_row)
-        add_row(g3, 2, self.tr("Consultas simultâneas"), workers_wrap)
+        add_row(g3, 0, self.tr("Consultas simultâneas"), workers_wrap)
         _add_caption(
             g3,
-            3,
+            1,
             self.tr(
-                "Define quantos computadores podem ser consultados ao mesmo tempo. "
-                "Valores maiores podem acelerar a pesquisa, mas aumentam o número de "
-                "conexões simultâneas. A alteração será aplicada na próxima pesquisa. "
-                "Se a faixa de IP acima estiver ativada, a pesquisa varre a rede e "
-                "ignora o hosts.json."
+                "Quantos computadores são consultados ao mesmo tempo via "
+                "Remote Registry. Vale na Pesquisa de Aplicativos e na "
+                "Instalação em Lote. Valores maiores aceleram a detecção e "
+                "aumentam as conexões. A alteração vale na próxima consulta."
             ),
         )
 
@@ -357,7 +310,8 @@ class SettingsTab(QWidget):
         self.rr_timeout_spin.setToolTip(
             self.tr(
                 "Tempo máximo por computador na consulta Remote Registry "
-                f"(padrão {int(REMOTE_REGISTRY_TIMEOUT_SECONDS)} s)."
+                f"(padrão {int(REMOTE_REGISTRY_TIMEOUT_SECONDS)} s). "
+                "Vale na Pesquisa, na aba Aplicativos e na Instalação em Lote."
             )
         )
         self.rr_timeout_spin.blockSignals(True)
@@ -368,13 +322,14 @@ class SettingsTab(QWidget):
         timeout_row.addStretch()
         timeout_wrap = QWidget()
         timeout_wrap.setLayout(timeout_row)
-        add_row(g3, 4, self.tr("Timeout Remote Registry"), timeout_wrap)
+        add_row(g3, 2, self.tr("Timeout Remote Registry"), timeout_wrap)
         _add_caption(
             g3,
-            5,
+            3,
             self.tr(
-                "Limite por host ao enumerar aplicativos (Pesquisa, Aplicativos do host "
-                "e inventário via registro remoto). Vale na próxima consulta."
+                "Limite por computador ao enumerar aplicativos no registro remoto. "
+                "Vale na Pesquisa de Aplicativos, na aba Aplicativos e na "
+                "Instalação em Lote. A alteração vale na próxima consulta."
             ),
         )
         ref_w = self.rr_timeout_spin.sizeHint().width()
@@ -395,7 +350,6 @@ class SettingsTab(QWidget):
             self.logs_edit.setText(get_log_dir(create=False))
         except Exception:
             pass
-        self._refresh_hosts_ui()
         self.network_range.reload()
         self.search_workers_spin.blockSignals(True)
         self.search_workers_spin.setValue(get_search_max_workers())
@@ -404,45 +358,19 @@ class SettingsTab(QWidget):
         self.rr_timeout_spin.setValue(int(get_remote_registry_timeout()))
         self.rr_timeout_spin.blockSignals(False)
 
-    def _refresh_hosts_ui(self) -> None:
-        path, origin = resolve_configured_hosts_path()
-        self.hosts_edit.setText(path or default_hosts_path())
-        self._set_hosts_status(origin, path)
-
     def _show_settings_save_error(self, exc: BaseException | None = None) -> None:
         msg = SETTINGS_SAVE_ERROR_MSG
         if isinstance(exc, SettingsWriteError) and getattr(exc, "message", None):
             msg = exc.message
         QMessageBox.warning(self, self.tr("Configurações"), self.tr(msg))
 
-    def _browse_hosts_file(self) -> None:
-        start = self.hosts_edit.text().strip() or default_hosts_path()
-        if start and not os.path.isdir(os.path.dirname(start)):
-            start = default_hosts_path()
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            self.tr("Selecionar arquivo de hosts"),
-            start,
-            self.tr("JSON (*.json)"),
-        )
-        if not path:
-            return
-        try:
-            set_search_hosts_path(path)
-        except SettingsWriteError as exc:
-            self._show_settings_save_error(exc)
-            return
-        self._refresh_hosts_ui()
-
     def _reset_search_card(self) -> None:
-        """Restaura hosts.json, consultas simultâneas e timeout deste card."""
+        """Restaura consultas simultâneas e timeout do Remote Registry."""
         try:
-            set_search_hosts_path("")
             normalized_workers = set_search_max_workers(DEFAULT_SEARCH_MAX_WORKERS)
             normalized_timeout = set_remote_registry_timeout(REMOTE_REGISTRY_TIMEOUT_SECONDS)
         except SettingsWriteError as exc:
             self._show_settings_save_error(exc)
-            self._refresh_hosts_ui()
             self.search_workers_spin.blockSignals(True)
             self.search_workers_spin.setValue(get_search_max_workers())
             self.search_workers_spin.blockSignals(False)
@@ -450,7 +378,6 @@ class SettingsTab(QWidget):
             self.rr_timeout_spin.setValue(int(get_remote_registry_timeout()))
             self.rr_timeout_spin.blockSignals(False)
             return
-        self._refresh_hosts_ui()
         self.search_workers_spin.blockSignals(True)
         self.search_workers_spin.setValue(normalized_workers)
         self.search_workers_spin.blockSignals(False)
@@ -475,32 +402,6 @@ class SettingsTab(QWidget):
             self.rr_timeout_spin.blockSignals(True)
             self.rr_timeout_spin.setValue(int(get_remote_registry_timeout()))
             self.rr_timeout_spin.blockSignals(False)
-
-    def _apply_hosts_status(self, state: str, text: str) -> None:
-        color = _STATUS_COLORS.get(state, _STATUS_COLORS["idle"])
-        self.hosts_status_dot.set_color(color)
-        self.hosts_status_label.setText(text)
-        self.hosts_status_dot.setToolTip(text)
-        self.hosts_status_label.setToolTip(text)
-
-    def _set_hosts_status(self, origin: str, path: Optional[str]) -> None:
-        if origin == "missing" or not path or not os.path.isfile(path):
-            self._apply_hosts_status("err", self.tr("Não encontrado"))
-            return
-        p = os.path.normpath(path)
-        if len(p) >= 2 and p[1] == ":":
-            p = p[0].upper() + p[1:]
-        try:
-            hosts = load_hosts_file(p)
-        except Exception:
-            self._apply_hosts_status("invalid", self.tr("Arquivo inválido"))
-            return
-        if not hosts:
-            self._apply_hosts_status("warn", self.tr("Encontrado — lista vazia"))
-            return
-        self._apply_hosts_status(
-            "ok", self.tr(f"Encontrado — {len(hosts)} host(s)")
-        )
 
     def _browse_pstools(self) -> None:
         start = get_pstools_dir()

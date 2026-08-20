@@ -8,6 +8,7 @@ from remoteops.ui.style import (
     apply_ui_defaults as apply_app_ui_defaults,
     table_frame_qss,
 )
+from remoteops.ui.widgets.table import enable_header_sorting
 
 CARD_GRID_VERTICAL_SPACING = 2
 
@@ -65,7 +66,7 @@ def apply_interactive_list_headers(
         else:
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
     tbl.setColumnWidth(checkbox_col, checkbox_width)
-    tbl.setSortingEnabled(True)
+    enable_header_sorting(tbl, skip_columns=(checkbox_col,))
 
 
 def apply_ui_defaults(app: QApplication) -> None:

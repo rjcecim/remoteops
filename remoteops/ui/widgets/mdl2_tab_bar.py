@@ -12,9 +12,10 @@ from PyQt6.QtCore import (
     Qt,
     QTimer,
     pyqtProperty,
+    pyqtSignal,
 )
 from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPen
-from PyQt6.QtWidgets import QTabBar
+from PyQt6.QtWidgets import QTabBar, QToolTip
 
 from remoteops.ui.style import (
     ANIM_TAB,
@@ -34,11 +35,14 @@ from remoteops.ui.style import (
 class Mdl2TabBar(QTabBar):
     """TabBar que desenha ícone + texto; X de fechar fica colado ao título."""
 
+    tabResetRequested = pyqtSignal(int)
+
     _PAD_LEFT = 10
     _PAD_GAP = 6
     _CLOSE_GAP = 4
     _PAD_RIGHT = 10
     _CLOSE_CHAR = "\uE711"
+    _RESET_CHAR = "\uE777"
     _CLOSE_FONT_PT = 9
     _TAB_H = 32
 
@@ -47,7 +51,9 @@ class Mdl2TabBar(QTabBar):
         self._icon_font = QFont("Segoe MDL2 Assets", ICON_FONT_PT)
         self._close_font = QFont("Segoe MDL2 Assets", self._CLOSE_FONT_PT)
         self._close_rects: dict[int, QRect] = {}
+        self._reset_rects: dict[int, QRect] = {}
         self._pressed_close: int | None = None
+        self._pressed_reset: int | None = None
         self._ind_x = 0.0
         self._ind_w = 0.0
         self._ind_anim: QParallelAnimationGroup | None = None
@@ -74,10 +80,28 @@ class Mdl2TabBar(QTabBar):
         data = self.tabData(index)
         return isinstance(data, dict) and bool(data.get("closable"))
 
-    def set_tab_meta(self, index: int, icon: str, *, closable: bool = False) -> None:
-        """Define ícone e se a aba tem X ao lado do título."""
-        if closable:
-            self.setTabData(index, {"icon": icon or "", "closable": True})
+    def _tab_resettable(self, index: int) -> bool:
+        data = self.tabData(index)
+        return isinstance(data, dict) and bool(data.get("resettable"))
+
+    def set_tab_meta(
+        self,
+        index: int,
+        icon: str,
+        *,
+        closable: bool = False,
+        resettable: bool = False,
+    ) -> None:
+        """Define ícone e ações no título (reset e/ou X de fechar)."""
+        if closable or resettable:
+            self.setTabData(
+                index,
+                {
+                    "icon": icon or "",
+                    "closable": bool(closable),
+                    "resettable": bool(resettable),
+                },
+            )
         else:
             self.setTabData(index, icon or "")
         # setTabData não relayouta: sem isto o indicador usa a largura só do texto.
@@ -108,16 +132,18 @@ class Mdl2TabBar(QTabBar):
         )
 
         icon_w = QFontMetrics(self._icon_font).horizontalAdvance(icon) if icon else 0
-        close_w = 0
+        extra_w = 0
+        if self._tab_resettable(index):
+            extra_w += self._CLOSE_GAP + self._close_glyph_width()
         if self._tab_closable(index):
-            close_w = self._CLOSE_GAP + self._close_glyph_width()
+            extra_w += self._CLOSE_GAP + self._close_glyph_width()
 
         width = (
             self._PAD_LEFT
             + icon_w
             + (self._PAD_GAP if icon_w else 0)
             + text_w
-            + close_w
+            + extra_w
             + self._PAD_RIGHT
         )
         # Não somar PM_TabBarTabHSpace: o Fusion infla cada aba e a janela cresce.
@@ -130,22 +156,43 @@ class Mdl2TabBar(QTabBar):
         return self.tabSizeHint(index)
 
     def _close_hit_index(self, pos) -> int | None:
+        return self._hit_index(self._close_rects, pos)
+
+    def _reset_hit_index(self, pos) -> int | None:
+        return self._hit_index(self._reset_rects, pos)
+
+    @staticmethod
+    def _hit_index(rects: dict[int, QRect], pos) -> int | None:
         point = pos.toPoint() if hasattr(pos, "toPoint") else pos
-        for i, rect in self._close_rects.items():
+        for i, rect in rects.items():
             if rect.contains(point):
                 return i
         return None
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            hit = self._close_hit_index(event.position())
-            if hit is not None:
-                self._pressed_close = hit
+            reset_hit = self._reset_hit_index(event.position())
+            if reset_hit is not None:
+                self._pressed_reset = reset_hit
+                self._pressed_close = None
+                return
+            close_hit = self._close_hit_index(event.position())
+            if close_hit is not None:
+                self._pressed_close = close_hit
+                self._pressed_reset = None
                 return
         self._pressed_close = None
+        self._pressed_reset = None
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._pressed_reset is not None:
+            hit = self._reset_hit_index(event.position())
+            idx = self._pressed_reset
+            self._pressed_reset = None
+            if hit == idx:
+                self.tabResetRequested.emit(idx)
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._pressed_close is not None:
             hit = self._close_hit_index(event.position())
             idx = self._pressed_close
@@ -156,17 +203,27 @@ class Mdl2TabBar(QTabBar):
         super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event):
-        hit = self._close_hit_index(event.position())
+        reset_hit = self._reset_hit_index(event.position())
+        close_hit = self._close_hit_index(event.position())
         self.setCursor(
             QCursor(Qt.CursorShape.PointingHandCursor)
-            if hit is not None
+            if reset_hit is not None or close_hit is not None
             else QCursor(Qt.CursorShape.ArrowCursor)
         )
+        if reset_hit is not None:
+            QToolTip.showText(
+                event.globalPosition().toPoint(),
+                self.tr("Limpar tudo e voltar ao estado inicial"),
+                self,
+            )
+        else:
+            QToolTip.hideText()
         self.update()
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event):
         self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        QToolTip.hideText()
         self.update()
         super().leaveEvent(event)
 
@@ -283,6 +340,7 @@ class Mdl2TabBar(QTabBar):
         tab_font_bold = QFont(tab_font)
         tab_font_bold.setBold(True)
         self._close_rects = {}
+        self._reset_rects = {}
 
         for i in range(self.count()):
             rect = self.tabRect(i).adjusted(2, 3, -2, 1)
@@ -300,6 +358,7 @@ class Mdl2TabBar(QTabBar):
 
             icon_char = self._tab_icon(i)
             text = self.tabText(i) or ""
+            resettable = self._tab_resettable(i)
             closable = self._tab_closable(i)
             text_font = tab_font_bold if is_selected else tab_font
             x = rect.left() + self._PAD_LEFT - 2
@@ -327,6 +386,21 @@ class Mdl2TabBar(QTabBar):
                 text,
             )
             x += text_w
+
+            if resettable:
+                x += self._CLOSE_GAP
+                painter.setFont(self._close_font)
+                painter.setPen(QColor(COLOR_ACCENT))
+                reset_w = painter.fontMetrics().horizontalAdvance(self._RESET_CHAR)
+                reset_h = painter.fontMetrics().height()
+                reset_rect = QRect(x, mid_y - reset_h // 2, reset_w, reset_h)
+                painter.drawText(
+                    reset_rect,
+                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    self._RESET_CHAR,
+                )
+                self._reset_rects[i] = reset_rect.adjusted(-2, -2, 4, 2)
+                x += reset_w
 
             if closable:
                 x += self._CLOSE_GAP

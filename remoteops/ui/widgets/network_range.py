@@ -1,13 +1,18 @@
-"""Card reutilizável de faixa de IP, exclusões e threads de varredura.
+"""Card: origem dos hosts (faixa de IP ou hosts.json) e varredura.
 
-Usado na aba Configurações hoje; outras abas podem embutir o mesmo card.
+Usado na aba Configurações; Pesquisa e Instalação em Lote leem esta origem.
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
+from typing import Optional
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -17,7 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from remoteops.ui.style import COLOR_ACCENT, COLOR_BORDER_HOVER, SIZE_UI_SMALL
+from remoteops.ui.style import COLOR_ACCENT, COLOR_BORDER_HOVER, SIZE_UI_SMALL, make_icon_button
 from remoteops.ui.widgets.card import (
     CardWidget,
     add_row,
@@ -25,7 +30,10 @@ from remoteops.ui.widgets.card import (
     grid_in_card,
     make_field_label,
 )
+from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
+from remoteops.ui.widgets.status_dot import StatusDot as _StatusDot
 from remoteops.utils.app_settings import SettingsWriteError
+from remoteops.utils.hosts import default_hosts_path, load_hosts_file
 from remoteops.utils.network_range import (
     DEFAULT_SCAN_THREADS,
     MAX_SCAN_THREADS,
@@ -35,6 +43,7 @@ from remoteops.utils.network_range import (
     set_network_range_config,
     snap_scan_threads,
 )
+from remoteops.utils.search_settings import resolve_configured_hosts_path, set_search_hosts_path
 
 
 def _caption(text: str) -> QLabel:
@@ -49,15 +58,32 @@ def _caption(text: str) -> QLabel:
     return lbl
 
 
+def _open_in_explorer(path: str) -> None:
+    target = (path or "").strip()
+    if not target:
+        return
+    try:
+        if os.path.isdir(target):
+            os.startfile(target)  # type: ignore[attr-defined]
+        elif os.path.isfile(target):
+            subprocess.run(["explorer", "/select,", target], check=False)
+        else:
+            parent = os.path.dirname(target) or target
+            if os.path.isdir(parent):
+                os.startfile(parent)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
 class NetworkRangeConfigWidget(CardWidget):
-    """Um card: intervalo de IP, sub-redes ignoradas e desempenho."""
+    """Origem dos hosts: faixa de IP (varredura) ou hosts.json."""
 
     configChanged = pyqtSignal()
     saveFailed = pyqtSignal(object)
 
     def __init__(self, parent=None):
-        super().__init__("\uE968", "Faixa de IP", parent)
-        self._title_label.setText(self.tr("Faixa de IP"))
+        super().__init__("\uE968", "Origem dos hosts", parent)
+        self._title_label.setText(self.tr("Origem dos hosts"))
         self.set_collapsible(True, collapsed=False)
         self.set_resettable(True, self.tr("Restaurar padrões deste card"))
         self.resetRequested.connect(self.reset_to_defaults)
@@ -66,11 +92,11 @@ class NetworkRangeConfigWidget(CardWidget):
         g = grid_in_card(self)
         row = 0
 
-        self.enabled_check = QCheckBox(self.tr("Usar faixa de IP na pesquisa"))
+        self.enabled_check = QCheckBox(self.tr("Usar faixa de IP"))
         self.enabled_check.setToolTip(
             self.tr(
-                "Marcada: a Pesquisa de Aplicativos varre a faixa abaixo. "
-                "Desmarcada: usa o hosts.json. Os IPs configurados permanecem salvos."
+                "Marcada: varre a faixa abaixo. Desmarcada: usa o hosts.json. "
+                "Os IPs configurados permanecem salvos."
             )
         )
         self.enabled_check.toggled.connect(self._on_enabled_toggled)
@@ -182,6 +208,60 @@ class NetworkRangeConfigWidget(CardWidget):
 
         self.mode_caption = _caption("")
         g.addWidget(self.mode_caption, row, 0, 1, 2)
+        row += 1
+
+        hosts_row = QHBoxLayout()
+        hosts_row.setSpacing(4)
+        hosts_row.setContentsMargins(0, 0, 0, 0)
+        self.hosts_edit = QLineEdit()
+        self.hosts_edit.setReadOnly(True)
+        self.hosts_edit.setToolTip(
+            self.tr(
+                "Lista de computadores da Pesquisa de Aplicativos e da "
+                "Instalação em Lote quando a faixa de IP estiver desativada."
+            )
+        )
+        self.hosts_browse_btn = make_icon_button(
+            "\uED25", self.tr("Selecionar outro hosts.json")
+        )
+        self.hosts_browse_btn.clicked.connect(self._browse_hosts_file)
+        self.hosts_open_btn = make_icon_button(
+            "\uED43", self.tr("Abrir pasta do hosts.json")
+        )
+        self.hosts_open_btn.clicked.connect(
+            lambda: _open_in_explorer(self.hosts_edit.text())
+        )
+        hosts_row.addWidget(self.hosts_edit, 1)
+        hosts_row.addWidget(self.hosts_browse_btn)
+        hosts_row.addWidget(self.hosts_open_btn)
+        hosts_wrap = QWidget()
+        hosts_wrap.setLayout(hosts_row)
+        add_row(g, row, self.tr("hosts.json"), hosts_wrap)
+        self._hosts_row_label = g.itemAtPosition(row, 0).widget()
+        self._hosts_wrap = hosts_wrap
+        row += 1
+
+        hosts_status_row = QHBoxLayout()
+        hosts_status_row.setSpacing(8)
+        hosts_status_row.setContentsMargins(2, 0, 0, 0)
+        self.hosts_status_dot = _StatusDot()
+        self.hosts_status_label = QLabel()
+        self.hosts_status_label.setObjectName("hostsStatus")
+        self.hosts_status_label.setStyleSheet(
+            f"QLabel#hostsStatus {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
+        )
+        hosts_status_row.addWidget(
+            self.hosts_status_dot, 0, Qt.AlignmentFlag.AlignVCenter
+        )
+        hosts_status_row.addWidget(
+            self.hosts_status_label, 0, Qt.AlignmentFlag.AlignVCenter
+        )
+        hosts_status_row.addStretch()
+        hosts_status_wrap = QWidget()
+        hosts_status_wrap.setLayout(hosts_status_row)
+        add_row(g, row, self.tr("Status"), hosts_status_wrap)
+        self._hosts_status_label_w = g.itemAtPosition(row, 0).widget()
+        self._hosts_status_wrap = hosts_status_wrap
 
         self.reload()
 
@@ -202,6 +282,7 @@ class NetworkRangeConfigWidget(CardWidget):
             self.threads_slider.blockSignals(False)
             self.threads_value.setText(str(threads))
             self._apply_enabled_state(bool(cfg.enabled))
+            self._refresh_hosts_ui()
         finally:
             self._saving = False
         self._refresh_mode_caption()
@@ -227,13 +308,26 @@ class NetworkRangeConfigWidget(CardWidget):
             self.threads_value,
         ):
             widget.setEnabled(enabled)
+        for widget in (
+            self.hosts_edit,
+            self.hosts_browse_btn,
+            self.hosts_open_btn,
+            self._hosts_row_label,
+            self._hosts_wrap,
+            self.hosts_status_dot,
+            self.hosts_status_label,
+            self._hosts_status_label_w,
+            self._hosts_status_wrap,
+        ):
+            widget.setEnabled(not enabled)
 
     def _refresh_mode_caption(self) -> None:
         cfg = get_network_range_config()
         if not cfg.enabled:
             self.mode_caption.setText(
                 self.tr(
-                    "Faixa desativada: a Pesquisa de Aplicativos usa o hosts.json. "
+                    "Faixa desativada: a Pesquisa de Aplicativos e a "
+                    "Instalação em Lote usam o hosts.json. "
                     "Os IPs configurados permanecem salvos."
                 )
             )
@@ -242,8 +336,8 @@ class NetworkRangeConfigWidget(CardWidget):
         if mode == "network":
             self.mode_caption.setText(
                 self.tr(
-                    f"Faixa ativa ({count} IP(s)): a Pesquisa de Aplicativos varre "
-                    "a rede e não usa o hosts.json."
+                    f"Faixa ativa ({count} IP(s)): a Pesquisa de Aplicativos e a "
+                    "Instalação em Lote varrem a rede e não usam o hosts.json."
                 )
             )
         elif mode == "invalid":
@@ -251,7 +345,8 @@ class NetworkRangeConfigWidget(CardWidget):
         else:
             self.mode_caption.setText(
                 self.tr(
-                    "Sem faixa válida: a Pesquisa de Aplicativos usa o hosts.json."
+                    "Sem faixa válida: a Pesquisa de Aplicativos e a "
+                    "Instalação em Lote usam o hosts.json."
                 )
             )
 
@@ -293,3 +388,54 @@ class NetworkRangeConfigWidget(CardWidget):
             self.threads_slider.blockSignals(False)
         self.threads_value.setText(str(snapped))
         self._persist(scan_threads=snapped)
+
+    def _refresh_hosts_ui(self) -> None:
+        path, origin = resolve_configured_hosts_path()
+        self.hosts_edit.setText(path or default_hosts_path())
+        self._set_hosts_status(origin, path)
+
+    def _browse_hosts_file(self) -> None:
+        start = self.hosts_edit.text().strip() or default_hosts_path()
+        if start and not os.path.isdir(os.path.dirname(start)):
+            start = default_hosts_path()
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr("Selecionar arquivo de hosts"),
+            start,
+            self.tr("JSON (*.json)"),
+        )
+        if not path:
+            return
+        try:
+            set_search_hosts_path(path)
+        except SettingsWriteError as exc:
+            self.saveFailed.emit(exc)
+            return
+        self._refresh_hosts_ui()
+        self.configChanged.emit()
+
+    def _apply_hosts_status(self, state: str, text: str) -> None:
+        color = _STATUS_COLORS.get(state, _STATUS_COLORS["idle"])
+        self.hosts_status_dot.set_color(color)
+        self.hosts_status_label.setText(text)
+        self.hosts_status_dot.setToolTip(text)
+        self.hosts_status_label.setToolTip(text)
+
+    def _set_hosts_status(self, origin: str, path: Optional[str]) -> None:
+        if origin == "missing" or not path or not os.path.isfile(path):
+            self._apply_hosts_status("err", self.tr("Não encontrado"))
+            return
+        p = os.path.normpath(path)
+        if len(p) >= 2 and p[1] == ":":
+            p = p[0].upper() + p[1:]
+        try:
+            hosts = load_hosts_file(p)
+        except Exception:
+            self._apply_hosts_status("invalid", self.tr("Arquivo inválido"))
+            return
+        if not hosts:
+            self._apply_hosts_status("warn", self.tr("Encontrado — lista vazia"))
+            return
+        self._apply_hosts_status(
+            "ok", self.tr(f"Encontrado — {len(hosts)} host(s)")
+        )

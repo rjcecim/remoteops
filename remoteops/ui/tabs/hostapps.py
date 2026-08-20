@@ -37,6 +37,7 @@ from remoteops.ui.style import (
 from remoteops.ui.widgets.card import CardWidget, make_card_stack, make_field_label
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.spinner import DotsSpinner
+from remoteops.ui.widgets.table import enable_header_sorting, pause_table_sorting
 from remoteops.utils.app_catalog import resolve_uninstall_extras
 from remoteops.utils.psinfo import (
     InstalledApp,
@@ -169,6 +170,7 @@ class HostAppsTab(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(4, 36)
+        enable_header_sorting(self.table, skip_columns=(4,))
         self.table.setStyleSheet(
             table_frame_qss()
             + "QTableWidget::item { padding: 4px 6px; }"
@@ -371,66 +373,67 @@ class HostAppsTab(QWidget):
 
     def _populate_table(self, apps: List[InstalledApp]) -> None:
         self._trash_buttons = []
-        self.table.setRowCount(len(apps))
-        for row, app in enumerate(apps):
-            name = app.display_name or app.display_line
-            publisher = app.publisher or ""
-            version = app.version or ""
-            kind = "MSI" if (app.is_msi and app.product_code) else "EXE"
-            try:
-                build_uninstall_remote_cmd(app, "")
-                can_uninstall = True
-            except ValueError:
-                can_uninstall = False
+        with pause_table_sorting(self.table):
+            self.table.setRowCount(len(apps))
+            for row, app in enumerate(apps):
+                name = app.display_name or app.display_line
+                publisher = app.publisher or ""
+                version = app.version or ""
+                kind = "MSI" if (app.is_msi and app.product_code) else "EXE"
+                try:
+                    build_uninstall_remote_cmd(app, "")
+                    can_uninstall = True
+                except ValueError:
+                    can_uninstall = False
 
-            name_item = QTableWidgetItem(name)
-            name_item.setData(Qt.ItemDataRole.UserRole, app)
-            self.table.setItem(row, 0, name_item)
-            self.table.setItem(row, 1, QTableWidgetItem(publisher))
-            self.table.setItem(row, 2, QTableWidgetItem(version))
-            kind_item = QTableWidgetItem(kind)
-            kind_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 3, kind_item)
+                name_item = QTableWidgetItem(name)
+                name_item.setData(Qt.ItemDataRole.UserRole, app)
+                self.table.setItem(row, 0, name_item)
+                self.table.setItem(row, 1, QTableWidgetItem(publisher))
+                self.table.setItem(row, 2, QTableWidgetItem(version))
+                kind_item = QTableWidgetItem(kind)
+                kind_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(row, 3, kind_item)
 
-            trash = QToolButton()
-            trash.setText("\uE74D")
-            trash.setFont(QFont("Segoe MDL2 Assets", ICON_FONT_PT - 2))
-            trash.setCursor(Qt.CursorShape.PointingHandCursor)
-            trash.setAutoRaise(True)
-            trash.setFixedSize(26, 26)
-            trash.setStyleSheet(
-                f"""
-                QToolButton {{
-                    border: none;
-                    background: transparent;
-                    color: {COLOR_TEXT};
-                }}
-                QToolButton:hover {{
-                    background: {COLOR_HOVER};
-                    border-radius: {RADIUS_SMALL}px;
-                    color: #c42b1c;
-                }}
-                QToolButton:disabled {{ color: {COLOR_TEXT_MUTED}; }}
-                """
-            )
-            if can_uninstall:
-                trash._installed_app = app  # type: ignore[attr-defined]
-                self._trash_buttons.append(trash)
-                trash.clicked.connect(
-                    lambda _checked=False, a=app: self._on_uninstall_clicked(a)
+                trash = QToolButton()
+                trash.setText("\uE74D")
+                trash.setFont(QFont("Segoe MDL2 Assets", ICON_FONT_PT - 2))
+                trash.setCursor(Qt.CursorShape.PointingHandCursor)
+                trash.setAutoRaise(True)
+                trash.setFixedSize(26, 26)
+                trash.setStyleSheet(
+                    f"""
+                    QToolButton {{
+                        border: none;
+                        background: transparent;
+                        color: {COLOR_TEXT};
+                    }}
+                    QToolButton:hover {{
+                        background: {COLOR_HOVER};
+                        border-radius: {RADIUS_SMALL}px;
+                        color: #c42b1c;
+                    }}
+                    QToolButton:disabled {{ color: {COLOR_TEXT_MUTED}; }}
+                    """
                 )
-            else:
-                trash.setEnabled(False)
-                trash.setToolTip(
-                    self.tr("Desinstalação indisponível (sem UninstallString)")
-                )
+                if can_uninstall:
+                    trash._installed_app = app  # type: ignore[attr-defined]
+                    self._trash_buttons.append(trash)
+                    trash.clicked.connect(
+                        lambda _checked=False, a=app: self._on_uninstall_clicked(a)
+                    )
+                else:
+                    trash.setEnabled(False)
+                    trash.setToolTip(
+                        self.tr("Desinstalação indisponível (sem UninstallString)")
+                    )
 
-            cell = QWidget()
-            cell_lay = QHBoxLayout(cell)
-            cell_lay.setContentsMargins(0, 0, 0, 0)
-            cell_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            cell_lay.addWidget(trash)
-            self.table.setCellWidget(row, 4, cell)
+                cell = QWidget()
+                cell_lay = QHBoxLayout(cell)
+                cell_lay.setContentsMargins(0, 0, 0, 0)
+                cell_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                cell_lay.addWidget(trash)
+                self.table.setCellWidget(row, 4, cell)
 
         self._refresh_trash_tooltips()
         self._apply_filter()

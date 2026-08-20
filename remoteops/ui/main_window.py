@@ -22,6 +22,7 @@ from remoteops.services.ops import (
 from remoteops.ui.branding import APP_DISPLAY_NAME, app_icon
 from remoteops.ui.style import SPACE_SM
 from remoteops.ui.tabs.appsearch import AppSearchTab
+from remoteops.ui.tabs.batchinstall import BatchInstallTab
 from remoteops.ui.tabs.cmd import CmdTab
 from remoteops.ui.tabs.hostapps import HostAppsTab
 from remoteops.ui.tabs.msi import MsiTab
@@ -69,11 +70,24 @@ class MainWindow(QMainWindow):
         tab_bar.setElideMode(Qt.TextElideMode.ElideNone)
         tab_bar.setUsesScrollButtons(True)
         tab_bar.tabCloseRequested.connect(self._on_tab_close_requested)
+        tab_bar.tabResetRequested.connect(self._on_tab_reset_requested)
         self.tabs.setUsesScrollButtons(True)
         self.tabs.setElideMode(Qt.TextElideMode.ElideNone)
         self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         self.log_output = LogOutputWidget()
         self.psexec_tab = PsExecTab(log_output=self.log_output)
+        self.batchinstall_tab = BatchInstallTab(
+            exe_provider=lambda: getattr(self.file_selector, "selected_file", None) or "",
+            creds_provider=lambda: (
+                self.psexec_tab.auth_username(),
+                self.psexec_tab.pass_edit.text() or "",
+            ),
+            psexec_params_provider=lambda: self.psexec_tab.collect_builder_params(
+                host="",
+                psexec_path=get_pstools_dir(),
+                remote_cmd="",
+            ),
+        )
         self.psinfo_tab = None
         self.hostapps_tab = None
         self.winget_tab = None
@@ -87,7 +101,7 @@ class MainWindow(QMainWindow):
             _tab.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         # \uE8AF = Network/Computer (Segoe MDL2 Assets)
         self.tabs.addTab(self.psexec_tab, self.tr("PsExec"))
-        self.tabs.tabBar().setTabData(0, "\uE8AF")
+        self.tabs.tabBar().set_tab_meta(0, "\uE8AF", resettable=True)
         self._refresh_tab_bar_layout()
         vbox.addWidget(self.tabs, 0)
 
@@ -541,16 +555,95 @@ class MainWindow(QMainWindow):
         self._update_psinfo_mode_ui()
 
     def _wire_network_range_status(self) -> None:
-        """Atualiza o status da Pesquisa quando a faixa de IP é salva."""
+        """Atualiza o status da Pesquisa/Lote quando a faixa de IP é salva."""
         settings = self.settings_tab
-        search = self.appsearch_tab
-        if settings is None or search is None:
+        if settings is None:
             return
+        search = self.appsearch_tab
+        if search is not None:
+            try:
+                settings.networkRangeChanged.disconnect(search.refresh_hosts_status)
+            except TypeError:
+                pass
+            settings.networkRangeChanged.connect(search.refresh_hosts_status)
+        batch = getattr(self, "batchinstall_tab", None)
+        if batch is not None:
+            try:
+                settings.networkRangeChanged.disconnect(batch.refresh_hosts_status)
+            except TypeError:
+                pass
+            settings.networkRangeChanged.connect(batch.refresh_hosts_status)
+
+    def _on_tab_reset_requested(self, index: int) -> None:
+        widget = self.tabs.widget(index)
+        if widget is not self.psexec_tab:
+            return
+        self._reset_app_to_startup()
+
+    def _reset_app_to_startup(self) -> None:
+        """Zera seleção, formulários, abas extras e console — como na abertura."""
+        if (
+            self.stop_button.isEnabled()
+            or self.executor.is_busy
+            or self._execution_service.awaiting_followup
+        ):
+            self._execution_service.cancel_plan()
+            self.executor.stop()
+            self.log_output.set_interactive(False)
+            self.stop_button.setEnabled(False)
+
+        self._rustdesk_collecting = False
+        self._rustdesk_out_lines = []
+        self._rustdesk_err_lines = []
+        if self._rustdesk_creds is not None:
+            try:
+                self._rustdesk_creds.clear()
+            except Exception:
+                pass
+            self._rustdesk_creds = None
+
+        self.tabs.setCurrentWidget(self.psexec_tab)
+        self._close_psinfo_tab()
+        self._close_hostapps_tab()
+        self._close_winget_tab()
+        self._close_appsearch_tab()
+        self._close_settings_tab()
+
+        self.file_selector.clear_selection()
+        self.file_selector.browse_button.setEnabled(True)
+        self.psexec_tab.reset_all()
+        self.msi_tab.reset_to_defaults()
+        self.cmd_tab.reset_all()
+        self.powershell_tab.reset_all()
+        self.robocopy_tab.reset_to_defaults()
+        batch = getattr(self, "batchinstall_tab", None)
+        if batch is not None:
+            batch.reset_to_startup()
+
+        self.log_output.clear_log()
+        self.log_output.set_interactive(False)
+        self.log_output.set_session_status("idle")
+        self.command_preview.set_collapsed(False)
+        self.log_output.set_collapsed(False)
+        self._set_run_button_enabled(True)
+        self.stop_button.setEnabled(False)
+        self.update_command()
+
+    def _close_psinfo_tab(self) -> None:
+        if self.psinfo_tab is None:
+            return
+        idx = self.tabs.indexOf(self.psinfo_tab)
+        if idx != -1:
+            self.tabs.removeTab(idx)
         try:
-            settings.networkRangeChanged.disconnect(search.refresh_hosts_status)
-        except TypeError:
+            self.psinfo_tab.shutdown()
+        except Exception:
             pass
-        settings.networkRangeChanged.connect(search.refresh_hosts_status)
+        self.psinfo_tab.deleteLater()
+        self.psinfo_tab = None
+        self._update_psinfo_mode_ui()
+        self._last_tab_widget = self.tabs.currentWidget()
+        self._refresh_tab_bar_layout()
 
     def _on_tab_close_requested(self, index: int) -> None:
         """Fecha abas com X no título (Aplicativos / Pesquisa / Configurações)."""
@@ -703,15 +796,7 @@ class MainWindow(QMainWindow):
         current = self.tabs.currentWidget()
         if self.psinfo_tab is not None:
             if prev == self.psinfo_tab and current != self.psinfo_tab:
-                idx = self.tabs.indexOf(self.psinfo_tab)
-                if idx != -1:
-                    self.tabs.removeTab(idx)
-                try:
-                    self.psinfo_tab.shutdown()
-                except Exception:
-                    pass
-                self.psinfo_tab.deleteLater()
-                self.psinfo_tab = None
+                self._close_psinfo_tab()
         self._update_psinfo_mode_ui()
         self._last_tab_widget = self.tabs.currentWidget()
         # Troca de aba: altura do formulário muda → Preview/Log redistribuem
@@ -764,11 +849,22 @@ class MainWindow(QMainWindow):
             self.appsearch_tab is not None
             and self.tabs.currentWidget() == self.appsearch_tab
         )
+        is_batchinstall = (
+            getattr(self, "batchinstall_tab", None) is not None
+            and self.tabs.currentWidget() == self.batchinstall_tab
+        )
         is_settings = (
             self.settings_tab is not None
             and self.tabs.currentWidget() == self.settings_tab
         )
-        is_fullscreen_tab = is_psinfo or is_hostapps or is_winget or is_appsearch or is_settings
+        is_fullscreen_tab = (
+            is_psinfo
+            or is_hostapps
+            or is_winget
+            or is_appsearch
+            or is_batchinstall
+            or is_settings
+        )
 
         tabs_idx = lay.indexOf(self.tabs)
         if is_fullscreen_tab:
@@ -853,6 +949,10 @@ class MainWindow(QMainWindow):
             or (self.hostapps_tab is not None and current == self.hostapps_tab)
             or (self.winget_tab is not None and current == self.winget_tab)
             or (self.appsearch_tab is not None and current == self.appsearch_tab)
+            or (
+                getattr(self, "batchinstall_tab", None) is not None
+                and current == self.batchinstall_tab
+            )
             or (self.settings_tab is not None and current == self.settings_tab)
         )
         self.command_preview.setVisible(not is_fullscreen)
@@ -864,14 +964,14 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._finish_kept_window_size)
 
     def _apply_initial_geometry(self):
-        """Abre em 720×960 (reduz se a área útil da tela for menor)."""
+        """Abre em 768×960 (retrato 4:5; reduz se a área útil da tela for menor)."""
         screen = QApplication.primaryScreen()
         if not screen:
-            self.resize(720, 960)
+            self.resize(768, 960)
             return
 
         avail = screen.availableGeometry()
-        w = min(720, avail.width() - 20)
+        w = min(768, avail.width() - 20)
         h = min(960, avail.height() - 20)
         w = max(400, w)
         h = max(400, h)
@@ -884,6 +984,8 @@ class MainWindow(QMainWindow):
         """Reset do card: remove o arquivo/pasta e fecha abas que dependiam dele."""
         self.command_builder.set_file_selection(None)
         self._sync_psexec_copy_allowed()
+        if getattr(self, "batchinstall_tab", None) is not None:
+            self.batchinstall_tab.on_exe_changed("")
         self.update_tab_visibility(False, False)
         self.update_command()
 
@@ -904,6 +1006,8 @@ class MainWindow(QMainWindow):
         self._sync_psexec_copy_allowed()
         # NOVO: Preencher campo -File da aba PowerShell automaticamente
         self.update_tab_visibility(is_msi, is_exe)
+        if getattr(self, "batchinstall_tab", None) is not None:
+            self.batchinstall_tab.on_exe_changed(file_path if is_exe else "")
         self.update_command()
 
     def should_enable_robocopy(self):
@@ -933,7 +1037,7 @@ class MainWindow(QMainWindow):
             self.psexec_tab.set_copy_allowed(True)
 
     def update_tab_visibility(self, is_msi, is_exe):
-        """Atualiza a visibilidade das abas mantendo a ordem: PsExec, MSI, PowerShell, CMD, Robocopy, (PsInfo opcional por último)"""
+        """Atualiza a visibilidade das abas mantendo a ordem: PsExec, Instalação em Lote, MSI, PowerShell, CMD, Robocopy, (abas especiais)"""
         robocopy_enabled = self.should_enable_robocopy()
         selected_file = self.file_selector.selected_file if hasattr(self.file_selector, 'selected_file') else None
         ext = selected_file.lower().split('.')[-1] if selected_file and '.' in selected_file else ''
@@ -965,6 +1069,8 @@ class MainWindow(QMainWindow):
         for i in range(self.tabs.count() - 1, -1, -1):
             w = self.tabs.widget(i)
             if w is self.psexec_tab:
+                continue
+            if is_exe and w is self.batchinstall_tab:
                 continue
             if psinfo_widget is not None and w is psinfo_widget:
                 continue
@@ -1003,8 +1109,11 @@ class MainWindow(QMainWindow):
             bar.setTabText(insert_at, title)
             insert_at += 1
 
-        # Adiciona MSI / PowerShell / CMD / Robocopy (ícone = char Unicode)
-        # \uE8A5 = Package/MSI, \uE756 = PowerShell, \uE7ED = CMD/Console, \uE8B7 = Copy/Robocopy
+        # Adiciona Lote / MSI / PowerShell / CMD / Robocopy (ícone = char Unicode)
+        # \uE118 = Installation, \uE8A5 = Package/MSI, \uE756 = PowerShell,
+        # \uE7ED = CMD/Console, \uE8B7 = Copy/Robocopy
+        if is_exe and self.tabs.indexOf(self.batchinstall_tab) == -1:
+            _insert_tab(self.batchinstall_tab, self.tr("Instalação em Lote"), "\uE118")
         if is_msi:
             _insert_tab(self.msi_tab, self.tr("MSI"), "\uE8A5")
         if show_powershell_tab:
@@ -1299,6 +1408,7 @@ class MainWindow(QMainWindow):
             getattr(self, "hostapps_tab", None),
             getattr(self, "winget_tab", None),
             getattr(self, "psinfo_tab", None),
+            getattr(self, "batchinstall_tab", None),
         ):
             if tab is not None:
                 try:

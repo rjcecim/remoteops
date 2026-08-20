@@ -220,6 +220,11 @@ class PowerShellTab(QWidget):
         self.file_args_edit.clear()
         self.update_powershell_option_state()
 
+    def reset_all(self) -> None:
+        self.set_command_fields_enabled(True)
+        self._reset_card_opcoes()
+        self._reset_card_comando()
+
     def snapshot_options(self) -> PowerShellOptions:
         mode = self.mode_combo.currentData() or MODE_COMMAND
         if self._script_locked:

@@ -566,6 +566,21 @@ class PsExecTab(QWidget):
         self.extra_args.clear()
         self.update_psexec_option_state()
 
+    def reset_all(self) -> None:
+        """Restaura todos os cards da aba PsExec aos valores iniciais."""
+        self._reset_card_conexao()
+        self._reset_card_autenticacao()
+        self._reset_card_privilegios()
+        self._reset_card_desempenho()
+        self._reset_card_flags()
+        self.restore_card_collapse_defaults()
+
+    def restore_card_collapse_defaults(self) -> None:
+        """Conexão/Privilégios/Flags abertos; Autenticação/Desempenho recolhidos."""
+        defaults = (False, True, False, True, False)
+        for card, collapsed in zip(self._form_cards, defaults):
+            card.set_collapsed(collapsed)
+
     def _on_form_card_collapsed(self, _collapsed: bool = False) -> None:
         lay = self.layout()
         if lay is not None:
