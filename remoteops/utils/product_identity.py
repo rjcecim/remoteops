@@ -17,6 +17,10 @@ from remoteops.utils.psinfo import InstalledApp
 
 # Tokens genéricos demais para identificar o produto.
 # Tokens com menos de 3 letras já são ignorados em tokenize().
+#
+# "desktop" / "remote" entram aqui porque FileDescription do RustDesk é
+# "RustDesk Remote Desktop": o token solto casava com SerproID Desktop,
+# Power BI Desktop, Windows Desktop Runtime, etc.
 _STOPWORDS = frozenset(
     {
         # Arquitetura / SO
@@ -58,6 +62,56 @@ _STOPWORDS = frozenset(
         "full",
         "lite",
         "portable",
+        "free",
+        "home",
+        "office",
+        "plus",
+        "preview",
+        "beta",
+        "community",
+        "professional",
+        "enterprise",
+        "standard",
+        # Tipo de aplicativo / UI (frases em FileDescription)
+        "assistant",
+        "binary",
+        "center",
+        "centre",
+        "client",
+        "cloud",
+        "connection",
+        "console",
+        "control",
+        "core",
+        "desktop",
+        "driver",
+        "helper",
+        "host",
+        "kit",
+        "launcher",
+        "manager",
+        "open",
+        "pack",
+        "plugin",
+        "remote",
+        "server",
+        "service",
+        "source",
+        "suite",
+        "tool",
+        "tools",
+        "viewer",
+        # PT-BR genérico
+        "aplicativo",
+        "area",
+        "assistente",
+        "cliente",
+        "gerenciador",
+        "programa",
+        "remota",
+        "remoto",
+        "servidor",
+        "trabalho",
         # Sobram em ProductName (ex.: Java Platform SE Runtime Environment)
         "application",
         "environment",
@@ -153,7 +207,12 @@ def identify_product(path: str, metadata: Optional[ExeMetadata] = None) -> Produ
         else:
             ordered.append(text)
 
-    def add_from_source(source: str, *, filename: bool = False) -> None:
+    def add_from_source(
+        source: str,
+        *,
+        filename: bool = False,
+        word_tokens: bool = False,
+    ) -> None:
         if not (source or "").strip():
             return
         entry = find_catalog_entry(source)
@@ -161,11 +220,15 @@ def identify_product(path: str, metadata: Optional[ExeMetadata] = None) -> Produ
             add(str(entry.get("displayName") or ""), filename=filename)
         add(source, filename=filename)
         add(family_label(source), filename=filename)
-        tokens = tokenize(source)
-        for token in sorted(tokens, key=lambda t: (-len(t), t.casefold())):
-            add(token, filename=True)
+        # FileDescription costuma ser frase ("RustDesk Remote Desktop");
+        # cada palavra virava needle e gerava falso positivo. Tokens soltos
+        # só do ProductName (nome curto) e do arquivo.
+        if filename or word_tokens:
+            tokens = tokenize(source)
+            for token in sorted(tokens, key=lambda t: (-len(t), t.casefold())):
+                add(token, filename=True)
 
-    add_from_source(meta.product_name)
+    add_from_source(meta.product_name, word_tokens=True)
     add_from_source(meta.file_description)
     add_from_source(meta.file_stem, filename=True)
 
@@ -279,11 +342,15 @@ def match_installed_app(
     needles: Sequence[str],
     *,
     filename_needles: Sequence[str] = (),
+    require_token: str = "",
 ) -> Optional[InstalledApp]:
     """Primeiro needle de metadados que casar; arquivo só como fallback.
 
     Metadados usam substring. Tokens do nome do arquivo exigem fronteira de
     palavra, para reduzir falso positivo em outro software.
+
+    ``require_token`` (núcleo do produto, ex.: RustDesk) filtra o fallback
+    por arquivo: "Desktop" sozinho não pode casar SerproID Desktop.
     """
     for needle in needles:
         hits = _hits_for_needle(apps, needle, strict=False)
@@ -291,6 +358,7 @@ def match_installed_app(
             return highest_version_app(hits)
     for needle in filename_needles:
         hits = _hits_for_needle(apps, needle, strict=True)
+        hits = _filter_hits_by_token(hits, require_token)
         if hits:
             return highest_version_app(hits)
     return None
@@ -300,11 +368,37 @@ def match_identity_app(
     apps: Sequence[InstalledApp],
     identity: ProductIdentity,
 ) -> Optional[InstalledApp]:
+    core = _core_token(identity.label)
+    if not core:
+        for needle in identity.needles:
+            core = _core_token(needle)
+            if core:
+                break
     return match_installed_app(
         apps,
         identity.needles,
         filename_needles=identity.filename_needles,
+        require_token=core,
     )
+
+
+def _core_token(text: str) -> str:
+    """Token mais longo e específico do rótulo (ex.: RustDesk em 'RustDesk Remote Desktop')."""
+    tokens = tokenize(text)
+    if not tokens:
+        return ""
+    return max(tokens, key=lambda t: (len(t), t.casefold()))
+
+
+def _filter_hits_by_token(
+    apps: Sequence[InstalledApp],
+    token: str,
+) -> List[InstalledApp]:
+    t = (token or "").strip()
+    if not t:
+        return list(apps)
+    folded = t.casefold()
+    return [app for app in apps if folded in (app.display_name or "").casefold()]
 
 
 def _hits_for_needle(
