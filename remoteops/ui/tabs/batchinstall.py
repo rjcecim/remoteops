@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from remoteops.services.batch_install import (
+    REASON_CANCELLED,
     REASON_IN_PROGRESS,
     RESULT_ERROR,
     RESULT_INSTALLED,
@@ -261,7 +262,7 @@ class _BatchInstallWorker(QThread):
         for row in pending_installs:
             if self._abort:
                 row.result = RESULT_ERROR
-                row.reason = "Operação interrompida"
+                row.reason = REASON_CANCELLED
                 row.needs_install = False
                 self._upsert_row(row)
                 self._mark_failed()
@@ -269,7 +270,10 @@ class _BatchInstallWorker(QThread):
             row.result = RESULT_UPDATING
             row.reason = REASON_IN_PROGRESS
             self._upsert_row(row)
-            self.logLine.emit(f"[LOTE] {row.host}: Atualizando...")
+            self.logLine.emit(
+                f"[LOTE] {row.host}: "
+                f"{'Atualizando' if row.is_update else 'Instalando'}..."
+            )
             self._install_one(row)
             self._upsert_row(row)
             if self.pending_rows:

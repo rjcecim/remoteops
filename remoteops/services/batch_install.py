@@ -18,7 +18,8 @@ from remoteops.utils.product_identity import (
     compare_versions,
     format_app_found,
     format_app_version,
-    match_installed_app,
+    match_identity_app,
+    valid_numeric_version,
 )
 from remoteops.utils.psinfo import HostInventoryStatus
 from remoteops.utils.redaction import redact_command_text
@@ -38,10 +39,10 @@ REASON_IN_PROGRESS = "Instalação em andamento"
 REASON_NOT_INSTALLED = "Aplicativo não estava instalado"
 REASON_OLD_VERSION = "Versão antiga"
 REASON_ALREADY_CURRENT = "Versão já atual"
-REASON_ALREADY_INSTALLED = "Aplicativo já instalado"
 REASON_NEWER_INSTALLED = "Versão instalada superior"
 REASON_OFFLINE = "Computador offline"
 REASON_DETECT_FAILED = "Falha ao detectar aplicativo/versão"
+REASON_INSTALLER_VERSION_UNKNOWN = "Não foi possível identificar a versão do instalador"
 REASON_INSTALL_FAILED = "Falha na instalação"
 REASON_CANCELLED = "Operação interrompida"
 REASON_PSEXEC_FAILED = "Falha ao executar o instalador (PsExec)"
@@ -128,11 +129,43 @@ def desired_display(desired_version: str) -> str:
 
 
 def resolve_target_version(desired_version: str, identity: ProductIdentity) -> str:
-    """Versão a instalar: campo da UI, ou a versão embutida no EXE."""
-    text = (desired_version or "").strip()
-    if text:
-        return text
-    return (getattr(identity, "installer_version", None) or "").strip()
+    """Versão a instalar: campo da UI, ou ProductVersion/FileVersion do EXE."""
+    typed = valid_numeric_version(desired_version)
+    if typed:
+        return typed
+    if (desired_version or "").strip():
+        return (desired_version or "").strip()
+    return valid_numeric_version(getattr(identity, "installer_version", "") or "")
+
+
+def enrich_inventory(
+    rr_status: HostInventoryStatus,
+    identity: ProductIdentity,
+    *,
+    win32_query: Optional[Callable[[str], HostInventoryStatus]] = None,
+) -> HostInventoryStatus:
+    """
+    Remote Registry é a fonte principal.
+
+    Win32_Product (PowerShell/WMI) **não** é tentado quando o RR falhou:
+    host inacessível, RPC/auth/timeout. Esse fallback disparava o EDR
+    (powershell.exe) em cada falha de detecção.
+
+    Só consulta WMI se o RR conectou e devolveu inventário vazio — o host
+    já está alcançável e o Uninstall veio vazio.
+    """
+    if not rr_status.ok:
+        return rr_status
+    if match_identity_app(rr_status.apps or [], identity) is not None:
+        return rr_status
+    if rr_status.apps:
+        return rr_status
+    if win32_query is None:
+        return rr_status
+    wmi_status = win32_query(rr_status.host)
+    if wmi_status.ok:
+        return wmi_status
+    return rr_status
 
 
 def decide_host_action(
@@ -147,7 +180,7 @@ def decide_host_action(
     Decide ação/resultado a partir da conectividade e do inventário.
 
     Falha na consulta não é tratada como aplicativo ausente.
-    Versão encontrada igual à que será instalada → não instala.
+    Nunca faz downgrade. EXE sem versão e app já instalado → erro.
     """
     target = resolve_target_version(desired_version, identity)
     row = BatchHostRow(host=host, desired=desired_display(target))
@@ -165,7 +198,7 @@ def decide_host_action(
         return row
 
     row.detection_ok = True
-    app = match_installed_app(inventory.apps or [], identity.needles)
+    app = match_identity_app(inventory.apps or [], identity)
     row.app_found = format_app_found(app)
     row.version = format_app_version(app)
 
@@ -177,8 +210,8 @@ def decide_host_action(
 
     if not target:
         row.action = ACTION_SKIP
-        row.result = RESULT_SKIPPED
-        row.reason = REASON_ALREADY_INSTALLED
+        row.result = RESULT_ERROR
+        row.reason = REASON_INSTALLER_VERSION_UNKNOWN
         return row
 
     cmp = compare_versions(app.version or "", target)
@@ -348,12 +381,12 @@ def run_remote_installer(
                     continue
                 bucket.append(line)
                 log(f"{prefix}{line}" if prefix else line)
-        except Exception:
+        except (OSError, ValueError):
             pass
         finally:
             try:
                 pipe.close()
-            except Exception:
+            except OSError:
                 pass
 
     t_out = threading.Thread(
@@ -371,14 +404,14 @@ def run_remote_installer(
             cancelled = True
             try:
                 proc.terminate()
-            except Exception:
+            except OSError:
                 pass
             try:
                 proc.wait(timeout=5)
-            except Exception:
+            except subprocess.TimeoutExpired:
                 try:
                     proc.kill()
-                except Exception:
+                except OSError:
                     pass
             break
         time.sleep(0.15)

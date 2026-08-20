@@ -100,7 +100,12 @@ class ExeMetadata:
 
     @property
     def installer_version(self) -> str:
-        return (self.product_version or self.file_version or "").strip()
+        """ProductVersion, depois FileVersion; só valores com componentes numéricos."""
+        for candidate in (self.product_version, self.file_version):
+            text = valid_numeric_version(candidate)
+            if text:
+                return text
+        return ""
 
 
 @dataclass(frozen=True)
@@ -109,6 +114,7 @@ class ProductIdentity:
 
     label: str
     needles: Tuple[str, ...] = field(default_factory=tuple)
+    filename_needles: Tuple[str, ...] = field(default_factory=tuple)
     installer_version: str = ""
 
 
@@ -128,12 +134,13 @@ def read_exe_metadata(path: str) -> ExeMetadata:
 
 
 def identify_product(path: str, metadata: Optional[ExeMetadata] = None) -> ProductIdentity:
-    """Monta needles de busca a partir do EXE (catálogo, metadados, arquivo)."""
+    """Monta needles: ProductName, FileDescription, depois o nome do arquivo."""
     meta = metadata if metadata is not None else read_exe_metadata(path)
     ordered: List[str] = []
+    filename_ordered: List[str] = []
     seen: set[str] = set()
 
-    def add(value: str) -> None:
+    def add(value: str, *, filename: bool = False) -> None:
         text = " ".join((value or "").split()).strip()
         if not text:
             return
@@ -141,31 +148,41 @@ def identify_product(path: str, metadata: Optional[ExeMetadata] = None) -> Produ
         if key in seen:
             return
         seen.add(key)
-        ordered.append(text)
+        if filename:
+            filename_ordered.append(text)
+        else:
+            ordered.append(text)
 
-    for source in (meta.product_name, meta.file_description, meta.file_stem):
-        if not source:
-            continue
+    def add_from_source(source: str, *, filename: bool = False) -> None:
+        if not (source or "").strip():
+            return
         entry = find_catalog_entry(source)
         if entry:
-            add(str(entry.get("displayName") or ""))
+            add(str(entry.get("displayName") or ""), filename=filename)
+        add(source, filename=filename)
+        add(family_label(source), filename=filename)
+        tokens = tokenize(source)
+        for token in sorted(tokens, key=lambda t: (-len(t), t.casefold())):
+            add(token, filename=True)
 
-    add(family_label(meta.product_name))
-    add(family_label(meta.file_description))
+    add_from_source(meta.product_name)
+    add_from_source(meta.file_description)
+    add_from_source(meta.file_stem, filename=True)
 
-    tokens = tokenize(meta.product_name) + tokenize(meta.file_description) + tokenize(
-        meta.file_stem
+    if not ordered and not filename_ordered and meta.file_stem:
+        add(meta.file_stem, filename=True)
+
+    label = (
+        ordered[0]
+        if ordered
+        else (filename_ordered[0] if filename_ordered else "")
     )
-    for token in sorted(set(tokens), key=lambda t: (-len(t), t.casefold())):
-        add(token)
-
-    if not ordered and meta.file_stem:
-        add(meta.file_stem)
-
-    label = ordered[0] if ordered else (meta.file_stem or os.path.basename(meta.path) or "")
+    if not label:
+        label = meta.file_stem or os.path.basename(meta.path) or ""
     return ProductIdentity(
         label=label,
         needles=tuple(ordered),
+        filename_needles=tuple(filename_ordered),
         installer_version=meta.installer_version,
     )
 
@@ -211,6 +228,14 @@ def parse_version_key(value: str) -> Optional[Tuple[int, ...]]:
         return None
 
 
+def valid_numeric_version(value: str) -> str:
+    """Devolve o texto se houver versão numérica comparável; senão vazio."""
+    text = (value or "").strip()
+    if text and parse_version_key(text) is not None:
+        return text
+    return ""
+
+
 def compare_versions(left: str, right: str) -> Optional[int]:
     """
     Comparação numérica com padding de zeros: 4.10.0 > 4.9.0.
@@ -252,16 +277,56 @@ def highest_version_app(apps: Sequence[InstalledApp]) -> Optional[InstalledApp]:
 def match_installed_app(
     apps: Sequence[InstalledApp],
     needles: Sequence[str],
+    *,
+    filename_needles: Sequence[str] = (),
 ) -> Optional[InstalledApp]:
-    """Primeiro needle que casar (substring); depois a maior versão válida."""
+    """Primeiro needle de metadados que casar; arquivo só como fallback.
+
+    Metadados usam substring. Tokens do nome do arquivo exigem fronteira de
+    palavra, para reduzir falso positivo em outro software.
+    """
     for needle in needles:
-        n = (needle or "").strip().casefold()
-        if len(n) < 2:
-            continue
-        hits = [app for app in apps if n in (app.display_name or "").casefold()]
+        hits = _hits_for_needle(apps, needle, strict=False)
+        if hits:
+            return highest_version_app(hits)
+    for needle in filename_needles:
+        hits = _hits_for_needle(apps, needle, strict=True)
         if hits:
             return highest_version_app(hits)
     return None
+
+
+def match_identity_app(
+    apps: Sequence[InstalledApp],
+    identity: ProductIdentity,
+) -> Optional[InstalledApp]:
+    return match_installed_app(
+        apps,
+        identity.needles,
+        filename_needles=identity.filename_needles,
+    )
+
+
+def _hits_for_needle(
+    apps: Sequence[InstalledApp],
+    needle: str,
+    *,
+    strict: bool,
+) -> List[InstalledApp]:
+    n = (needle or "").strip()
+    if len(n) < 2:
+        return []
+    return [app for app in apps if _display_name_matches(app.display_name, n, strict=strict)]
+
+
+def _display_name_matches(display_name: str, needle: str, *, strict: bool) -> bool:
+    name = (display_name or "").strip()
+    if not name or not needle:
+        return False
+    if not strict:
+        return needle.casefold() in name.casefold()
+    pattern = r"(?<![A-Za-z0-9])" + re.escape(needle) + r"(?![A-Za-z0-9])"
+    return re.search(pattern, name, re.IGNORECASE) is not None
 
 
 def format_app_found(app: Optional[InstalledApp]) -> str:
@@ -292,7 +357,7 @@ def _query_version_strings(path: str) -> dict:
     try:
         import ctypes
         from ctypes import wintypes
-    except Exception:
+    except (ImportError, OSError, AttributeError):
         return {}
 
     version = ctypes.WinDLL("version", use_last_error=True)
