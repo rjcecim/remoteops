@@ -23,6 +23,7 @@ from remoteops.ui.widgets.table import (
     install_copy_cell_on_double_click,
     install_table_cell_behavior,
 )
+from remoteops.ui.widgets.tooltip import install_fluent_tooltips
 from remoteops.utils.redaction import redact_command_text
 
 
@@ -48,6 +49,7 @@ def run(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     app = QApplication(argv)
     apply_ui_defaults(app)
+    install_fluent_tooltips(app)
     install_copy_cell_on_double_click(app)
     install_table_cell_behavior(app)
     QCoreApplication.setOrganizationName(ORG_NAME)

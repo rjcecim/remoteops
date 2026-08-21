@@ -12,9 +12,10 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QTableView,
     QTableWidget,
-    QToolTip,
     QWidget,
 )
+
+from remoteops.ui.widgets.tooltip import hide_fluent_tooltip, show_fluent_tooltip
 
 
 class _CopyCellOnDoubleClickFilter(QObject):
@@ -81,21 +82,23 @@ class _CellToolTipFilter(QObject):
 
         index = table.indexAt(pos)
         if not index.isValid():
-            QToolTip.hideText()
+            hide_fluent_tooltip()
             return True
         if _cell_widget(table, index) is not None:
             return False
 
         raw = index.data(Qt.ItemDataRole.DisplayRole)
         if raw is None:
-            QToolTip.hideText()
+            hide_fluent_tooltip()
             return True
         text = " ".join(str(raw).split())
         if not text:
-            QToolTip.hideText()
+            hide_fluent_tooltip()
             return True
 
-        QToolTip.showText(event.globalPos(), text, obj, table.visualRect(index))
+        show_fluent_tooltip(
+            event.globalPos(), text, wrap=False, anchor=obj
+        )
         return True
 
 

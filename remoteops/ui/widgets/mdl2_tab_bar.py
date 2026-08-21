@@ -15,7 +15,7 @@ from PyQt6.QtCore import (
     pyqtSignal,
 )
 from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPen
-from PyQt6.QtWidgets import QTabBar, QToolTip
+from PyQt6.QtWidgets import QTabBar
 
 from remoteops.ui.style import (
     ANIM_TAB,
@@ -30,6 +30,7 @@ from remoteops.ui.style import (
     anim_ms,
     animations_enabled,
 )
+from remoteops.ui.widgets.tooltip import hide_fluent_tooltip, show_fluent_tooltip
 
 
 class Mdl2TabBar(QTabBar):
@@ -211,19 +212,20 @@ class Mdl2TabBar(QTabBar):
             else QCursor(Qt.CursorShape.ArrowCursor)
         )
         if reset_hit is not None:
-            QToolTip.showText(
+            show_fluent_tooltip(
                 event.globalPosition().toPoint(),
                 self.tr("Limpar tudo e voltar ao estado inicial"),
-                self,
+                wrap=True,
+                anchor=self,
             )
         else:
-            QToolTip.hideText()
+            hide_fluent_tooltip()
         self.update()
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event):
         self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
-        QToolTip.hideText()
+        hide_fluent_tooltip()
         self.update()
         super().leaveEvent(event)
 

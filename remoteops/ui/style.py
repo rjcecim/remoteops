@@ -475,11 +475,13 @@ def apply_ui_defaults(app: QApplication) -> None:
             background: transparent;
         }}
         QToolTip {{
-            background: {COLOR_SURFACE};
+            background-color: {COLOR_SURFACE};
             color: {COLOR_TEXT};
             border: 1px solid {COLOR_BORDER};
-            border-radius: {RADIUS_MEDIUM}px;
-            padding: 6px 8px;
+            padding: 8px 12px;
+            font-family: "{FONT_UI}";
+            font-size: {SIZE_UI_SMALL}pt;
+            font-weight: 400;
             white-space: nowrap;
         }}
         QMenu {{
