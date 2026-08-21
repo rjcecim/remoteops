@@ -7,24 +7,28 @@
 
 # RemoteOps 2.0.0
 
-> Operações remotas no Windows: PsExec, inventário, pesquisa multi-host, desinstalação, Robocopy e RustDesk — evolução limpa do antigo **PSExecGUI**.
+> Operações remotas no Windows via **PsExec**: instaladores, scripts, WinGet, inventário e desinstalação — interface Fluent, preview em tempo real e empacotamento portátil.
 
 <p align="center">
   <img src="assets/app_icon.png" alt="RemoteOps" width="96" />
 </p>
 
-Interface moderna com identidade visual própria, preview em tempo real e abas dinâmicas. Execute instaladores, scripts e comandos em hosts remotos sem digitar linhas de comando — com pacote Python organizado (`remoteops`) e empacotamento portátil.
+O comando executado é o que está selecionado na aba **PsExec**. A senha nunca aparece no preview nem nos logs (`-p ********`).
+
+Versão: **`2.0.0`** (`remoteops.core.version.__version__`).
 
 ---
 
 ## Índice
 
 - [Visão geral](#visão-geral)
+- [Abas](#abas)
 - [Requisitos](#requisitos)
 - [Instalação](#instalação)
 - [Uso rápido](#uso-rápido)
+- [Arquivo EXE](#arquivo-exe)
 - [Segurança de credenciais](#segurança-de-credenciais)
-- [hosts.json](#hostsjson)
+- [hosts.json e faixa de IP](#hostsjson-e-faixa-de-ip)
 - [Logging](#logging)
 - [Build](#build)
 - [Estrutura do projeto](#estrutura-do-projeto)
@@ -35,17 +39,38 @@ Interface moderna com identidade visual própria, preview em tempo real e abas d
 
 | Recurso | Descrição |
 |--------|-----------|
-| **Arquivos** | `.exe`, `.msi`, `.ps1`, `.bat` e outros — seleção por arquivo ou pasta |
-| **Cópia remota** | Robocopy integrado para enviar arquivos/pastas ao host antes de executar |
-| **Comando manual** | Digite o comando remoto (ex.: `cmd`, `powershell`) quando não houver arquivo |
-| **Preview** | Comando sanitizado (senha mascarada) atualizado em tempo real |
-| **Execução** | ConPTY / processo Windows sem `shell=True` |
-| **Inventário** | PsInfo remoto + Remote Registry (32/64 bits) |
-| **Busca multi-host** | Pesquisa de aplicativos em lista de hosts (`hosts.json`) |
-| **RustDesk** | Coleta ID no host e abre conexão local |
-| **Portátil** | `settings.ini`, `hosts.json` e `logs/` ao lado do exe |
+| **Arquivos** | `.exe`, `.msi`, `.ps1`, `.bat` — arquivo ou pasta no seletor do cabeçalho |
+| **Abas dinâmicas** | MSI, PowerShell, CMD, Robocopy e Instalação em Lote só aparecem quando o tipo de arquivo pede |
+| **PsExec** | Fonte de verdade das flags (`-s`, `-c`, `-f`, `-accepteula`…). O preview e a execução leem a UI |
+| **Host** | Status Online/Offline; **Executar** só fica disponível com o host online |
+| **Cópia** | Robocopy para `.msi`/`.ps1`/`.bat`/pasta; `.exe` usa a cópia do próprio PsExec (`-c`) |
+| **Lote** | Instala o EXE selecionado em vários hosts (faixa de IP ou `hosts.json`) |
+| **WinGet** | Listar, buscar, instalar, atualizar e desinstalar pacotes no host remoto |
+| **Inventário** | PsInfo (sistema, hotfix, discos) e aplicativos via Remote Registry |
+| **Pesquisa** | Aplicativos em vários hosts, com desinstalação quando houver `UninstallString` |
+| **RustDesk** | Coleta o ID no remoto e abre `rustdesk.exe --connect <ID>` localmente |
+| **UI** | Fluent / PyQt6, tooltips em card, tabelas em uma linha com elipse |
+| **Portátil** | `settings.ini`, `hosts.json` e `logs/` ao lado do exe (ou na raiz do repo em dev) |
 
-Versão do aplicativo: **`2.0.0`** (fonte programática: `remoteops.core.version.__version__`).
+---
+
+## Abas
+
+Aba **PsExec** está sempre visível. As demais abrem sob demanda.
+
+| Aba | Quando aparece | Função |
+|-----|----------------|--------|
+| **PsExec** | Sempre | Host, autenticação, privilégios, flags e args do programa remoto |
+| **Instalação em Lote** | Arquivo `.exe` | Varre a rede ou `hosts.json` e instala o EXE (versão desejada opcional) |
+| **MSI** | Arquivo `.msi` | Ação, interface, reinício e propriedades do `msiexec` |
+| **PowerShell** | `.ps1` ou comando `powershell` | `-Command`, `-File`, `-EncodedCommand`, política de execução |
+| **CMD** | `.bat` ou comando `cmd` | `/C` ou `/K` (checkboxes exclusivos), `/D`, `/Q` e cadeia |
+| **Robocopy** | Arquivo/pasta que não seja `.exe` | Destino em `C$` e switches da cópia |
+| **PsInfo** | Botão na aba PsExec | Inventário remoto (host preenchido) |
+| **Aplicativos** | Botão na aba PsExec | Lista instalados no host; desinstalação |
+| **WinGet** | Botão na aba PsExec | `winget` remoto (host preenchido) |
+| **Pesquisa de Aplicativos** | Ícone de busca no cabeçalho | Multi-host (faixa de IP ou `hosts.json`) |
+| **Configurações** | Ícone de engrenagem no cabeçalho | Pasta PSTools, RustDesk, logs, Remote Registry, faixa de IP |
 
 ---
 
@@ -54,12 +79,12 @@ Versão do aplicativo: **`2.0.0`** (fonte programática: `remoteops.core.version
 | Item | Observação |
 |------|------------|
 | **Sistema** | Windows 10 ou 11 |
-| **Python** | 3.10+ |
-| **PyQt6** | Interface gráfica |
-| **PsExec** | PSTools — padrão `C:\PSTools\` |
-| **PsInfo64** | Inventário remoto |
-| **RustDesk** | Opcional — conexão remota |
-| **Rede** | SMB / Remote Registry conforme o fluxo |
+| **Python** | 3.10+ (desenvolvimento) |
+| **PyQt6** | Interface |
+| **PSTools** | Pasta com PsExec e PsInfo — padrão `C:\PSTools\` (ajustável em Configurações) |
+| **WinGet** | No host remoto, para a aba WinGet |
+| **RustDesk** | Opcional, no host e na máquina local |
+| **Rede** | Ping, SMB (`C$`) e Remote Registry conforme o fluxo |
 
 ---
 
@@ -70,11 +95,11 @@ cd RemoteOps
 python -m venv .venv
 .venv\Scripts\activate
 pip install -e ".[dev]"
-# opcional — assets / PyInstaller:
+# opcional — gerar ícones / empacotar:
 pip install -e ".[build]"
 ```
 
-Ou apenas runtime:
+Runtime mínimo:
 
 ```bash
 pip install PyQt6
@@ -90,56 +115,65 @@ python main.py
 python -m remoteops
 ```
 
-1. Selecione um arquivo (ou pasta) no cabeçalho.
-2. Preencha **host remoto** e, se necessário, usuário/senha na aba **PsExec**.
-3. Ajuste opções nas abas (MSI, PowerShell, CMD, Robocopy).
-4. Confira o **preview** (senha aparece como `********`) e clique em **Executar**.
+1. Informe o **host remoto** na aba PsExec e aguarde o status **Online**.
+2. Autenticação só se a sessão atual não bastar (`-u` / `-p`).
+3. Selecione um arquivo no cabeçalho, **ou** digite o comando remoto (ex.: `cmd`, `powershell`).
+4. Ajuste as abas que surgirem e as flags do PsExec.
+5. Confira o **preview** e clique em **Executar**. A saída vai para o console (ConPTY).
 
-### Inventário (PsInfo)
+Duplo clique em uma célula de tabela copia o texto visível.
 
-Botão **PsInfo** ao lado do Ping — coleta sistema, aplicativos e discos.
+---
 
-### RustDesk
+## Arquivo EXE
 
-Botão **RustDesk** — obtém o ID no host e abre `rustdesk.exe --connect <ID>` localmente.
+Ao escolher um `.exe`:
+
+1. A aba **Instalação em Lote** aparece.
+2. Na aba PsExec são **pré-marcados** `-accepteula`, `-nobanner`, `-s`, `-c` e `-f`.
+3. Depois disso você pode marcar ou desmarcar qualquer opção; o comando segue a UI.
+4. Não há lista oculta de flags de instalador — lote e execução única usam o estado atual do PsExec (o lote só troca o host de cada alvo).
+
+Argumentos do instalador (`/S`, `/quiet`, …) vão em **Args do programa** na aba PsExec.
 
 ---
 
 ## Segurança de credenciais
 
-Política central em `remoteops.utils.redaction`:
+Política em `remoteops.utils.redaction`:
 
-- Preview, logs e arquivos usam texto sanitizado (flag `-p` isolada; não mascara `-Path`/`-Profile`/`-Priority`).
-- O builder **não** guarda a senha bruta — apenas sabe se há senha e mostra `-p ********`.
-- A senha é coletada na UI no momento da execução (`CredentialContext`), injetada no argv e desreferenciada em seguida.
-- Preferência: use a sessão Windows atual (sem `-u`/`-p`) quando possível.
+- Preview, logs e arquivos usam texto sanitizado (`-p` isolada; não mascara `-Path` / `-Profile` / `-Priority`).
+- O builder **não** guarda a senha — só sabe se há senha e mostra `-p ********`.
+- A senha é lida na UI na hora de executar (`CredentialContext`), injetada no argv e descartada em seguida.
+- Prefira a sessão Windows atual (sem `-u`/`-p`) quando possível.
 
-### Limitações honestas
+### Limitações
 
-- Com `-u`/`-p`, a senha permanece na command line do processo Windows (limitação do PsExec) — inspecionável pelo SO.
+- Com `-u`/`-p`, a senha fica na command line do processo (limitação do PsExec).
 - Strings Python não são zeroizadas criptograficamente.
 
 ---
 
-## hosts.json
+## hosts.json e faixa de IP
 
-Arquivo **local** (não versionado no Git; hosts reais ficam só na máquina):
+**Lista de hosts** (Pesquisa e Lote, quando a faixa de IP está desligada):
 
-1. Copie `hosts.example.json` → `hosts.json`
-2. Edite com os nomes dos computadores do seu ambiente
+1. Copie `hosts.example.json` → `hosts.json` (raiz do repo ou pasta do exe).
+2. Edite com os nomes do seu ambiente.
 
-`hosts.json` está no `.gitignore` e **não** é rastreado.  
-`hosts.example.json` permanece versionado (somente hosts fictícios).
+`hosts.json` está no `.gitignore`. `hosts.example.json` permanece versionado (hosts fictícios).
+
+**Faixa de IP** (Configurações): início/fim IPv4, octetos ignorados e threads de varredura. Com a faixa ativa, Lote e Pesquisa varrem a rede em vez de usar `hosts.json`.
 
 ---
 
 ## Logging
 
-Log em arquivo (opcional, preferência em Configurações):
+Preferência **Salvar log em arquivo** em Configurações:
 
-- Pasta `logs\` na raiz do app (dev) ou ao lado do `RemoteOps.exe`
-- Arquivo único: `logs\app.log`
-- Preferências em `settings.ini` (também local, não versionado)
+- Pasta `logs\` na raiz do repo (dev) ou ao lado do `RemoteOps.exe`
+- Arquivo: `logs\app.log`
+- Demais preferências em `settings.ini` (local, não versionado): pasta PSTools, workers, timeout do Remote Registry, faixa de IP
 
 ---
 
@@ -150,7 +184,7 @@ pip install -e ".[build]"
 python -m PyInstaller --noconfirm --clean RemoteOps.spec
 ```
 
-Gera `dist/RemoteOps.exe` com `assets/`, `config/` e `hosts.example.json`. **Não** empacota `hosts.json`, credenciais ou logs.
+Gera `dist/RemoteOps.exe` (sem console) e copia `dist/config/` (`ApplicationCatalog.json`). Assets e templates WinGet entram no exe. **Não** empacota `hosts.json`, `settings.ini`, credenciais nem logs.
 
 ---
 
@@ -158,17 +192,18 @@ Gera `dist/RemoteOps.exe` com `assets/`, `config/` e `hosts.example.json`. **Nã
 
 ```
 RemoteOps/
-├── main.py                 # entry point fino
+├── main.py                      # entry point
 ├── remoteops/
-│   ├── bootstrap.py        # QApplication + MainWindow
-│   ├── paths.py            # caminhos portáteis (dev / exe)
-│   ├── core/               # builder, executor, ConPTY, win_cmd
-│   ├── services/           # execução, uninstall, RustDesk
-│   ├── ui/                 # MainWindow, abas, widgets
-│   └── utils/              # settings, hosts, catalog, redaction…
-├── config/                 # ApplicationCatalog.json
-├── assets/                 # ícones e marca
-├── hosts.example.json      # versionado (fictício)
+│   ├── bootstrap.py             # QApplication, Fluent, MainWindow
+│   ├── paths.py                 # caminhos portáteis (dev / exe)
+│   ├── core/                    # builder, executor, ConPTY, opções PsExec/CMD/PS
+│   ├── services/                # execução, lote, uninstall, RustDesk
+│   ├── ui/                      # janela, abas, widgets, estilo Fluent
+│   ├── utils/                   # settings, hosts, catálogo, rede, redação
+│   └── winget/                  # execução remota do winget
+├── config/                      # ApplicationCatalog.json
+├── assets/                      # ícones e marca
+├── hosts.example.json
 ├── pyproject.toml
-└── RemoteOps.spec          # PyInstaller
+└── RemoteOps.spec               # PyInstaller → dist/RemoteOps.exe
 ```
