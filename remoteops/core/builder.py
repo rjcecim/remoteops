@@ -431,8 +431,6 @@ class CommandBuilder:
             return self._build_psexec_folder_spec()
 
         ext = os.path.splitext(self.file_path)[1].lower() if self.file_path else ""
-        if ext == ".exe":
-            return self._build_psexec_exe_spec()
         if ext == ".msi":
             return self._build_psexec_msi_spec()
         if ext == ".ps1":
@@ -440,23 +438,6 @@ class CommandBuilder:
         if ext == ".bat":
             return self._build_psexec_bat_script_spec()
         return self._build_psexec_other_spec()
-
-    def _build_psexec_exe_spec(self) -> CommandSpec:
-        if not self.psexec_params:
-            return CommandSpec(
-                executable="PsExec.exe",
-                display_command="# Erro: parâmetros de psexec ausentes",
-            )
-        if not self.file_path:
-            return CommandSpec(
-                executable="PsExec.exe",
-                display_command="# Erro: arquivo não selecionado",
-            )
-        if self.psexec_params.get("-c"):
-            target = os.path.normpath(self.file_path)
-        else:
-            target = os.path.basename(self.file_path)
-        return self._spec_from_psexec_argv([target])
 
     def _build_psexec_msi_spec(self) -> CommandSpec:
         if not self.psexec_params:

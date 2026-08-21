@@ -1004,7 +1004,8 @@ class MainWindow(QMainWindow):
             is_exe = file_path.lower().endswith('.exe')
         # -c/-f/-v são recalculados pela aba (Robocopy vs cópia do PsExec)
         self._sync_psexec_copy_allowed()
-        # NOVO: Preencher campo -File da aba PowerShell automaticamente
+        if is_exe:
+            self.psexec_tab.preselect_exe_options()
         self.update_tab_visibility(is_msi, is_exe)
         if getattr(self, "batchinstall_tab", None) is not None:
             self.batchinstall_tab.on_exe_changed(file_path if is_exe else "")

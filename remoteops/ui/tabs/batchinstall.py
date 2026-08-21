@@ -106,7 +106,6 @@ class _BatchInstallWorker(QThread):
         hosts: List[str],
         *,
         exe_path: str,
-        extra_args: str,
         desired_version: str,
         psexec_params: dict,
         user: str,
@@ -122,7 +121,6 @@ class _BatchInstallWorker(QThread):
         super().__init__()
         self.hosts = list(hosts)
         self.exe_path = exe_path
-        self.extra_args = extra_args or ""
         self.desired_version = (desired_version or "").strip()
         self.psexec_params = dict(psexec_params or {})
         self._user = user or ""
@@ -356,7 +354,6 @@ class _BatchInstallWorker(QThread):
         spec = build_batch_install_spec(
             host=row.host,
             exe_path=self.exe_path,
-            extra_args=self.extra_args,
             psexec_params=self.psexec_params,
             pstools_path=pstools,
             has_password=bool(self._password),
@@ -465,15 +462,6 @@ class BatchInstallTab(QWidget):
         self.version_edit.textChanged.connect(lambda _t: self._invalidate_scan())
         add_row(grid, 0, self.tr("Versão Desejada"), self.version_edit)
 
-        self.extras_edit = QLineEdit()
-        self.extras_edit.setPlaceholderText(
-            self.tr("Ex.: /S   /quiet   /norestart")
-        )
-        self.extras_edit.setToolTip(
-            self.tr("Argumentos passados ao instalador remoto (após o EXE).")
-        )
-        add_row(grid, 1, self.tr("Parâmetros extras"), self.extras_edit)
-
         status_row = QHBoxLayout()
         status_row.setSpacing(8)
         status_row.setContentsMargins(2, 0, 0, 0)
@@ -495,7 +483,7 @@ class BatchInstallTab(QWidget):
                 "senão usa hosts.json."
             )
         )
-        add_row(grid, 2, self.tr("Status"), status_wrap)
+        add_row(grid, 1, self.tr("Status"), status_wrap)
 
         def _bar(fmt: str) -> QProgressBar:
             bar = QProgressBar()
@@ -515,8 +503,8 @@ class BatchInstallTab(QWidget):
         scan_lay.setSpacing(8)
         scan_lay.addWidget(self.scan_progress, 1)
         self._scan_row_label = make_field_label(self.tr("Rede"))
-        grid.addWidget(self._scan_row_label, 3, 0, Qt.AlignmentFlag.AlignVCenter)
-        grid.addWidget(scan_wrap, 3, 1, Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(self._scan_row_label, 2, 0, Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(scan_wrap, 2, 1, Qt.AlignmentFlag.AlignVCenter)
         self._scan_row_wrap = scan_wrap
 
         self.progress = _bar("%v / %m")
@@ -533,8 +521,8 @@ class BatchInstallTab(QWidget):
         hosts_lay.addWidget(self.ok_count_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
         hosts_lay.addWidget(self.fail_count_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
         self._hosts_row_label = make_field_label(self.tr("Hosts"))
-        grid.addWidget(self._hosts_row_label, 4, 0, Qt.AlignmentFlag.AlignVCenter)
-        grid.addWidget(hosts_wrap, 4, 1, Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(self._hosts_row_label, 3, 0, Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(hosts_wrap, 3, 1, Qt.AlignmentFlag.AlignVCenter)
         self._hosts_row_wrap = hosts_wrap
 
         self.phase_lbl = QLabel("")
@@ -543,7 +531,7 @@ class BatchInstallTab(QWidget):
         self.phase_lbl.setStyleSheet(
             f"QLabel#lotePhase {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
         )
-        grid.addWidget(self.phase_lbl, 5, 0, 1, 2)
+        grid.addWidget(self.phase_lbl, 4, 0, 1, 2)
         self._set_progress_rows_visible(False, network=False)
 
         self.product_lbl = QLabel("")
@@ -810,7 +798,6 @@ class BatchInstallTab(QWidget):
         self.start_btn.setEnabled(not busy and self._scan_ready)
         self.stop_btn.setEnabled(busy)
         self.version_edit.setEnabled(not busy)
-        self.extras_edit.setEnabled(not busy)
 
     def _disconnect_scan_signals(self, w: _NetworkScanWorker) -> None:
         for signal, slot in (
@@ -1025,7 +1012,6 @@ class BatchInstallTab(QWidget):
         if self._is_busy():
             self.stop_install()
         self.version_edit.clear()
-        self.extras_edit.clear()
         self._scan_ready = False
         self._busy_kind = ""
         self._reset_results()
@@ -1091,7 +1077,7 @@ class BatchInstallTab(QWidget):
             params = {}
         return str(user or ""), str(password or ""), params
 
-    def _log_identity(self, identity, desired: str, extras: str) -> None:
+    def _log_identity(self, identity, desired: str) -> None:
         self.log_output.append_log(
             self.tr(
                 f"[LOTE] Produto: {identity.label}. "
@@ -1117,22 +1103,16 @@ class BatchInstallTab(QWidget):
                         "só instala se o aplicativo não estiver presente."
                     )
                 )
-        if extras:
-            self.log_output.append_log(
-                self.tr(f"[LOTE] Parâmetros extras: {extras}")
-            )
 
     def _begin_streaming_scan(
         self, exe: str, desired: str, generation: int
     ) -> None:
         identity = identify_product(exe)
         user, password, params = self._creds_and_params()
-        extras = (self.extras_edit.text() or "").strip()
         inbox: Queue = Queue()
         self._worker = _BatchInstallWorker(
             [],
             exe_path=exe,
-            extra_args=extras,
             desired_version=desired,
             psexec_params=params,
             user=user,
@@ -1146,7 +1126,7 @@ class BatchInstallTab(QWidget):
         )
         self._connect_worker(self._worker)
         self._worker.start()
-        self._log_identity(identity, desired, extras)
+        self._log_identity(identity, desired)
 
     def _begin_scan(
         self,
@@ -1174,12 +1154,10 @@ class BatchInstallTab(QWidget):
 
         identity = identify_product(exe)
         user, password, params = self._creds_and_params()
-        extras = (self.extras_edit.text() or "").strip()
         workers = min(get_search_max_workers(), max(1, len(hosts)))
         self._worker = _BatchInstallWorker(
             hosts,
             exe_path=exe,
-            extra_args=extras,
             desired_version=desired,
             psexec_params=params,
             user=user,
@@ -1198,7 +1176,7 @@ class BatchInstallTab(QWidget):
                 f"({workers} consultas simultâneas)."
             )
         )
-        self._log_identity(identity, desired, extras)
+        self._log_identity(identity, desired)
 
     def _begin_pending_install(
         self,
@@ -1222,11 +1200,9 @@ class BatchInstallTab(QWidget):
 
         identity = identify_product(exe)
         user, password, params = self._creds_and_params()
-        extras = (self.extras_edit.text() or "").strip()
         self._worker = _BatchInstallWorker(
             [],
             exe_path=exe,
-            extra_args=extras,
             desired_version=desired,
             psexec_params=params,
             user=user,
@@ -1244,7 +1220,7 @@ class BatchInstallTab(QWidget):
                 f"[LOTE] Instalando em {len(pending)} host(s) da varredura."
             )
         )
-        self._log_identity(identity, desired, extras)
+        self._log_identity(identity, desired)
 
     def _connect_worker(self, w: _BatchInstallWorker) -> None:
         w.progress.connect(self._on_progress)

@@ -271,30 +271,17 @@ def prepare_batch_psexec_params(
     base_params: Optional[dict],
     *,
     host: str,
-    extra_args: str,
     pstools_path: str,
 ) -> dict:
-    """Reusa flags da aba PsExec; força cópia, espera, SYSTEM e extra args da Lote.
+    """Reusa as opções atuais da aba PsExec; só sobrepõe o host da Lote.
 
-    Instaladores rodam como SYSTEM (``-s``). ``-h`` e ``-l`` são desligados
-    porque conflitam com ``-s``.
+    Flags, args do programa e demais opções entram no comando se estiverem
+    selecionadas na aba PsExec.
     """
     params = dict(base_params or {})
     params["host"] = (host or "").strip().strip("\\")
     params["psexec_path"] = pstools_path
-    params["extra_args"] = extra_args or ""
     params["remote_cmd"] = ""
-    params["-c"] = True
-    params["-f"] = True
-    params["-v"] = False
-    params["-d"] = False
-    params["session_interactive"] = False
-    params["session_id"] = None
-    params["copy_allowed"] = True
-    params["-accepteula"] = True
-    params["-s"] = True
-    params["-h"] = False
-    params["-l"] = False
     return params
 
 
@@ -302,7 +289,6 @@ def build_batch_install_spec(
     *,
     host: str,
     exe_path: str,
-    extra_args: str,
     psexec_params: Optional[dict],
     pstools_path: str,
     has_password: bool,
@@ -312,7 +298,6 @@ def build_batch_install_spec(
     params = prepare_batch_psexec_params(
         psexec_params,
         host=host,
-        extra_args=extra_args,
         pstools_path=pstools_path,
     )
     if has_password and (params.get("user") or "").strip():

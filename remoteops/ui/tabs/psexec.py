@@ -688,6 +688,24 @@ class PsExecTab(QWidget):
         self._copy_allowed = bool(allowed)
         self.update_psexec_option_state()
 
+    def preselect_exe_options(self) -> None:
+        """Marca na interface as opções iniciais ao escolher um .exe.
+
+        Só altera os checkboxes visíveis. A montagem do comando continua
+        lendo o estado atual da aba; o usuário pode marcar/desmarcar depois.
+        """
+        for cb in (
+            self.flag_accepteula,
+            self.flag_nobanner,
+            self.flag_s,
+            self.flag_c,
+            self.flag_f,
+        ):
+            cb.blockSignals(True)
+            cb.setChecked(True)
+            cb.blockSignals(False)
+        self.update_psexec_option_state()
+
     def update_psexec_option_state(self, trigger: Optional[str] = None) -> None:
         """Única rotina que recalcula habilitados, conflitos e tooltips."""
         if self._updating_option_state:
