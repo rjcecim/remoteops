@@ -766,8 +766,6 @@ class PsInfoTab(QWidget):
                     it.setFont(bold)
                 if c == 7 and free_color.isValid():
                     it.setForeground(free_color)
-                if is_system and not is_total:
-                    it.setToolTip(self.tr("Volume do System root"))
                 table.setItem(r, c, it)
 
         table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)

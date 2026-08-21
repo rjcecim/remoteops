@@ -19,7 +19,10 @@ from remoteops.ui.branding import (
 from remoteops.ui.main_window import MainWindow
 from remoteops.ui.mica import enable_mica_for_widget
 from remoteops.ui.style import apply_ui_defaults
-from remoteops.ui.widgets.table import install_copy_cell_on_double_click
+from remoteops.ui.widgets.table import (
+    install_copy_cell_on_double_click,
+    install_table_cell_behavior,
+)
 from remoteops.utils.redaction import redact_command_text
 
 
@@ -46,6 +49,7 @@ def run(argv: list[str] | None = None) -> int:
     app = QApplication(argv)
     apply_ui_defaults(app)
     install_copy_cell_on_double_click(app)
+    install_table_cell_behavior(app)
     QCoreApplication.setOrganizationName(ORG_NAME)
     QCoreApplication.setApplicationName(APP_NAME)
     QCoreApplication.setApplicationVersion(APP_VERSION)

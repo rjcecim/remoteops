@@ -1082,11 +1082,7 @@ class WinGetTab(QWidget):
         return container
 
     def _text_item(self, value: object) -> QTableWidgetItem:
-        text = str(value or "")
-        item = QTableWidgetItem(text)
-        if text:
-            item.setToolTip(text)
-        return item
+        return QTableWidgetItem(str(value or ""))
 
     def _load_installed(self, packages: list[dict]) -> None:
         self.inst_table.setSortingEnabled(False)

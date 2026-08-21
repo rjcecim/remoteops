@@ -480,6 +480,7 @@ def apply_ui_defaults(app: QApplication) -> None:
             border: 1px solid {COLOR_BORDER};
             border-radius: {RADIUS_MEDIUM}px;
             padding: 6px 8px;
+            white-space: nowrap;
         }}
         QMenu {{
             background: {COLOR_SURFACE};
