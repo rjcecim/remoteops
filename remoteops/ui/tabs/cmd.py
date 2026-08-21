@@ -5,13 +5,11 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
-    QRadioButton,
     QSizePolicy,
     QWidget,
 )
@@ -75,13 +73,9 @@ class CmdTab(QWidget):
         mode_row = QHBoxLayout()
         mode_row.setContentsMargins(0, 0, 0, 0)
         mode_row.setSpacing(16)
-        self.mode_c = QRadioButton(self.tr("Executar e encerrar (/C)"))
-        self.mode_k = QRadioButton(self.tr("Manter sessão aberta (/K)"))
+        self.mode_c = QCheckBox(self.tr("/C  Executar e encerrar"))
+        self.mode_k = QCheckBox(self.tr("/K  Manter sessão aberta"))
         self.mode_c.setChecked(True)
-        self._mode_group = QButtonGroup(self)
-        self._mode_group.setExclusive(True)
-        self._mode_group.addButton(self.mode_c, 0)
-        self._mode_group.addButton(self.mode_k, 1)
         mode_row.addWidget(self.mode_c)
         mode_row.addWidget(self.mode_k)
         mode_row.addStretch()
@@ -168,7 +162,8 @@ class CmdTab(QWidget):
         self.update_cmd_option_state()
 
     def _connect_signals(self) -> None:
-        self._mode_group.buttonClicked.connect(lambda _btn: self.update_cmd_option_state())
+        self.mode_c.stateChanged.connect(lambda: self.update_cmd_option_state("c"))
+        self.mode_k.stateChanged.connect(lambda: self.update_cmd_option_state("k"))
         self.d_checkbox.stateChanged.connect(lambda: self.update_cmd_option_state())
         self.q_checkbox.stateChanged.connect(lambda: self.update_cmd_option_state())
         self.extensions_combo.currentIndexChanged.connect(
@@ -197,6 +192,7 @@ class CmdTab(QWidget):
         self._updating = True
         try:
             self.mode_c.setChecked(True)
+            self.mode_k.setChecked(False)
             self.d_checkbox.setChecked(True)
             self.q_checkbox.setChecked(False)
             self.extensions_combo.setCurrentIndex(0)
@@ -216,10 +212,20 @@ class CmdTab(QWidget):
         self._reset_card_opcoes()
         self._reset_card_comando()
 
-    def snapshot_options(self) -> CmdOptions:
+    def snapshot_options(self, trigger: str | None = None) -> CmdOptions:
+        if trigger == "k" and self.mode_k.isChecked():
+            mode = MODE_K
+        elif trigger == "c" and self.mode_c.isChecked():
+            mode = MODE_C
+        elif trigger == "k":
+            mode = MODE_C
+        elif trigger == "c":
+            mode = MODE_K if self.mode_k.isChecked() else MODE_C
+        else:
+            mode = MODE_K if self.mode_k.isChecked() else MODE_C
         return sanitize_cmd_options(
             CmdOptions(
-                mode=MODE_K if self.mode_k.isChecked() else MODE_C,
+                mode=mode,
                 disable_autorun=self.d_checkbox.isChecked(),
                 quiet=self.q_checkbox.isChecked(),
                 extensions=self.extensions_combo.currentData() or TRI_SYSTEM,
@@ -236,12 +242,12 @@ class CmdTab(QWidget):
     def set_command_field_enabled(self, enabled: bool) -> None:
         self.command_edit.setEnabled(enabled)
 
-    def update_cmd_option_state(self) -> None:
+    def update_cmd_option_state(self, trigger: str | None = None) -> None:
         if self._updating:
             return
         self._updating = True
         try:
-            state = compute_cmd_option_state(self.snapshot_options())
+            state = compute_cmd_option_state(self.snapshot_options(trigger))
             opts = state.options
             widgets = state.widgets
 
@@ -252,6 +258,12 @@ class CmdTab(QWidget):
                 widget.setEnabled(bool(ws.enabled))
                 widget.setToolTip(self.tr(ws.tooltip) if ws.tooltip else "")
 
+            self.mode_c.blockSignals(True)
+            self.mode_k.blockSignals(True)
+            self.mode_c.setChecked(opts.mode == MODE_C)
+            self.mode_k.setChecked(opts.mode == MODE_K)
+            self.mode_c.blockSignals(False)
+            self.mode_k.blockSignals(False)
             self.mode_c.setToolTip(self.tr(TOOLTIPS["mode_c"]))
             self.mode_k.setToolTip(self.tr(TOOLTIPS["mode_k"]))
             apply_tip(self.d_checkbox, "/D")
