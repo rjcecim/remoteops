@@ -192,7 +192,7 @@ class CardWidget(QWidget):
         self._stop_btn.setFixedSize(HEADER_BTN_SIZE, HEADER_BTN_SIZE)
         self._stop_btn.setFont(QFont("Segoe MDL2 Assets", 10))
         self._stop_btn.setText("\uE71A")  # Stop
-        self._stop_btn.setToolTip("Parar")
+        self._stop_btn.setToolTip("Encerrar sessão (exit)")
         self._stop_btn.clicked.connect(self.stopRequested.emit)
         self._stop_btn.hide()
 

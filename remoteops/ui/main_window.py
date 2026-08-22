@@ -48,6 +48,7 @@ class MainWindow(QMainWindow):
         self._updating_remote_cmd = False
         self._last_tab_widget = None
         self._keep_window_size = None
+        self._session_exit_requested = False
         self.setWindowTitle(APP_DISPLAY_NAME)
         icon = app_icon()
         if not icon.isNull():
@@ -97,8 +98,18 @@ class MainWindow(QMainWindow):
         self.robocopy_tab = RobocopyTab()
         self.powershell_tab = PowerShellTab()
         self.cmd_tab = CmdTab()
-        for _tab in (self.psexec_tab, self.msi_tab, self.robocopy_tab, self.powershell_tab, self.cmd_tab):
-            _tab.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        self.psexec_tab.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
+        )
+        for _tab in (
+            self.msi_tab,
+            self.robocopy_tab,
+            self.powershell_tab,
+            self.cmd_tab,
+        ):
+            _tab.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            )
         # \uE8AF = Network/Computer (Segoe MDL2 Assets)
         self.tabs.addTab(self.psexec_tab, self.tr("PsExec"))
         self.tabs.tabBar().set_tab_meta(0, "\uE8AF", resettable=True)
@@ -155,6 +166,8 @@ class MainWindow(QMainWindow):
         self.psexec_tab.formLayoutChanged.connect(self._on_form_layout_changed)
         self.powershell_tab.formLayoutChanged.connect(self._on_form_layout_changed)
         self.cmd_tab.formLayoutChanged.connect(self._on_form_layout_changed)
+        self.msi_tab.formLayoutChanged.connect(self._on_form_layout_changed)
+        self.robocopy_tab.formLayoutChanged.connect(self._on_form_layout_changed)
         # Cards Autenticação/Desempenho já abrem recolhidos → ajusta Preview/Log
         self._on_form_layout_changed()
         self.psexec_tab.user_edit.textChanged.connect(self.update_command)
@@ -589,6 +602,7 @@ class MainWindow(QMainWindow):
         ):
             self._execution_service.cancel_plan()
             self.executor.stop()
+            self._session_exit_requested = False
             self.log_output.set_interactive(False)
             self.stop_button.setEnabled(False)
 
@@ -623,6 +637,7 @@ class MainWindow(QMainWindow):
         self.log_output.clear_log()
         self.log_output.set_interactive(False)
         self.log_output.set_session_status("idle")
+        self.command_preview.set_external_command(False)
         self.command_preview.set_collapsed(False)
         self.log_output.set_collapsed(False)
         self._set_run_button_enabled(True)
@@ -792,6 +807,8 @@ class MainWindow(QMainWindow):
     def _on_tab_changed(self, _index: int) -> None:
         # PsInfo: fecha ao sair da aba.
         # Aplicativos / Pesquisa / Configurações: permanecem; fecham pelo X.
+        # Preview/console compartilhados: apenas ocultados (não destruídos,
+        # não desconectados, ConPTY continua).
         prev = self._last_tab_widget
         current = self.tabs.currentWidget()
         if self.psinfo_tab is not None:
@@ -801,7 +818,7 @@ class MainWindow(QMainWindow):
         self._last_tab_widget = self.tabs.currentWidget()
         # Troca de aba: altura do formulário muda → Preview/Log redistribuem
         self._on_form_layout_changed()
-        # Aba PowerShell/CMD ativa muda o método de montagem do comando
+        # Formulários das abas de comando continuam alimentando o preview
         self.update_command()
 
     def _on_form_layout_changed(self) -> None:
@@ -824,8 +841,9 @@ class MainWindow(QMainWindow):
         """
         Divide o espaço vertical restante entre Pré-visualização e Log abertos.
         Com ambos recolhidos, um stretch final absorve a sobra (formulário não estica).
-        Em abas em tela cheia (PsInfo/Pesquisa/Configurações), as abas
-        absorvem o espaço (preview/log ocultos).
+        Em abas de formulário (MSI/PS/CMD/Robocopy) e em tela cheia
+        (PsInfo/Pesquisa/Configurações), as abas absorvem o espaço
+        (preview/log ocultos).
         """
         lay = getattr(self, "_main_layout", None)
         if lay is None:
@@ -833,41 +851,13 @@ class MainWindow(QMainWindow):
 
         # Não usar isVisible(): antes do show() os widgets estão ocultos e
         # isso ativaria o stretch final por engano no startup.
-        is_psinfo = (
-            self.psinfo_tab is not None
-            and self.tabs.currentWidget() == self.psinfo_tab
-        )
-        is_hostapps = (
-            self.hostapps_tab is not None
-            and self.tabs.currentWidget() == self.hostapps_tab
-        )
-        is_winget = (
-            self.winget_tab is not None
-            and self.tabs.currentWidget() == self.winget_tab
-        )
-        is_appsearch = (
-            self.appsearch_tab is not None
-            and self.tabs.currentWidget() == self.appsearch_tab
-        )
-        is_batchinstall = (
-            getattr(self, "batchinstall_tab", None) is not None
-            and self.tabs.currentWidget() == self.batchinstall_tab
-        )
-        is_settings = (
-            self.settings_tab is not None
-            and self.tabs.currentWidget() == self.settings_tab
-        )
-        is_fullscreen_tab = (
-            is_psinfo
-            or is_hostapps
-            or is_winget
-            or is_appsearch
-            or is_batchinstall
-            or is_settings
-        )
+        mode = self._workspace_mode()
+        tabs_fill = mode in ("fullscreen", "form_only")
 
         tabs_idx = lay.indexOf(self.tabs)
-        if is_fullscreen_tab:
+        if tabs_fill:
+            # MSI/PS/CMD/Robocopy e telas cheias: a aba ocupa o espaço que
+            # o preview/console deixariam, sem recriar esses widgets.
             if tabs_idx >= 0:
                 lay.setStretch(tabs_idx, 1)
             self.tabs.set_fill_available(True)
@@ -930,33 +920,42 @@ class MainWindow(QMainWindow):
         self._restore_kept_window_size()
         self._keep_window_size = None
 
+    def _form_only_tabs(self):
+        return (self.msi_tab, self.powershell_tab, self.cmd_tab, self.robocopy_tab)
+
+    def _workspace_mode(self) -> str:
+        """
+        Política única de visibilidade do conjunto compartilhado
+        (Pré-visualização + Console de Saída + Executar/Parar):
+
+        * ``psexec`` — conjunto visível (mesmas instâncias).
+        * ``form_only`` — MSI/PowerShell/CMD/Robocopy: só o formulário;
+          widgets compartilhados ocultos; a aba preenche o espaço restante.
+        * ``fullscreen`` — WinGet/Aplicativos/Pesquisa/Lote/PsInfo/Configurações
+          (e demais páginas em tela cheia): comportamento já existente.
+        """
+        current = self.tabs.currentWidget()
+        if current is self.psexec_tab:
+            return "psexec"
+        if current in self._form_only_tabs():
+            return "form_only"
+        return "fullscreen"
+
     def _update_psinfo_mode_ui(self) -> None:
         """
-        Abas de inventário/pesquisa/configurações ocupam a janela;
-        preview, log e Run ficam ocultos.
+        Aplica a política de visibilidade do conjunto compartilhado.
 
-        Mantém o tamanho da janela — esconder Preview/Log não deve
-        redimensionar o app (nem ao abrir PsInfo/WinGet).
+        Ocultação usa setVisible — as instâncias, o conteúdo do console e
+        os sinais de saída permanecem. Mantém o tamanho da janela.
         """
         frozen = (
             self._keep_window_size
             if self._keep_window_size is not None
             else self.size()
         )
-        current = self.tabs.currentWidget()
-        is_fullscreen = (
-            (self.psinfo_tab is not None and current == self.psinfo_tab)
-            or (self.hostapps_tab is not None and current == self.hostapps_tab)
-            or (self.winget_tab is not None and current == self.winget_tab)
-            or (self.appsearch_tab is not None and current == self.appsearch_tab)
-            or (
-                getattr(self, "batchinstall_tab", None) is not None
-                and current == self.batchinstall_tab
-            )
-            or (self.settings_tab is not None and current == self.settings_tab)
-        )
-        self.command_preview.setVisible(not is_fullscreen)
-        self.log_output.setVisible(not is_fullscreen)
+        show_shared = self._workspace_mode() == "psexec"
+        self.command_preview.setVisible(show_shared)
+        self.log_output.setVisible(show_shared)
         self._redistribute_expandable_space()
         if self.size() != frozen:
             self.resize(frozen)
@@ -1157,7 +1156,11 @@ class MainWindow(QMainWindow):
         return "\n".join(s.sanitized_display(passwords) for s in specs)
 
     def build_specs_for_execution(self):
-        """Mesma lógica de build_command_for_execution, retornando CommandSpec(s)."""
+        """Mesma lógica de build_command_for_execution, retornando CommandSpec(s).
+
+        Independente da aba visível: a execução e o preview leem os formulários,
+        não o widget atual. Assim o preview na aba PsExec reflete MSI/PS/CMD/Robocopy.
+        """
         selection = getattr(self.file_selector, 'selected_file', None)
         remote_cmd = self.psexec_tab.remote_cmd_edit.text().strip().lower()
         specs = []
@@ -1166,7 +1169,7 @@ class MainWindow(QMainWindow):
             ext = selection.lower().split('.')[-1] if '.' in selection else ''
             if self.should_enable_robocopy():
                 return self.command_builder.build_execution_plan()
-            if ext == 'bat' and self.tabs.currentWidget() == self.cmd_tab:
+            if ext == 'bat':
                 specs.append(self.command_builder._build_psexec_bat_script_spec())
                 return specs
             if ext == 'ps1':
@@ -1180,12 +1183,6 @@ class MainWindow(QMainWindow):
             return specs
         if remote_cmd in ['cmd', 'cmd.exe']:
             specs.append(self.command_builder._build_psexec_bat_script_spec())
-            return specs
-        if self.tabs.currentWidget() == self.cmd_tab:
-            specs.append(self.command_builder._build_psexec_bat_script_spec())
-            return specs
-        if self.tabs.currentWidget() == self.powershell_tab:
-            specs.append(self.command_builder._build_psexec_ps_script_spec())
             return specs
         specs.append(self.command_builder.build_psexec_spec())
         return specs
@@ -1295,19 +1292,13 @@ class MainWindow(QMainWindow):
             for err in errors:
                 self.log_output.append_log(self.tr(f"[PSEXEC] {err}"))
             return
-        if self.tabs.currentWidget() == self.cmd_tab:
+        if self._uses_cmd_options():
             cmd_errors = self.command_builder.validate_cmd_params()
             if cmd_errors:
                 for err in cmd_errors:
                     self.log_output.append_log(self.tr(f"[CMD] {err}"))
                 return
-        selection = getattr(self.file_selector, "selected_file", None) or ""
-        remote_cmd = self.psexec_tab.remote_cmd_edit.text().strip().lower()
-        if (
-            self.tabs.currentWidget() == self.powershell_tab
-            or remote_cmd in ("powershell", "powershell.exe")
-            or str(selection).lower().endswith(".ps1")
-        ):
+        if self._uses_powershell_options():
             ps_errors = self.command_builder.validate_powershell_params()
             if ps_errors:
                 for err in ps_errors:
@@ -1315,6 +1306,7 @@ class MainWindow(QMainWindow):
                 return
         # Credencial efêmera: coletada só na execução; limpa após o lançamento.
         creds = self._current_creds()
+        self._session_exit_requested = False
 
         self.log_output.clear_log()
         self.log_output.set_session_status("connecting")
@@ -1331,13 +1323,20 @@ class MainWindow(QMainWindow):
 
         try:
             result = self._execution_service.launch_plan(
-                plan, passwords=creds.passwords, creds=creds
+                plan,
+                passwords=creds.passwords,
+                creds=creds,
+                use_external_console=self.command_preview.is_external_command(),
             )
             # Mensagem de status já vai ao log via log_fn do serviço
             if not result.robocopy_started and not result.ok:
                 self._set_run_button_enabled(True)
                 self.stop_button.setEnabled(False)
                 self.log_output.set_session_status("error")
+            elif result.ok and not result.remote_monitored and not result.robocopy_started:
+                self._set_run_button_enabled(True)
+                self.stop_button.setEnabled(False)
+                self.log_output.set_session_status("idle")
         finally:
             creds.clear()
 
@@ -1345,33 +1344,61 @@ class MainWindow(QMainWindow):
         # Robocopy de um .ps1/.bat termina antes do PsExec: não liberar a UI.
         if self._execution_service.awaiting_followup or self.executor.is_busy:
             return
+        self._session_exit_requested = False
         self.stop_button.setEnabled(False)
         self._set_run_button_enabled(True)
         self.log_output.set_interactive(False)
         self.log_output.set_session_status("error" if exit_code else "exited")
         self.log_output.append_log(self.tr(f"Processo finalizado com código {exit_code}"))
 
+    def _uses_cmd_options(self) -> bool:
+        selection = getattr(self.file_selector, "selected_file", None) or ""
+        remote_cmd = self.psexec_tab.remote_cmd_edit.text().strip().lower()
+        return str(selection).lower().endswith(".bat") or remote_cmd in (
+            "cmd",
+            "cmd.exe",
+        )
+
+    def _uses_powershell_options(self) -> bool:
+        selection = getattr(self.file_selector, "selected_file", None) or ""
+        remote_cmd = self.psexec_tab.remote_cmd_edit.text().strip().lower()
+        return str(selection).lower().endswith(".ps1") or remote_cmd in (
+            "powershell",
+            "powershell.exe",
+        )
+
     def _on_console_interactive(self, active: bool) -> None:
         self.log_output.set_interactive(active)
         if not active:
             return
-        cmd_session = (
-            self.tabs.currentWidget() == self.cmd_tab and self.cmd_tab.mode_k.isChecked()
-        )
+        cmd_session = self._uses_cmd_options() and self.cmd_tab.mode_k.isChecked()
         ps_session = (
-            self.tabs.currentWidget() == self.powershell_tab
-            and self.powershell_tab.is_session_mode()
+            self._uses_powershell_options() and self.powershell_tab.is_session_mode()
         )
         self.log_output.set_session_status(
             "session" if (cmd_session or ps_session) else "running"
         )
 
     def _on_console_session_exit(self) -> None:
-        if not self.executor.send_input("exit"):
-            self.executor.stop()
+        self._end_execution(prefer_exit=True)
 
     def on_stop(self):
+        self._end_execution(prefer_exit=True)
+
+    def _end_execution(self, *, prefer_exit: bool) -> None:
+        """Padrão: enviar ``exit`` à sessão ConPTY. Só mata o processo local
+        se não houver sessão ou se o usuário pedir de novo."""
         self._execution_service.cancel_plan()
+        if prefer_exit and not self._session_exit_requested:
+            if self.executor.send_input("exit"):
+                self._session_exit_requested = True
+                self.log_output.append_log(self.tr("Encerrando sessão (exit)…"))
+                self.log_output.set_session_status("exited")
+                return
+        self._kill_local_process()
+
+    def _kill_local_process(self) -> None:
+        self._session_exit_requested = False
         self.executor.stop()
         self.log_output.set_interactive(False)
         self.log_output.set_session_status("exited")
@@ -1379,7 +1406,7 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self.log_output.append_log(
             self.tr(
-                "Parada solicitada: processo local encerrado. "
+                "Parada forçada: processo local encerrado. "
                 "Se a operação já havia sido enviada via PsExec, "
                 "o processo remoto pode continuar em execução."
             )
@@ -1393,9 +1420,12 @@ class MainWindow(QMainWindow):
         self.file_selector.browse_button.setEnabled(text.strip() == "")
 
     def on_remote_cmd_edit_changed(self, text):
+        if getattr(self, "_updating_remote_cmd", False):
+            return
         selected_file = self.file_selector.selected_file
         is_msi = selected_file and selected_file.lower().endswith('.msi')
         is_exe = selected_file and selected_file.lower().endswith('.exe')
+        self.psexec_tab.apply_shell_command_defaults(text)
         # Não há mais checkbox manual, apenas atualizar abas e comando
         self.update_tab_visibility(is_msi, is_exe)
         self._sync_psexec_copy_allowed()

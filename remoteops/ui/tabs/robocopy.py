@@ -1,15 +1,18 @@
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QLineEdit, QCheckBox, QHBoxLayout, QSizePolicy
 )
 from remoteops.ui.widgets.card import (
-    CardWidget, grid_in_card, add_row, make_card_stack,
+    CardWidget, grid_in_card, add_row, make_card_stack, finish_card_stack,
 )
 
 
 class RobocopyTab(QWidget):
+    formLayoutChanged = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         vbox = make_card_stack(self)
 
         # ── Card Destino ──────────────────────────────────────────────────────
@@ -60,6 +63,25 @@ class RobocopyTab(QWidget):
         add_row(g2, 0, self.tr("Parâmetros:"), switches_container)
 
         vbox.addWidget(card_params)
+        finish_card_stack(vbox)
+
+        self._form_cards = (card_dest, card_params)
+        for card, on_reset in zip(
+            self._form_cards,
+            (self._reset_card_destino, self._reset_card_parametros),
+        ):
+            card.set_collapsible(True, collapsed=False)
+            card.set_resettable(True, self.tr("Restaurar padrões deste card"))
+            card.resetRequested.connect(on_reset)
+            card.collapsedChanged.connect(self._on_form_card_collapsed)
+
+    def _on_form_card_collapsed(self, _collapsed: bool = False) -> None:
+        lay = self.layout()
+        if lay is not None:
+            lay.invalidate()
+            lay.activate()
+        self.updateGeometry()
+        self.formLayoutChanged.emit()
 
     def get_params(self):
         switches = " ".join(cb.text() for cb in self.switches if cb.isChecked())
@@ -68,7 +90,13 @@ class RobocopyTab(QWidget):
             'switches': switches,
         }
 
-    def reset_to_defaults(self) -> None:
+    def _reset_card_destino(self) -> None:
         self.dest_edit.setText("C:\\temp")
+
+    def _reset_card_parametros(self) -> None:
         for cb in self.switches:
             cb.setChecked(True)
+
+    def reset_to_defaults(self) -> None:
+        self._reset_card_destino()
+        self._reset_card_parametros()

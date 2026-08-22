@@ -1,15 +1,18 @@
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QCheckBox, QComboBox, QLineEdit, QHBoxLayout, QSizePolicy
 )
 from remoteops.ui.widgets.card import (
-    CardWidget, grid_in_card, add_row, make_card_stack,
+    CardWidget, grid_in_card, add_row, make_card_stack, finish_card_stack,
 )
 
 
 class MsiTab(QWidget):
+    formLayoutChanged = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         vbox = make_card_stack(self)
 
         # ── Card Comando MSI ──────────────────────────────────────────────────
@@ -111,10 +114,29 @@ class MsiTab(QWidget):
         add_row(g3, 1, self.tr("Lista:"), self.update_edit)
 
         vbox.addWidget(card_opt)
+        finish_card_stack(vbox)
+
+        self._form_cards = (card_cmd, card_log, card_opt)
+        for card, on_reset in zip(
+            self._form_cards,
+            (self._reset_card_comando, self._reset_card_log, self._reset_card_opcoes),
+        ):
+            card.set_collapsible(True, collapsed=False)
+            card.set_resettable(True, self.tr("Restaurar padrões deste card"))
+            card.resetRequested.connect(on_reset)
+            card.collapsedChanged.connect(self._on_form_card_collapsed)
 
         self.update_action_tooltip()
         self.update_interface_tooltip()
         self.update_restart_tooltip()
+
+    def _on_form_card_collapsed(self, _collapsed: bool = False) -> None:
+        lay = self.layout()
+        if lay is not None:
+            lay.invalidate()
+            lay.activate()
+        self.updateGeometry()
+        self.formLayoutChanged.emit()
 
     def on_action_changed(self, index):
         self.update_action_tooltip()
@@ -140,11 +162,23 @@ class MsiTab(QWidget):
         if 0 <= index < len(self.restart_tooltips):
             self.restart_combo.setToolTip(self.restart_tooltips[index])
 
-    def reset_to_defaults(self) -> None:
+    def _reset_card_comando(self) -> None:
         self.action_combo.setCurrentIndex(0)
         self.interface_combo.setCurrentIndex(0)
         self.restart_combo.setCurrentIndex(0)
+        self.update_action_tooltip()
+        self.update_interface_tooltip()
+        self.update_restart_tooltip()
+
+    def _reset_card_log(self) -> None:
         self.log_checkbox.setChecked(False)
         self.log_file_edit.clear()
+
+    def _reset_card_opcoes(self) -> None:
         self.repair_spin.clear()
         self.update_edit.clear()
+
+    def reset_to_defaults(self) -> None:
+        self._reset_card_comando()
+        self._reset_card_log()
+        self._reset_card_opcoes()

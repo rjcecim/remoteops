@@ -40,6 +40,7 @@ from remoteops.ui.style import (
 from remoteops.ui.widgets.card import (
     CardWidget,
     add_row,
+    finish_card_stack,
     grid_in_card,
     make_card_stack,
 )
@@ -62,7 +63,7 @@ class CmdTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._updating = False
         vbox = make_card_stack(self)
 
@@ -147,6 +148,7 @@ class CmdTab(QWidget):
         g2.setVerticalSpacing(CARD_GRID_VERTICAL_SPACING)
 
         vbox.addWidget(card_cmd)
+        finish_card_stack(vbox)
 
         self._form_cards = (card_opts, card_cmd)
         for card, on_reset in zip(

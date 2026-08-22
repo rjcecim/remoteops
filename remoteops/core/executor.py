@@ -551,7 +551,11 @@ class Executor(QObject):
             QTimer.singleShot(100, lambda: self._check_future(generation))
 
     def stop(self) -> None:
-        """Cancela execução LOCAL (pipes ou ConPTY)."""
+        """Encerra o processo LOCAL (pipes ou ConPTY). Força o término.
+
+        O padrão da UI é enviar ``exit`` à sessão; use isto só quando não
+        houver ConPTY ou se o usuário pedir parada forçada.
+        """
         with self._lock:
             self._cancel_requested = True
             proc = self.process

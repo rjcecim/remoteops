@@ -213,6 +213,7 @@ class PsExecTab(QWidget):
         self._updating_user = False
         self._copy_allowed = True
         self._updating_option_state = False
+        self._shell_s_preselected = False
         self._session_worker: Optional[_SessionListWorker] = None
         self._session_wanted = ""
         self._session_refresh_timer = QTimer(self)
@@ -530,6 +531,7 @@ class PsExecTab(QWidget):
         self.host_edit.clear()
         if not self.remote_cmd_edit.isReadOnly():
             self.remote_cmd_edit.clear()
+        self._shell_s_preselected = False
         self.update_psexec_option_state()
 
     def _reset_card_autenticacao(self) -> None:
@@ -705,6 +707,29 @@ class PsExecTab(QWidget):
             cb.setChecked(True)
             cb.blockSignals(False)
         self.update_psexec_option_state()
+
+    def apply_shell_command_defaults(self, remote_cmd: str) -> None:
+        """Ao digitar cmd/powershell, marca ``-s`` uma vez (o usuário pode desmarcar)."""
+        if self.remote_cmd_edit.isReadOnly():
+            self._shell_s_preselected = False
+            return
+        text = (remote_cmd or "").strip().lower()
+        if text == "comando gerado automaticamente":
+            self._shell_s_preselected = False
+            return
+        is_shell = text in ("cmd", "cmd.exe", "powershell", "powershell.exe")
+        if not is_shell:
+            self._shell_s_preselected = False
+            return
+        if self._shell_s_preselected:
+            return
+        self._shell_s_preselected = True
+        if self.flag_s.isChecked():
+            return
+        self.flag_s.blockSignals(True)
+        self.flag_s.setChecked(True)
+        self.flag_s.blockSignals(False)
+        self.update_psexec_option_state("-s")
 
     def update_psexec_option_state(self, trigger: Optional[str] = None) -> None:
         """Única rotina que recalcula habilitados, conflitos e tooltips."""

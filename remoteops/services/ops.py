@@ -139,11 +139,13 @@ class CommandExecutionService:
         *,
         passwords: Optional[Sequence[str]] = None,
         creds: Optional[CredentialContext] = None,
+        use_external_console: bool = False,
     ) -> LaunchResult:
         passwords = list(passwords or [])
         if creds and creds.password.strip() and creds.password not in passwords:
             passwords.append(creds.password)
         password = passwords[0] if passwords else ""
+        external = bool(use_external_console)
 
         if not plan:
             return LaunchResult(
@@ -172,7 +174,7 @@ class CommandExecutionService:
             rc = robocopy_specs[0]
             px = psexec_specs[0]
 
-            def after_robocopy(exit_code: int) -> None:
+            def after_robocopy(exit_code: int, *, _external=external) -> None:
                 try:
                     self.executor.finished.disconnect(after_robocopy)
                 except Exception:
@@ -184,13 +186,16 @@ class CommandExecutionService:
                     return
 
                 if is_robocopy_success(exit_code):
+                    mode = "console externo" if _external else "ConPTY"
                     self._log(
-                        f"Robocopy OK (código {exit_code}). Iniciando PsExec (ConPTY)..."
+                        f"Robocopy OK (código {exit_code}). Iniciando PsExec ({mode})..."
                     )
-                    launch = self._launch_psexec_conpty(px, password=password)
+                    launch = self._launch_psexec(
+                        px, password=password, use_external_console=_external
+                    )
                     self._awaiting_followup = False
                     self._log(launch.message)
-                    if not launch.ok:
+                    if not launch.ok or not launch.remote_monitored:
                         if self._run_enabled_cb:
                             self._run_enabled_cb(True)
                         if self._stop_enabled_cb:
@@ -231,7 +236,9 @@ class CommandExecutionService:
                 remote_monitored=True,
             )
 
-        launch = self._launch_psexec_conpty(target, password=password)
+        launch = self._launch_psexec(
+            target, password=password, use_external_console=external
+        )
         self._log(launch.message)
         if not launch.ok:
             if self._run_enabled_cb:
@@ -244,6 +251,47 @@ class CommandExecutionService:
             message=launch.message,
             status=launch.status,
             remote_monitored=launch.remote_monitored,
+        )
+
+    def _launch_psexec(
+        self,
+        spec: CommandSpec,
+        *,
+        password: str = "",
+        use_external_console: bool = False,
+    ) -> LaunchResult:
+        if use_external_console:
+            return self._launch_psexec_external(spec, password=password)
+        return self._launch_psexec_conpty(spec, password=password)
+
+    def _launch_psexec_external(
+        self, spec: CommandSpec, *, password: str = ""
+    ) -> LaunchResult:
+        """PsExec em janela de console externa — sem ConPTY nesta execução."""
+        argv = materialize_password_in_argv(spec.argv, password)
+        try:
+            open_external_console_argv_keep_open(argv)
+        except Exception as exc:
+            safe = redact_command_text(
+                str(exc), passwords=[password] if password else None
+            )
+            msg = f"Falha ao lançar PsExec (console externo): {safe}"
+            return LaunchResult(
+                ok=False,
+                display_command=spec.display_command,
+                message=msg,
+                status=OperationStatus.FAILED,
+                remote_monitored=False,
+            )
+        return LaunchResult(
+            ok=True,
+            display_command=spec.display_command,
+            message=(
+                "Execução iniciada em terminal externo (sem ConPTY); "
+                "a saída não é capturada no console compartilhado."
+            ),
+            status=OperationStatus.STARTED,
+            remote_monitored=False,
         )
 
     def _launch_psexec_conpty(

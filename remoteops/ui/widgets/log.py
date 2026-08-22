@@ -87,7 +87,8 @@ class LogOutputWidget(CardWidget):
         self._clear_btn.setFixedSize(HEADER_BTN_SIZE, HEADER_BTN_SIZE)
         self._clear_btn.setFont(QFont("Segoe MDL2 Assets", 10))
         self._clear_btn.setText("\uE74D")  # Delete
-        self._clear_btn.setToolTip(self.tr("Limpar console (apenas na tela)"))
+        self._clear_btn.setToolTip(self.tr("Limpar este console (apenas na tela)"))
+        # Instância local: não propaga para outros LogOutputWidget.
         self._clear_btn.clicked.connect(self.clear_log)
 
         self._status_label = QLabel()
@@ -139,7 +140,10 @@ class LogOutputWidget(CardWidget):
         self._end_session_btn.setFont(QFont("Segoe MDL2 Assets", 10))
         self._end_session_btn.setText("\uE711")  # Cancel
         self._end_session_btn.setToolTip(
-            self.tr("Encerrar sessão (envia exit). Parar mata o processo local.")
+            self.tr(
+                "Encerrar sessão (envia exit). "
+                "Segundo clique em Parar encerra o processo local."
+            )
         )
         self._end_session_btn.clicked.connect(self.sessionExitRequested.emit)
         input_row.addWidget(prompt, 0)
@@ -173,11 +177,18 @@ class LogOutputWidget(CardWidget):
             self._history_index = len(self._history)
             self.set_partial_line("")
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._emit_console_size)
+
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._emit_console_size()
 
     def _emit_console_size(self) -> None:
+        # Oculto: não redimensionar o ConPTY (a sessão continua em segundo plano).
+        if not self.isVisible():
+            return
         fm = self.text_edit.fontMetrics()
         cw = max(1, fm.horizontalAdvance("M"))
         ch = max(1, fm.lineSpacing())
@@ -286,5 +297,6 @@ class LogOutputWidget(CardWidget):
         self.text_edit.moveCursor(QTextCursor.MoveOperation.End)
 
     def clear_log(self):
+        """Limpa somente este console; não afeta outros logs da aplicação."""
         self._partial_anchor = None
         self.text_edit.clear()
