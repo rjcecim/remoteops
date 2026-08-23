@@ -20,7 +20,6 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
-    QPushButton,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -29,7 +28,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from remoteops.ui.style import accent_button_qss
 from remoteops.ui.widgets.card import CardWidget, add_row, grid_in_card, make_card_stack
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.mdl2_tab_bar import Mdl2TabBar
@@ -528,6 +526,15 @@ class WinGetTab(QWidget):
 
     def _build_progress_card(self) -> CardWidget:
         card = CardWidget("\uE9D9", "Progresso")
+        # \uE71A = Stop — cancela a operação em andamento
+        self.btn_cancel = card.make_header_button(
+            "\uE71A",
+            "Interrompe a operação no host remoto (sinal de cancelamento) e, se preciso, o PsExec local",
+        )
+        self.btn_cancel.setEnabled(False)
+        self.btn_cancel.clicked.connect(self._on_cancel_operation)
+        card.add_header_button(self.btn_cancel)
+
         g = grid_in_card(card)
 
         self.lbl_step = QLabel("0 de 0 (00/00)")
@@ -550,21 +557,6 @@ class WinGetTab(QWidget):
         add_row(g, 1, "Atual", self.lbl_current)
         add_row(g, 2, "Progresso do item", self.pb_current)
         add_row(g, 3, "Progresso total", self.pb_total)
-
-        self.btn_cancel = QPushButton("Cancelar")
-        self.btn_cancel.setToolTip(
-            "Interrompe a operação no host remoto (sinal de cancelamento) e, se preciso, o PsExec local"
-        )
-        self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_cancel.setStyleSheet(accent_button_qss(padding="4px 12px"))
-        self.btn_cancel.setEnabled(False)
-        self.btn_cancel.clicked.connect(self._on_cancel_operation)
-        cancel_row = QWidget()
-        cancel_lay = QHBoxLayout(cancel_row)
-        cancel_lay.setContentsMargins(0, 0, 0, 0)
-        cancel_lay.addStretch()
-        cancel_lay.addWidget(self.btn_cancel)
-        add_row(g, 4, "Operação", cancel_row)
 
         self._progress = ProgressController(
             parent=self,
