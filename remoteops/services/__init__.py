@@ -1,5 +1,9 @@
 """Serviços / casos de uso da aplicação."""
 
+from remoteops.services.messaging import (
+    MessageRequest,
+    MessageService,
+)
 from remoteops.services.ops import (
     RUSTDESK_REMOTE_PATHS,
     CommandExecutionService,
@@ -13,6 +17,8 @@ from remoteops.services.ops import (
 __all__ = [
     "CommandExecutionService",
     "CredentialContext",
+    "MessageRequest",
+    "MessageService",
     "RemoteUninstallService",
     "RustDeskService",
     "RUSTDESK_REMOTE_PATHS",

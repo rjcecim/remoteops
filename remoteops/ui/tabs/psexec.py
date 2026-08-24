@@ -198,6 +198,7 @@ class PsExecTab(QWidget):
     openWinGetRequested = pyqtSignal()
     openPsInfoRequested = pyqtSignal()
     openRustDeskRequested = pyqtSignal()
+    openMessageRequested = pyqtSignal()
     formLayoutChanged = pyqtSignal()
     hostOnlineChanged = pyqtSignal(bool)
 
@@ -262,6 +263,12 @@ class PsExecTab(QWidget):
         )
         self.rustdesk_button.clicked.connect(self.openRustDeskRequested.emit)
         card1.add_header_button(self.rustdesk_button)
+
+        self.message_button = card1.make_header_button(
+            "\uE8BD", self.tr("Enviar mensagem ao host")
+        )
+        self.message_button.clicked.connect(self.openMessageRequested.emit)
+        card1.add_header_button(self.message_button)
 
         # Status (legenda com bolinha abaixo do host)
         status_row = QHBoxLayout()
@@ -957,6 +964,7 @@ class PsExecTab(QWidget):
             self.winget_button,
             self.psinfo_button,
             self.rustdesk_button,
+            self.message_button,
         )
 
     def _update_host_action_buttons(self, online: bool) -> None:
