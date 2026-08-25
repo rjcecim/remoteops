@@ -69,7 +69,8 @@ logs/
 *.orig
 *.rej
 
-# Testes / qualidade
+# Testes / qualidade (pasta local e temporária — não versionar)
+tests/
 .pytest_cache/
 .tox/
 .nox/

@@ -14,7 +14,7 @@ from remoteops.utils.ping import is_valid_host, normalize_host
 from remoteops.utils.printers import print_server_unc, printer_unc
 
 DEFAULT_PRINT_SERVER = ""
-PRINT_SERVER_PLACEHOLDER = r"\\servidor-impressao"
+PRINT_SERVER_PLACEHOLDER = r"\\printserver"
 PRINT_SERVER_REQUIRED_MSG = (
     "Nenhum servidor de impressão foi configurado.\n\n"
     "Acesse Configurações e informe o servidor de impressão antes de continuar."
