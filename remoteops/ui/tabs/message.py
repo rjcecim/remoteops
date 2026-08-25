@@ -526,11 +526,7 @@ class MessageTab(QWidget):
         self.session_combo.clear()
         self.session_combo.addItem(self.tr("Nenhuma sessão selecionada"), None)
         for item in valid:
-            label = (
-                f"{item.username or '—'} — {item.name or '—'} — "
-                f"ID {item.session_id} — {item.state or '—'}"
-            )
-            self.session_combo.addItem(label, int(item.session_id))
+            self.session_combo.addItem(item.label(), int(item.session_id))
         index = 0
         if selected and selected != RECIPIENT_ALL:
             try:

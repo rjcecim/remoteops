@@ -47,13 +47,22 @@ class RemoteSession:
     state: str = ""
 
     def label(self) -> str:
-        parts = [str(self.session_id)]
-        if self.name:
-            parts.append(self.name)
-        if self.state:
-            parts.append(self.state)
-        if self.username:
-            parts.append(self.username)
+        """Rótulo único para ComboBox (PsExec e Mensagem).
+
+        Com usuário: ``0102052 — Console — ID 3 — Ativa``
+        Sem usuário: ``Services — ID 0 — Desconectada``
+        """
+        parts: List[str] = []
+        user = (self.username or "").strip()
+        if user:
+            parts.append(user)
+        name = (self.name or "").strip()
+        if name:
+            parts.append(name)
+        parts.append(f"ID {self.session_id}")
+        state = (self.state or "").strip()
+        if state:
+            parts.append(state)
         return " — ".join(parts)
 
 
