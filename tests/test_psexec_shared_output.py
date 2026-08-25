@@ -303,5 +303,102 @@ class SharedOutputVisibilityTests(unittest.TestCase):
         self.assertTrue(self.win.log_output.isVisible())
 
 
+class PrintersWorkspaceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _app()
+
+    def setUp(self):
+        from remoteops.ui.main_window import MainWindow
+
+        self.win = MainWindow()
+        self.win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        self.win.show()
+        QApplication.processEvents()
+
+    def tearDown(self):
+        self.win.close()
+        QApplication.processEvents()
+
+    def _open_printers(self):
+        from remoteops.ui.tabs.printers import PrintersTab
+
+        self.win.psexec_tab.host_edit.setText("ETSEGP03")
+        self.win.psexec_tab._set_host_status("online")
+        QApplication.processEvents()
+        with patch.object(PrintersTab, "start_initial_load"):
+            self.win.open_printers_tab()
+            QApplication.processEvents()
+
+    def test_printers_button_matches_other_header_actions(self):
+        printers = self.win.psexec_tab.printers_button
+        message = self.win.psexec_tab.message_button
+        winget = self.win.psexec_tab.winget_button
+        self.assertEqual(printers.objectName(), message.objectName())
+        self.assertEqual(printers.objectName(), winget.objectName())
+        self.assertEqual(printers.objectName(), "cardHeaderAction")
+        self.assertEqual(printers.size(), message.size())
+        self.assertEqual(printers.autoRaise(), message.autoRaise())
+
+    def test_printers_button_only_when_online(self):
+        btn = self.win.psexec_tab.printers_button
+        self.assertFalse(btn.isEnabled())
+        self.win.psexec_tab._set_host_status("idle")
+        self.assertFalse(btn.isEnabled())
+        self.win.psexec_tab._set_host_status("checking")
+        self.assertFalse(btn.isEnabled())
+        self.win.psexec_tab._set_host_status("invalid")
+        self.assertFalse(btn.isEnabled())
+        self.win.psexec_tab._set_host_status("offline")
+        self.assertFalse(btn.isEnabled())
+        self.win.psexec_tab._set_host_status("online")
+        self.assertTrue(btn.isEnabled())
+
+    def test_tab_opens_fullscreen_closable_and_survives_visibility(self):
+        preview_id = id(self.win.command_preview)
+        log_id = id(self.win.log_output)
+        self._open_printers()
+        tab = self.win.printers_tab
+        self.assertIsNotNone(tab)
+        idx = self.win.tabs.indexOf(tab)
+        self.assertGreaterEqual(idx, 0)
+        bar = self.win.tabs.tabBar()
+        data = bar.tabData(idx)
+        self.assertTrue(isinstance(data, dict) and data.get("closable"))
+        self.assertIs(self.win.tabs.currentWidget(), tab)
+        self.assertEqual(self.win._workspace_mode(), "fullscreen")
+        self.assertFalse(self.win.command_preview.isVisible())
+        self.assertFalse(self.win.log_output.isVisible())
+
+        self.win.update_tab_visibility(True, False)
+        QApplication.processEvents()
+        self.assertGreaterEqual(self.win.tabs.indexOf(self.win.printers_tab), 0)
+        self.assertIs(self.win.printers_tab, tab)
+
+        self.win.tabs.setCurrentWidget(self.win.psexec_tab)
+        QApplication.processEvents()
+        self.assertTrue(self.win.command_preview.isVisible())
+        self.assertEqual(id(self.win.command_preview), preview_id)
+        self.assertEqual(id(self.win.log_output), log_id)
+
+    def test_reset_closes_printers_tab(self):
+        self._open_printers()
+        self.assertIsNotNone(self.win.printers_tab)
+        self.win._reset_app_to_startup()
+        QApplication.processEvents()
+        self.assertIsNone(self.win.printers_tab)
+        self.assertIs(self.win.tabs.currentWidget(), self.win.psexec_tab)
+
+    def test_close_button_destroys_printers_tab(self):
+        self._open_printers()
+        tab = self.win.printers_tab
+        self.assertIsNotNone(tab)
+        self.win.tabs.setCurrentWidget(self.win.psexec_tab)
+        QApplication.processEvents()
+        self.win._close_printers_tab()
+        QApplication.processEvents()
+        self.assertIsNone(self.win.printers_tab)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -28,6 +28,7 @@ from remoteops.ui.tabs.hostapps import HostAppsTab
 from remoteops.ui.tabs.message import MessageTab
 from remoteops.ui.tabs.msi import MsiTab
 from remoteops.ui.tabs.powershell import PowerShellTab
+from remoteops.ui.tabs.printers import PrintersTab
 from remoteops.ui.tabs.psexec import PsExecTab
 from remoteops.ui.tabs.psinfo import PsInfoTab
 from remoteops.ui.tabs.robocopy import RobocopyTab
@@ -94,6 +95,7 @@ class MainWindow(QMainWindow):
         self.hostapps_tab = None
         self.winget_tab = None
         self.message_tab = None
+        self.printers_tab = None
         self.appsearch_tab = None
         self.settings_tab = None
         self.msi_tab = MsiTab()
@@ -165,6 +167,7 @@ class MainWindow(QMainWindow):
         self.psexec_tab.openPsInfoRequested.connect(self.open_psinfo_tab)
         self.psexec_tab.openRustDeskRequested.connect(self.on_rustdesk_clicked)
         self.psexec_tab.openMessageRequested.connect(self.open_message_tab)
+        self.psexec_tab.openPrintersRequested.connect(self.open_printers_tab)
         self.psexec_tab.hostOnlineChanged.connect(self._on_host_online_changed)
         self.psexec_tab.formLayoutChanged.connect(self._on_form_layout_changed)
         self.powershell_tab.formLayoutChanged.connect(self._on_form_layout_changed)
@@ -585,6 +588,47 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(idx)
         self._update_psinfo_mode_ui()
 
+    def open_printers_tab(self) -> None:
+        """Abre a aba Impressoras sob demanda (catálogo do servidor + instalação no host)."""
+        host = self.psexec_tab.host_edit.text().strip()
+        if not host:
+            self.log_output.append_log(
+                self.tr("[IMPRESSORAS] Preencha o Host remoto antes de gerenciar impressoras.")
+            )
+            return
+
+        self._remember_window_size()
+
+        if self.printers_tab is not None:
+            idx = self.tabs.indexOf(self.printers_tab)
+            if idx != -1:
+                self.tabs.setCurrentIndex(idx)
+                self.printers_tab.sync_from_host()
+                self._update_psinfo_mode_ui()
+                return
+
+        self.printers_tab = PrintersTab(
+            host_source=self.psexec_tab.host_edit,
+            creds_provider=lambda: (
+                self.psexec_tab.auth_username(),
+                self.psexec_tab.pass_edit.text() or "",
+            ),
+            online_provider=lambda: bool(self.psexec_tab.is_host_online),
+        )
+        self.psexec_tab.hostOnlineChanged.connect(self.printers_tab.set_host_online)
+        self.tabs.addTab(self.printers_tab, self.tr("Impressoras"))
+        idx = self.tabs.indexOf(self.printers_tab)
+        bar = self.tabs.tabBar()
+        if isinstance(bar, Mdl2TabBar):
+            bar.set_tab_meta(idx, "\uE749", closable=True)
+        else:
+            bar.setTabData(idx, "\uE749")
+        self._refresh_tab_bar_layout()
+        self.tabs.setCurrentIndex(idx)
+        self.printers_tab.start_initial_load()
+        self._update_psinfo_mode_ui()
+        self._wire_print_server()
+
     def open_appsearch_tab(self) -> None:
         """Cria a aba Pesquisa de Aplicativos sob demanda e foca nela."""
         self._remember_window_size()
@@ -629,6 +673,29 @@ class MainWindow(QMainWindow):
                 pass
             settings.networkRangeChanged.connect(batch.refresh_hosts_status)
 
+    def _wire_print_server(self) -> None:
+        """Atualiza a aba Impressoras quando o servidor é salvo nas Configurações."""
+        settings = self.settings_tab
+        if settings is None:
+            return
+        printers = self.printers_tab
+        if printers is not None:
+            try:
+                settings.printServerChanged.disconnect(printers.on_print_server_changed)
+            except TypeError:
+                pass
+            settings.printServerChanged.connect(printers.on_print_server_changed)
+        try:
+            settings.printServerChanged.disconnect(
+                self.psexec_tab.refresh_printers_button_tooltip
+            )
+        except TypeError:
+            pass
+        settings.printServerChanged.connect(
+            self.psexec_tab.refresh_printers_button_tooltip
+        )
+        self.psexec_tab.refresh_printers_button_tooltip()
+
     def _on_tab_reset_requested(self, index: int) -> None:
         widget = self.tabs.widget(index)
         if widget is not self.psexec_tab:
@@ -663,6 +730,7 @@ class MainWindow(QMainWindow):
         self._close_hostapps_tab()
         self._close_winget_tab()
         self._close_message_tab()
+        self._close_printers_tab()
         self._close_appsearch_tab()
         self._close_settings_tab()
 
@@ -704,7 +772,7 @@ class MainWindow(QMainWindow):
         self._refresh_tab_bar_layout()
 
     def _on_tab_close_requested(self, index: int) -> None:
-        """Fecha abas com X no título (Aplicativos / WinGet / Mensagem / Pesquisa / Configurações)."""
+        """Fecha abas com X no título (Aplicativos / WinGet / Mensagem / Impressoras / Pesquisa / Configurações)."""
         widget = self.tabs.widget(index)
         if widget is None:
             return
@@ -714,6 +782,8 @@ class MainWindow(QMainWindow):
             self._close_winget_tab()
         elif widget is self.message_tab:
             self._close_message_tab()
+        elif widget is self.printers_tab:
+            self._close_printers_tab()
         elif widget is self.appsearch_tab:
             self._close_appsearch_tab()
         elif widget is self.settings_tab:
@@ -767,6 +837,26 @@ class MainWindow(QMainWindow):
             pass
         self.message_tab.deleteLater()
         self.message_tab = None
+        self._update_psinfo_mode_ui()
+        self._last_tab_widget = self.tabs.currentWidget()
+        self._refresh_tab_bar_layout()
+
+    def _close_printers_tab(self) -> None:
+        if self.printers_tab is None:
+            return
+        idx = self.tabs.indexOf(self.printers_tab)
+        if idx != -1:
+            self.tabs.removeTab(idx)
+        try:
+            self.psexec_tab.hostOnlineChanged.disconnect(self.printers_tab.set_host_online)
+        except TypeError:
+            pass
+        try:
+            self.printers_tab.shutdown()
+        except Exception:
+            pass
+        self.printers_tab.deleteLater()
+        self.printers_tab = None
         self._update_psinfo_mode_ui()
         self._last_tab_widget = self.tabs.currentWidget()
         self._refresh_tab_bar_layout()
@@ -855,6 +945,7 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsTab()
         self.settings_tab.pstoolsPathChanged.connect(self._on_pstools_path_changed)
         self._wire_network_range_status()
+        self._wire_print_server()
         self.tabs.addTab(self.settings_tab, self.tr("Configurações"))
         idx = self.tabs.indexOf(self.settings_tab)
         bar = self.tabs.tabBar()
@@ -996,7 +1087,7 @@ class MainWindow(QMainWindow):
         * ``psexec`` — conjunto visível (mesmas instâncias).
         * ``form_only`` — MSI/PowerShell/CMD/Robocopy: só o formulário;
           widgets compartilhados ocultos; a aba preenche o espaço restante.
-        * ``fullscreen`` — WinGet/Aplicativos/Mensagem/Pesquisa/Lote/PsInfo/Configurações
+        * ``fullscreen`` — WinGet/Aplicativos/Mensagem/Impressoras/Pesquisa/Lote/PsInfo/Configurações
           (e demais páginas em tela cheia): comportamento já existente.
         """
         current = self.tabs.currentWidget()
@@ -1130,6 +1221,7 @@ class MainWindow(QMainWindow):
         hostapps_widget = self.hostapps_tab
         winget_widget = self.winget_tab
         message_widget = self.message_tab
+        printers_widget = self.printers_tab
         appsearch_widget = self.appsearch_tab
         settings_widget = self.settings_tab
         for i in range(self.tabs.count() - 1, -1, -1):
@@ -1146,6 +1238,8 @@ class MainWindow(QMainWindow):
                 continue
             if message_widget is not None and w is message_widget:
                 continue
+            if printers_widget is not None and w is printers_widget:
+                continue
             if appsearch_widget is not None and w is appsearch_widget:
                 continue
             if settings_widget is not None and w is settings_widget:
@@ -1159,6 +1253,7 @@ class MainWindow(QMainWindow):
             hostapps_widget,
             winget_widget,
             message_widget,
+            printers_widget,
             appsearch_widget,
             settings_widget,
         ):
@@ -1508,6 +1603,7 @@ class MainWindow(QMainWindow):
             getattr(self, "hostapps_tab", None),
             getattr(self, "winget_tab", None),
             getattr(self, "message_tab", None),
+            getattr(self, "printers_tab", None),
             getattr(self, "psinfo_tab", None),
             getattr(self, "batchinstall_tab", None),
         ):

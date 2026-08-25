@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QSizePolicy,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -25,6 +26,9 @@ from remoteops.ui.widgets.card import (
     grid_in_card,
     make_card_stack,
 )
+from remoteops.ui.widgets.content_tab_widget import ContentSizedTabWidget
+from remoteops.ui.widgets.flow import FlowLayout
+from remoteops.ui.widgets.mdl2_tab_bar import Mdl2TabBar
 from remoteops.ui.widgets.network_range import NetworkRangeConfigWidget
 from remoteops.ui.widgets.spinbox import StepSpinBox
 from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
@@ -35,6 +39,19 @@ from remoteops.utils.app_logging import (
     set_file_logging_enabled,
 )
 from remoteops.utils.app_settings import SETTINGS_SAVE_ERROR_MSG, SettingsWriteError
+from remoteops.utils.printer_settings import (
+    DEFAULT_PRINT_LIST_TIMEOUT_S,
+    DEFAULT_PRINT_SERVER,
+    MAX_PRINT_LIST_TIMEOUT_S,
+    MIN_PRINT_LIST_TIMEOUT_S,
+    PRINT_SERVER_PLACEHOLDER,
+    get_print_list_timeout,
+    get_print_server,
+    parse_print_server_input,
+    set_print_list_timeout,
+    set_print_server,
+)
+from remoteops.utils.printers import print_server_unc
 from remoteops.utils.pstools import (
     DEFAULT_PSTOOLS_DIR,
     get_pstools_dir,
@@ -93,20 +110,99 @@ def _open_in_explorer(path: str) -> None:
         pass
 
 
+def _wrap_page(*widgets: QWidget) -> QWidget:
+    """Página de aba interna: altura = card (sem vão vazio abaixo)."""
+    page = QWidget()
+    page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+    page.setMinimumWidth(0)
+    lay = QVBoxLayout(page)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(0)
+    for widget in widgets:
+        widget.setMinimumWidth(0)
+        lay.addWidget(widget, 0)
+    return page
+
+
 class SettingsTab(QWidget):
     """Aba de configurações do aplicativo."""
 
     pstoolsPathChanged = pyqtSignal(str)
     networkRangeChanged = pyqtSignal()
+    printServerChanged = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._tool_rows: List[tuple[_StatusDot, QLabel, QLabel]] = []
 
-        root = make_card_stack(self)
+        self._root_layout = make_card_stack(self)
+        self._tabs = self._build_tabs()
+        self._root_layout.addWidget(self._tabs, 0)
+        self._printers_card = self._build_printers_card()
+        self._root_layout.addWidget(self._printers_card, 0)
 
-        # ── Card 1 — PSTools ──────────────────────────────────────────────────
+        self.network_range = NetworkRangeConfigWidget(self)
+        self.network_range.configChanged.connect(self.networkRangeChanged.emit)
+        self.network_range.saveFailed.connect(self._show_settings_save_error)
+        self._root_layout.addWidget(self.network_range, 0)
+        self._search_card = self._build_search_card()
+        self._root_layout.addWidget(self._search_card, 0)
+        finish_card_stack(self._root_layout)
+
+        for card in (
+            self._pstools_card,
+            self._rustdesk_card,
+            self._logs_card,
+            self._printers_card,
+            self.network_range,
+            self._search_card,
+        ):
+            card.collapsedChanged.connect(self._on_settings_card_collapsed)
+
+        self.refresh_pstools_status()
+        self.refresh_rustdesk_status()
+        self._reload_printer_fields()
+
+    def _build_tabs(self) -> ContentSizedTabWidget:
+        tabs = ContentSizedTabWidget()
+        inner_bar = Mdl2TabBar(tabs)
+        inner_bar.setExpanding(False)
+        tabs.setTabBar(inner_bar)
+        tabs.setUsesScrollButtons(True)
+        tabs.setMinimumWidth(0)
+
+        self._pstools_card = self._build_pstools_card()
+        idx_ps = tabs.addTab(_wrap_page(self._pstools_card), self.tr("PSTools"))
+        inner_bar.set_tab_meta(idx_ps, "\uE8B7")
+        tabs.setTabToolTip(
+            idx_ps, self.tr("Pasta do PsExec, PsInfo e demais utilitários")
+        )
+
+        self._rustdesk_card = self._build_rustdesk_card()
+        idx_rd = tabs.addTab(_wrap_page(self._rustdesk_card), self.tr("RustDesk"))
+        inner_bar.set_tab_meta(idx_rd, "\uE774")
+        tabs.setTabToolTip(idx_rd, self.tr("Instalação local do RustDesk"))
+
+        self._logs_card = self._build_logs_card()
+        idx_logs = tabs.addTab(_wrap_page(self._logs_card), self.tr("Logs"))
+        inner_bar.set_tab_meta(idx_logs, "\uE7C3")
+        tabs.setTabToolTip(idx_logs, self.tr("Gravação do log em arquivo"))
+        inner_bar.refresh_layout()
+        tabs.currentChanged.connect(self._on_inner_tab_changed)
+        return tabs
+
+    def _on_inner_tab_changed(self, _index: int) -> None:
+        self._tabs.sync_content_height()
+        self._root_layout.activate()
+        self.updateGeometry()
+
+    def _on_settings_card_collapsed(self, _collapsed: bool = False) -> None:
+        self._tabs.sync_content_height()
+        self._root_layout.activate()
+        self.updateGeometry()
+
+    def _build_pstools_card(self) -> CardWidget:
         card_ps = CardWidget("\uE8B7", self.tr("PSTools"))
         card_ps.set_collapsible(True, collapsed=False)
         card_ps.set_resettable(True, self.tr("Restaurar padrões deste card"))
@@ -120,10 +216,16 @@ class SettingsTab(QWidget):
         self.pstools_edit = QLineEdit()
         self.pstools_edit.setReadOnly(True)
         self.pstools_edit.setText(get_pstools_dir())
-        self.pstools_edit.setToolTip(self.tr("Pasta onde estão PsExec, PsInfo e utilitários"))
-        self.pstools_browse_btn = make_icon_button("\uED25", self.tr("Alterar pasta PSTools"))
+        self.pstools_edit.setToolTip(
+            self.tr("Pasta onde estão PsExec, PsInfo e utilitários")
+        )
+        self.pstools_browse_btn = make_icon_button(
+            "\uED25", self.tr("Alterar pasta PSTools")
+        )
         self.pstools_browse_btn.clicked.connect(self._browse_pstools)
-        self.pstools_open_btn = make_icon_button("\uED43", self.tr("Abrir pasta no Explorer"))
+        self.pstools_open_btn = make_icon_button(
+            "\uED43", self.tr("Abrir pasta no Explorer")
+        )
         self.pstools_open_btn.clicked.connect(self._open_pstools_folder)
         path_row.addWidget(self.pstools_edit, 1)
         path_row.addWidget(self.pstools_browse_btn)
@@ -134,9 +236,9 @@ class SettingsTab(QWidget):
         add_row(g1, row, self.tr("Caminho"), path_wrap)
         row += 1
 
-        status_row = QHBoxLayout()
-        status_row.setSpacing(16)
-        status_row.setContentsMargins(2, 0, 0, 0)
+        status_wrap = QWidget()
+        status_wrap.setMinimumWidth(0)
+        status_flow = FlowLayout(status_wrap, margin=0, h_spacing=16, v_spacing=4)
         for _ in range(2):
             chip = QHBoxLayout()
             chip.setSpacing(6)
@@ -159,16 +261,12 @@ class SettingsTab(QWidget):
             wrap = QWidget()
             wrap.setLayout(chip)
             wrap.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-            status_row.addWidget(wrap, 0, Qt.AlignmentFlag.AlignVCenter)
+            status_flow.addWidget(wrap)
             self._tool_rows.append((dot, name, detail))
-        status_row.addStretch()
-        status_wrap = QWidget()
-        status_wrap.setLayout(status_row)
         add_row(g1, row, self.tr("Status"), status_wrap)
+        return card_ps
 
-        root.addWidget(card_ps)
-
-        # ── Card 2 — RustDesk (Program Files, não PSTools) ────────────────────
+    def _build_rustdesk_card(self) -> CardWidget:
         card_rd = CardWidget("\uE774", self.tr("RustDesk"))
         card_rd.set_collapsible(True, collapsed=False)
         card_rd.set_resettable(True, self.tr("Atualizar status do RustDesk"))
@@ -184,8 +282,12 @@ class SettingsTab(QWidget):
         self.rustdesk_status_label.setStyleSheet(
             f"QLabel#rustdeskStatus {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
         )
-        rd_status_row.addWidget(self.rustdesk_status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
-        rd_status_row.addWidget(self.rustdesk_status_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        rd_status_row.addWidget(
+            self.rustdesk_status_dot, 0, Qt.AlignmentFlag.AlignVCenter
+        )
+        rd_status_row.addWidget(
+            self.rustdesk_status_label, 0, Qt.AlignmentFlag.AlignVCenter
+        )
         rd_status_row.addStretch()
         rd_status_wrap = QWidget()
         rd_status_wrap.setLayout(rd_status_row)
@@ -196,7 +298,9 @@ class SettingsTab(QWidget):
         rd_path_row.setContentsMargins(0, 0, 0, 0)
         self.rustdesk_edit = QLineEdit()
         self.rustdesk_edit.setReadOnly(True)
-        self.rustdesk_open_btn = make_icon_button("\uED43", self.tr("Abrir pasta do RustDesk"))
+        self.rustdesk_open_btn = make_icon_button(
+            "\uED43", self.tr("Abrir pasta do RustDesk")
+        )
         self.rustdesk_open_btn.clicked.connect(self._open_rustdesk_folder)
         rd_path_row.addWidget(self.rustdesk_edit, 1)
         rd_path_row.addWidget(self.rustdesk_open_btn)
@@ -211,9 +315,9 @@ class SettingsTab(QWidget):
                 "(não fica na pasta PSTools)."
             ),
         )
-        root.addWidget(card_rd)
+        return card_rd
 
-        # ── Card 3 — Logs ─────────────────────────────────────────────────────
+    def _build_logs_card(self) -> CardWidget:
         card_logs = CardWidget("\uE7C3", self.tr("Logs"))
         card_logs.set_collapsible(True, collapsed=False)
         g2 = grid_in_card(card_logs)
@@ -221,7 +325,10 @@ class SettingsTab(QWidget):
         self.log_session_check = QCheckBox(self.tr("Salvar log em arquivo"))
         self.log_session_check.setChecked(is_file_logging_enabled())
         self.log_session_check.setToolTip(
-            self.tr("Marque para gravar as operações em arquivo (preferência salva no settings.ini).")
+            self.tr(
+                "Marque para gravar as operações em arquivo "
+                "(preferência salva no settings.ini)."
+            )
         )
         self.log_session_check.toggled.connect(self._on_log_session_toggled)
         add_row_full_width(g2, 0, self.log_session_check)
@@ -250,15 +357,67 @@ class SettingsTab(QWidget):
                 "O log na parte de baixo da janela continua aparecendo."
             ),
         )
-        root.addWidget(card_logs)
+        return card_logs
 
-        # ── Card — Origem dos hosts (faixa de IP ou hosts.json)
-        self.network_range = NetworkRangeConfigWidget(self)
-        self.network_range.configChanged.connect(self.networkRangeChanged.emit)
-        self.network_range.saveFailed.connect(self._show_settings_save_error)
-        root.addWidget(self.network_range)
+    def _build_printers_card(self) -> CardWidget:
+        card = CardWidget("\uE749", self.tr("Configurações de Impressoras"))
+        card.set_collapsible(True, collapsed=False)
+        card.set_resettable(True, self.tr("Restaurar padrões deste card"))
+        card.resetRequested.connect(self._reset_printers_card)
+        grid = grid_in_card(card)
 
-        # ── Card 5 — Remote Registry (Pesquisa, Aplicativos, Instalação em Lote)
+        self.print_server_edit = QLineEdit()
+        self.print_server_edit.setPlaceholderText(PRINT_SERVER_PLACEHOLDER)
+        self.print_server_edit.setToolTip(
+            self.tr(
+                "Servidor usado pelos comandos de gerenciamento de impressoras. "
+                "Vazio até você informar o host. O texto de exemplo no campo "
+                "não é gravado."
+            )
+        )
+        self.print_server_edit.editingFinished.connect(
+            self._on_print_server_editing_finished
+        )
+        add_row(grid, 0, self.tr("Servidor de impressão"), self.print_server_edit)
+
+        timeout_row = QHBoxLayout()
+        timeout_row.setSpacing(4)
+        timeout_row.setContentsMargins(0, 0, 0, 0)
+        self.print_timeout_spin = StepSpinBox()
+        self.print_timeout_spin.setRange(
+            MIN_PRINT_LIST_TIMEOUT_S, MAX_PRINT_LIST_TIMEOUT_S
+        )
+        self.print_timeout_spin.setSingleStep(15)
+        self.print_timeout_spin.setSuffix(self.tr(" s"))
+        self.print_timeout_spin.setToolTip(
+            self.tr(
+                "Tempo máximo da listagem Get-Printer neste computador "
+                f"(padrão {DEFAULT_PRINT_LIST_TIMEOUT_S} s)."
+            )
+        )
+        self.print_timeout_spin.valueChanged.connect(self._on_print_timeout_changed)
+        timeout_row.addWidget(self.print_timeout_spin)
+        timeout_row.addStretch()
+        timeout_wrap = QWidget()
+        timeout_wrap.setLayout(timeout_row)
+        add_row(grid, 1, self.tr("Tempo da consulta"), timeout_wrap)
+
+        self.print_unc_lbl = _caption("")
+        grid.addWidget(self.print_unc_lbl, 2, 0, 1, 2)
+        _add_caption(
+            grid,
+            3,
+            self.tr(
+                "A aba Impressoras consulta este servidor com Get-Printer "
+                "nesta máquina (sem PsExec). A instalação remota continua "
+                "via PsExec no host alvo. UNC: \\\\servidor\\compartilhamento."
+            ),
+        )
+        ref_w = self.print_timeout_spin.sizeHint().width()
+        self.print_timeout_spin.setFixedWidth(max(ref_w, 72))
+        return card
+
+    def _build_search_card(self) -> CardWidget:
         card_search = CardWidget("\uE71D", self.tr("Remote Registry"))
         card_search.set_collapsible(True, collapsed=False)
         card_search.set_resettable(True, self.tr("Restaurar padrões deste card"))
@@ -335,11 +494,7 @@ class SettingsTab(QWidget):
         ref_w = self.rr_timeout_spin.sizeHint().width()
         self.rr_timeout_spin.setFixedWidth(ref_w)
         self.search_workers_spin.setFixedWidth(ref_w)
-        root.addWidget(card_search)
-        finish_card_stack(root)
-
-        self.refresh_pstools_status()
-        self.refresh_rustdesk_status()
+        return card_search
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -357,6 +512,28 @@ class SettingsTab(QWidget):
         self.rr_timeout_spin.blockSignals(True)
         self.rr_timeout_spin.setValue(int(get_remote_registry_timeout()))
         self.rr_timeout_spin.blockSignals(False)
+        self._reload_printer_fields()
+        self._tabs.sync_content_height()
+        self._root_layout.activate()
+
+    def _reload_printer_fields(self) -> None:
+        self.print_server_edit.blockSignals(True)
+        self.print_server_edit.setText(get_print_server())
+        self.print_server_edit.blockSignals(False)
+        self.print_timeout_spin.blockSignals(True)
+        self.print_timeout_spin.setValue(get_print_list_timeout())
+        self.print_timeout_spin.blockSignals(False)
+        self._refresh_print_unc_preview()
+
+    def _refresh_print_unc_preview(self) -> None:
+        server = get_print_server()
+        if not server:
+            self.print_unc_lbl.setText(
+                self.tr("Nenhum servidor configurado. Informe o host para montar o UNC.")
+            )
+            return
+        unc = print_server_unc(server)
+        self.print_unc_lbl.setText(self.tr(f"UNC do servidor: {unc}"))
 
     def _show_settings_save_error(self, exc: BaseException | None = None) -> None:
         msg = SETTINGS_SAVE_ERROR_MSG
@@ -364,11 +541,62 @@ class SettingsTab(QWidget):
             msg = exc.message
         QMessageBox.warning(self, self.tr("Configurações"), self.tr(msg))
 
+    def _on_print_server_editing_finished(self) -> None:
+        try:
+            parsed = parse_print_server_input(self.print_server_edit.text())
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                self.tr("Configurações"),
+                self.tr("Servidor de impressão inválido."),
+            )
+            self.print_server_edit.setText(get_print_server())
+            return
+        if parsed.casefold() == get_print_server().casefold():
+            self.print_server_edit.setText(get_print_server())
+            self._refresh_print_unc_preview()
+            return
+        try:
+            saved = set_print_server(parsed)
+        except SettingsWriteError as exc:
+            self._show_settings_save_error(exc)
+            self.print_server_edit.setText(get_print_server())
+            return
+        self.print_server_edit.setText(saved)
+        self._refresh_print_unc_preview()
+        self.printServerChanged.emit()
+
+    def _on_print_timeout_changed(self, value: int) -> None:
+        try:
+            set_print_list_timeout(value)
+        except SettingsWriteError as exc:
+            self._show_settings_save_error(exc)
+            self.print_timeout_spin.blockSignals(True)
+            self.print_timeout_spin.setValue(get_print_list_timeout())
+            self.print_timeout_spin.blockSignals(False)
+
+    def _reset_printers_card(self) -> None:
+        try:
+            server = set_print_server(DEFAULT_PRINT_SERVER)
+            timeout = set_print_list_timeout(DEFAULT_PRINT_LIST_TIMEOUT_S)
+        except SettingsWriteError as exc:
+            self._show_settings_save_error(exc)
+            self._reload_printer_fields()
+            return
+        self.print_server_edit.setText(server)
+        self.print_timeout_spin.blockSignals(True)
+        self.print_timeout_spin.setValue(timeout)
+        self.print_timeout_spin.blockSignals(False)
+        self._refresh_print_unc_preview()
+        self.printServerChanged.emit()
+
     def _reset_search_card(self) -> None:
         """Restaura consultas simultâneas e timeout do Remote Registry."""
         try:
             normalized_workers = set_search_max_workers(DEFAULT_SEARCH_MAX_WORKERS)
-            normalized_timeout = set_remote_registry_timeout(REMOTE_REGISTRY_TIMEOUT_SECONDS)
+            normalized_timeout = set_remote_registry_timeout(
+                REMOTE_REGISTRY_TIMEOUT_SECONDS
+            )
         except SettingsWriteError as exc:
             self._show_settings_save_error(exc)
             self.search_workers_spin.blockSignals(True)
@@ -440,7 +668,6 @@ class SettingsTab(QWidget):
             self.log_session_check.setChecked(is_file_logging_enabled())
             self.log_session_check.blockSignals(False)
             return
-        # Atualiza caminho (cria pasta só se acabou de habilitar)
         try:
             self.logs_edit.setText(get_log_dir(create=checked))
         except Exception:

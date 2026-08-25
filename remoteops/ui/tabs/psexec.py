@@ -52,6 +52,8 @@ from remoteops.utils.domain import (
     userdomain_prefix,
 )
 from remoteops.utils.ping import is_valid_host, normalize_host, ping_host
+from remoteops.utils.printer_settings import get_print_server
+from remoteops.utils.printers import print_server_unc
 from remoteops.utils.sessions import RemoteSession, list_remote_sessions
 from remoteops.utils.validator import AffinityValidator
 
@@ -199,6 +201,7 @@ class PsExecTab(QWidget):
     openPsInfoRequested = pyqtSignal()
     openRustDeskRequested = pyqtSignal()
     openMessageRequested = pyqtSignal()
+    openPrintersRequested = pyqtSignal()
     formLayoutChanged = pyqtSignal()
     hostOnlineChanged = pyqtSignal(bool)
 
@@ -269,6 +272,13 @@ class PsExecTab(QWidget):
         )
         self.message_button.clicked.connect(self.openMessageRequested.emit)
         card1.add_header_button(self.message_button)
+
+        self.printers_button = card1.make_header_button(
+            "\uE749", self.tr("Impressoras de rede")
+        )
+        self.printers_button.clicked.connect(self.openPrintersRequested.emit)
+        card1.add_header_button(self.printers_button)
+        self.refresh_printers_button_tooltip()
 
         # Status (legenda com bolinha abaixo do host)
         status_row = QHBoxLayout()
@@ -965,6 +975,7 @@ class PsExecTab(QWidget):
             self.psinfo_button,
             self.rustdesk_button,
             self.message_button,
+            self.printers_button,
         )
 
     def _update_host_action_buttons(self, online: bool) -> None:
@@ -997,6 +1008,18 @@ class PsExecTab(QWidget):
                     self._schedule_session_refresh()
             elif not online:
                 self._reset_session_combo(keep_enabled=self.session_interactive.isChecked())
+
+    def refresh_printers_button_tooltip(self) -> None:
+        server = get_print_server()
+        if not server:
+            self.printers_button.setToolTip(self.tr("Impressoras de rede"))
+            return
+        try:
+            unc = print_server_unc(server)
+        except ValueError:
+            self.printers_button.setToolTip(self.tr("Impressoras de rede"))
+            return
+        self.printers_button.setToolTip(self.tr(f"Impressoras de rede ({unc})"))
 
     def _on_host_text_changed(self, _text: str = "") -> None:
         host = normalize_host(self.host_edit.text())

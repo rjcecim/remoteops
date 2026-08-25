@@ -20,6 +20,8 @@ KEY_SEARCH_MAX_WORKERS = "search/max_workers"
 KEY_SEARCH_HOSTS_PATH = "search/hosts_path"
 KEY_LOGS_FILE_ENABLED = "logs/file_logging_enabled"
 KEY_REMOTE_REGISTRY_TIMEOUT = "timeouts/remote_registry_seconds"
+KEY_PRINT_SERVER = "printers/server"
+KEY_PRINT_LIST_TIMEOUT = "printers/list_timeout_seconds"
 
 
 class SettingsWriteError(OSError):
@@ -82,6 +84,7 @@ def _collect_current_settings() -> Dict[str, Any]:
         KEY_NET_START_IP,
         get_network_range_config,
     )
+    from remoteops.utils.printer_settings import get_print_list_timeout, get_print_server
     from remoteops.utils.pstools import get_pstools_dir
     from remoteops.utils.remote_registry_query import get_remote_registry_timeout
     from remoteops.utils.search_settings import get_search_hosts_path, get_search_max_workers
@@ -93,6 +96,8 @@ def _collect_current_settings() -> Dict[str, Any]:
         KEY_SEARCH_HOSTS_PATH: get_search_hosts_path(),
         KEY_LOGS_FILE_ENABLED: bool(is_file_logging_enabled()),
         KEY_REMOTE_REGISTRY_TIMEOUT: float(get_remote_registry_timeout()),
+        KEY_PRINT_SERVER: get_print_server(),
+        KEY_PRINT_LIST_TIMEOUT: int(get_print_list_timeout()),
         KEY_NET_ENABLED: bool(net.enabled),
         KEY_NET_START_IP: net.start_ip,
         KEY_NET_END_IP: net.end_ip,
