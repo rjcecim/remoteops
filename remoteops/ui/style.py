@@ -24,6 +24,7 @@ CARD_GRID_VERTICAL_SPACING = 4
 INPUT_HEIGHT = 32
 HEADER_HEIGHT = 24
 HEADER_BTN_SIZE = 22
+COMBO_CHEVRON_WIDTH = 28
 
 # ── Raios ───────────────────────────────────────────────────────────────────
 RADIUS_SMALL = 6
@@ -227,6 +228,68 @@ def accent_button_qss(
     """
 
 
+def combo_qss(*, content_h: int) -> str:
+    """ComboBox WinUI: caixa, hover, foco, flyout. O chevron é MDL2 no chrome."""
+    return f"""
+        QComboBox {{
+            font-family: "{FONT_UI}";
+            min-height: {content_h}px;
+            max-height: {content_h}px;
+            border: 1px solid {COLOR_BORDER};
+            border-radius: {RADIUS_MEDIUM}px;
+            padding: 0 {COMBO_CHEVRON_WIDTH}px 0 12px;
+            background: {COLOR_SURFACE};
+            color: {COLOR_TEXT};
+            outline: none;
+            selection-background-color: {COLOR_ACCENT_SOFT};
+            selection-color: {COLOR_TEXT};
+        }}
+        QComboBox:hover {{
+            border-color: {COLOR_BORDER_HOVER};
+            background: {COLOR_HOVER};
+        }}
+        QComboBox:pressed {{
+            background: {COLOR_PRESSED};
+        }}
+        QComboBox:focus {{
+            border-color: {COLOR_ACCENT};
+            background: {COLOR_SURFACE};
+        }}
+        QComboBox:on {{
+            border-color: {COLOR_ACCENT};
+            background: {COLOR_SURFACE};
+        }}
+        QComboBox:disabled {{
+            background: {COLOR_SURFACE_MUTED};
+            color: {COLOR_TEXT_MUTED};
+            border-color: {COLOR_BORDER};
+        }}
+        QComboBox::drop-down {{
+            subcontrol-origin: padding;
+            subcontrol-position: center right;
+            width: {COMBO_CHEVRON_WIDTH}px;
+            border: none;
+            background: transparent;
+        }}
+        QComboBox::down-arrow {{
+            image: none;
+            width: 0px;
+            height: 0px;
+            border: none;
+        }}
+        QComboBox QAbstractItemView {{
+            background: {COLOR_SURFACE};
+            color: {COLOR_TEXT};
+            border: 1px solid {COLOR_BORDER};
+            border-radius: {RADIUS_LARGE}px;
+            outline: none;
+            padding: 4px;
+            selection-background-color: transparent;
+            selection-color: {COLOR_TEXT};
+        }}
+    """
+
+
 def multiline_edit_qss(selector: str = "QPlainTextEdit") -> str:
     return f"""
         {selector} {{
@@ -350,39 +413,7 @@ def apply_ui_defaults(app: QApplication) -> None:
             color: {COLOR_TEXT_MUTED};
             border-color: {COLOR_BORDER};
         }}
-        QComboBox {{
-            font-family: "Segoe UI";
-            min-height: {content_h}px;
-            max-height: {content_h}px;
-            border: 1px solid {COLOR_BORDER};
-            border-radius: {RADIUS_MEDIUM}px;
-            padding: 0 8px;
-            background: {COLOR_SURFACE};
-            color: {COLOR_TEXT};
-        }}
-        QComboBox:hover {{
-            border-color: {COLOR_BORDER_HOVER};
-        }}
-        QComboBox:focus, QComboBox:on {{
-            border-color: {COLOR_ACCENT};
-        }}
-        QComboBox:disabled {{
-            background: {COLOR_SURFACE_MUTED};
-            color: {COLOR_TEXT_MUTED};
-        }}
-        QComboBox::drop-down {{
-            border: none;
-            width: 22px;
-        }}
-        QComboBox QAbstractItemView {{
-            background: {COLOR_SURFACE};
-            border: 1px solid {COLOR_BORDER};
-            border-radius: {RADIUS_MEDIUM}px;
-            selection-background-color: {COLOR_ACCENT_SOFT};
-            selection-color: {COLOR_TEXT};
-            outline: none;
-            padding: 4px;
-        }}
+        {combo_qss(content_h=content_h)}
         QSpinBox {{
             font-family: "Segoe UI";
             min-height: {content_h}px;

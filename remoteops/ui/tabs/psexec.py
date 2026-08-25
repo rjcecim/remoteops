@@ -6,7 +6,6 @@ from PyQt6.QtCore import QEvent, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -34,6 +33,7 @@ from remoteops.ui.style import (
     composite_field_qss,
 )
 from remoteops.ui.widgets.card import CardWidget, make_card_stack
+from remoteops.ui.widgets.combobox import FluentComboBox
 from remoteops.ui.widgets.spinbox import StepSpinBox
 from remoteops.ui.widgets.flow import FlowLayout
 from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
@@ -388,7 +388,7 @@ class PsExecTab(QWidget):
         session_row.setContentsMargins(0, 0, 0, 0)
         self.session_interactive = QCheckBox(self.tr("Interativo (-i)"))
         self.session_interactive.setToolTip(self.tr(TOOLTIPS["-i"]))
-        self.session_combo = QComboBox()
+        self.session_combo = FluentComboBox()
         self.session_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
@@ -412,7 +412,7 @@ class PsExecTab(QWidget):
         g4 = _grid_in_card(card4)
 
         # Prioridade
-        self.priority_combo = QComboBox()
+        self.priority_combo = FluentComboBox()
         self.priority_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
@@ -428,7 +428,7 @@ class PsExecTab(QWidget):
         _add_row(g4, 0, self.tr("Prioridade"), self.priority_combo)
 
         # Grupo CPU — opcional; não é pré-requisito de -a
-        self.group_combo = QComboBox()
+        self.group_combo = FluentComboBox()
         self.group_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )

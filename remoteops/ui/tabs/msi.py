@@ -1,10 +1,11 @@
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QCheckBox, QComboBox, QLineEdit, QHBoxLayout, QSizePolicy
+    QWidget, QCheckBox, QLineEdit, QHBoxLayout, QSizePolicy
 )
 from remoteops.ui.widgets.card import (
     CardWidget, grid_in_card, add_row, make_card_stack, finish_card_stack,
 )
+from remoteops.ui.widgets.combobox import FluentComboBox
 
 
 class MsiTab(QWidget):
@@ -20,7 +21,7 @@ class MsiTab(QWidget):
         g1 = grid_in_card(card_cmd)
         row = 0
 
-        self.action_combo = QComboBox()
+        self.action_combo = FluentComboBox()
         self.action_combo.addItems([
             self.tr("Nenhum"),
             "/i", "/x", "/a", "/jm", "/ju"
@@ -38,7 +39,7 @@ class MsiTab(QWidget):
         add_row(g1, row, self.tr("Comando:"), self.action_combo)
         row += 1
 
-        self.interface_combo = QComboBox()
+        self.interface_combo = FluentComboBox()
         self.interface_combo.addItems([
             self.tr("Nenhum"),
             "/quiet", "/passive", "/qn", "/qb", "/qr", "/qf"
@@ -57,7 +58,7 @@ class MsiTab(QWidget):
         add_row(g1, row, self.tr("Modo:"), self.interface_combo)
         row += 1
 
-        self.restart_combo = QComboBox()
+        self.restart_combo = FluentComboBox()
         self.restart_combo.addItems([
             self.tr("Nenhum"),
             "/norestart", "/promptrestart", "/forcerestart"

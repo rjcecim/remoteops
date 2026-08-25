@@ -6,7 +6,6 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
@@ -44,6 +43,7 @@ from remoteops.ui.widgets.card import (
     grid_in_card,
     make_card_stack,
 )
+from remoteops.ui.widgets.combobox import FluentComboBox
 
 
 def _caption(object_name: str) -> QLabel:
@@ -99,28 +99,28 @@ class CmdTab(QWidget):
         add_row(g1, row, self.tr("Switches"), flags_wrap)
         row += 1
 
-        self.extensions_combo = QComboBox()
+        self.extensions_combo = FluentComboBox()
         self.extensions_combo.addItem(self.tr("Padrão do sistema"), TRI_SYSTEM)
         self.extensions_combo.addItem(self.tr("Ativadas (/E:ON)"), TRI_ON)
         self.extensions_combo.addItem(self.tr("Desativadas (/E:OFF)"), TRI_OFF)
         add_row(g1, row, self.tr("Extensões"), self.extensions_combo)
         row += 1
 
-        self.delayed_combo = QComboBox()
+        self.delayed_combo = FluentComboBox()
         self.delayed_combo.addItem(self.tr("Padrão do sistema"), TRI_SYSTEM)
         self.delayed_combo.addItem(self.tr("Ativada (/V:ON)"), TRI_ON)
         self.delayed_combo.addItem(self.tr("Desativada (/V:OFF)"), TRI_OFF)
         add_row(g1, row, self.tr("Expansão atrasada"), self.delayed_combo)
         row += 1
 
-        self.completion_combo = QComboBox()
+        self.completion_combo = FluentComboBox()
         self.completion_combo.addItem(self.tr("Padrão do sistema"), TRI_SYSTEM)
         self.completion_combo.addItem(self.tr("Ativada (/F:ON)"), TRI_ON)
         self.completion_combo.addItem(self.tr("Desativada (/F:OFF)"), TRI_OFF)
         add_row(g1, row, self.tr("Conclusão Tab"), self.completion_combo)
         row += 1
 
-        self.encoding_combo = QComboBox()
+        self.encoding_combo = FluentComboBox()
         self.encoding_combo.addItem(self.tr("Padrão"), ENC_SYSTEM)
         self.encoding_combo.addItem(self.tr("ANSI (/A)"), ENC_ANSI)
         self.encoding_combo.addItem(self.tr("Unicode (/U)"), ENC_UNICODE)

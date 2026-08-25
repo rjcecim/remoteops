@@ -16,7 +16,6 @@ from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
-    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -55,6 +54,7 @@ from remoteops.ui.widgets.card import (
     CardWidget,
     make_card_stack,
 )
+from remoteops.ui.widgets.combobox import FluentComboBox
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.spinner import DotsSpinner
 from remoteops.ui.widgets.status_dot import STATUS_COLORS, StatusDot
@@ -559,7 +559,7 @@ class PrintersTab(QWidget):
         user_lay.addWidget(_caption_label(self.tr("Usuário")), 0)
         self.session_state_dot = StatusDot(diameter=8)
         self.session_summary_lbl = _value_label()
-        self.session_combo = QComboBox()
+        self.session_combo = FluentComboBox()
         self.session_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )

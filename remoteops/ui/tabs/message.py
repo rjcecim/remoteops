@@ -13,7 +13,6 @@ from PyQt6.QtGui import QAction, QFont, QKeySequence, QTextCursor
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
-    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -71,6 +70,7 @@ from remoteops.ui.widgets.card import (
     grid_in_card,
     make_card_stack,
 )
+from remoteops.ui.widgets.combobox import FluentComboBox
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.spinbox import StepSpinBox
 from remoteops.ui.widgets.status_dot import STATUS_COLORS
@@ -226,7 +226,7 @@ class MessageTab(QWidget):
         mode_lay.addWidget(self.radio_specific)
         mode_lay.addStretch()
 
-        self.session_combo = QComboBox()
+        self.session_combo = FluentComboBox()
         self.session_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )

@@ -6,7 +6,6 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -44,6 +43,7 @@ from remoteops.ui.widgets.card import (
     make_card_stack,
     make_field_label,
 )
+from remoteops.ui.widgets.combobox import FluentComboBox
 
 
 def _caption(object_name: str) -> QLabel:
@@ -83,7 +83,7 @@ class PowerShellTab(QWidget):
         g1 = grid_in_card(card_opts)
         row = 0
 
-        self.mode_combo = QComboBox()
+        self.mode_combo = FluentComboBox()
         self.mode_combo.addItem(self.tr("Executar comando"), MODE_COMMAND)
         self.mode_combo.addItem(self.tr("Comando codificado"), MODE_ENCODED)
         self.mode_combo.addItem(self.tr("Executar script .ps1"), MODE_FILE)
@@ -108,7 +108,7 @@ class PowerShellTab(QWidget):
         add_row(g1, row, self.tr("Switches"), flags_wrap)
         row += 1
 
-        self.execpol_combo = QComboBox()
+        self.execpol_combo = FluentComboBox()
         self.execpol_combo.addItem(self.tr("Padrão do sistema"), "")
         for pol in EXEC_POLICIES:
             if pol:
@@ -126,7 +126,7 @@ class PowerShellTab(QWidget):
         g2 = grid_in_card(card_cmd)
         cmd_row = 0
 
-        self.encode_source_combo = QComboBox()
+        self.encode_source_combo = FluentComboBox()
         self.encode_source_combo.addItem(self.tr("Texto (gerar Base64 UTF-16LE)"), ENC_SRC_TEXT)
         self.encode_source_combo.addItem(self.tr("Base64 já pronto"), ENC_SRC_B64)
         self._lbl_encode = make_field_label(self.tr("Origem"))
