@@ -32,19 +32,27 @@ from remoteops.utils.installed_printers import (
     assemble_installed_printers,
     classify_computer_printer_error,
     local_list_computer_printers_argv,
+    session_account,
     split_account,
 )
 from remoteops.utils.ipc_auth import connect_ipc, release_ipc
 from remoteops.utils.ping import is_valid_host, normalize_host
 from remoteops.utils.printer_settings import get_print_list_timeout, require_print_server
 from remoteops.utils.printers import (
+    ACTION_REMOVE,
+    ACTION_SET_DEFAULT,
+    ACTION_TEST_PAGE,
+    PRINTUI_GD,
     SCOPE_ALL,
     SCOPE_USER,
     NetworkPrinter,
     build_artifact_cleanup_script,
     build_computer_connect_script,
+    build_computer_disconnect_script,
     build_driver_prepare_script,
     build_driver_query_script,
+    build_local_delete_script,
+    build_user_action_wrapper_script,
     build_user_task_orchestrator_script,
     build_user_wrapper_script,
     can_proceed_to_connect,
@@ -54,6 +62,7 @@ from remoteops.utils.printers import (
     effective_set_default,
     elevated_psexec_flags,
     encode_powershell,
+    installed_action_requires_user,
     is_session_active,
     local_list_printers_argv,
     new_operation_id,
@@ -61,10 +70,12 @@ from remoteops.utils.printers import (
     payload_ok,
     powershell_encoded_argv,
     print_server_host,
+    printer_action_name,
     printer_unc,
     qualify_interactive_user,
     read_printers_catalog_file,
     reject_psexec_interactive_identity,
+    resolve_installed_action_flag,
     result_file_name,
     should_connect_active_user,
     should_prepare_driver,
@@ -118,6 +129,28 @@ class InstallPrinterResult:
     driver_prepared: bool = False
     computer_connected: bool = False
     user_connected: bool = False
+    operation_id: str = ""
+    cancelled: bool = False
+
+
+@dataclass
+class PrinterActionRequest:
+    host: str
+    action: str
+    printer: NetworkPrinter
+    session: Optional[RemoteSession] = None
+    operation_id: str = ""
+    domain_hint: str = ""
+
+
+@dataclass
+class PrinterActionResult:
+    ok: bool
+    message: str
+    host: str = ""
+    action: str = ""
+    printer_name: str = ""
+    flag: str = ""
     operation_id: str = ""
     cancelled: bool = False
 
@@ -495,6 +528,212 @@ class PrinterService:
             unc=unc,
             result_filename=result_file_name(op),
             set_default=bool(set_default),
+        )
+        orchestrator = build_user_task_orchestrator_script(
+            username=user,
+            operation_id=op,
+            wrapper_encoded=encode_powershell(wrapper),
+            timeout_s=timeout_s,
+        )
+        capture = self.run_remote_script(
+            host,
+            orchestrator,
+            creds,
+            timeout_s=timeout_s + 30,
+            should_cancel=should_cancel,
+            as_system=True,
+        )
+        capture.payload = parse_json_payload(capture.stdout)
+        if capture.cancelled or capture.timed_out:
+            if capture.timed_out and not capture.error:
+                capture.error = "Timeout aguardando tarefa do usuário."
+            return capture
+        if capture.payload.get("error") == "timeout" or capture.exit_code == 2:
+            capture.ok = False
+            capture.error = "Timeout aguardando tarefa do usuário."
+            return capture
+        capture.ok = payload_ok(capture.payload)
+        if not capture.ok and not capture.error:
+            err = str(capture.payload.get("error") or "").strip()
+            capture.error = err or classify_printer_error(
+                f"{capture.stdout}\n{capture.stderr}", capture.exit_code
+            )
+            if not capture.error or capture.error == "Falha na operação de impressora.":
+                capture.error = "PrintUIEntry retornou erro."
+        return capture
+
+    def run_installed_action(
+        self,
+        request: PrinterActionRequest,
+        creds: CredentialContext,
+        *,
+        progress: Optional[ProgressFn] = None,
+        should_cancel: Optional[CancelFn] = None,
+        passwords: Optional[Sequence[str]] = None,
+    ) -> PrinterActionResult:
+        """Remove / define padrão / página de teste no host remoto (PsExec)."""
+        emit = progress or (lambda _m: None)
+        secrets = list(passwords or [])
+        if creds.password.strip() and creds.password not in secrets:
+            secrets.append(creds.password)
+
+        def log(message: str) -> None:
+            emit(redact_command_text(message, passwords=secrets))
+
+        host = normalize_host(request.host)
+        op_id = request.operation_id or new_operation_id()
+        printer = request.printer
+        name = printer_action_name(printer)
+        action = (request.action or "").strip().lower()
+        result = PrinterActionResult(
+            ok=False,
+            message="",
+            host=host,
+            action=action,
+            printer_name=name,
+            operation_id=op_id,
+        )
+        remote_started = False
+        try:
+            if not host or not is_valid_host(host):
+                result.message = "Host inválido."
+                return result
+            if printer is None or not name:
+                result.message = "Selecione uma impressora."
+                return result
+            try:
+                flag = resolve_installed_action_flag(
+                    action, printer.printer_type if printer else ""
+                )
+            except ValueError as exc:
+                result.message = str(exc)
+                return result
+            result.flag = flag
+
+            needs_user = installed_action_requires_user(
+                action, printer.printer_type if printer else ""
+            )
+            user = ""
+            if needs_user:
+                if not is_session_active(request.session):
+                    result.message = "Usuário não possui sessão interativa."
+                    return result
+                user = session_account(request.session)
+                if not user:
+                    user = qualify_interactive_user(
+                        request.session.username if request.session else "",
+                        request.domain_hint,
+                    )
+                if not user:
+                    result.message = "Usuário não possui sessão interativa."
+                    return result
+
+            if self._cancelled(should_cancel):
+                result.cancelled = True
+                result.message = "Operação cancelada."
+                return result
+
+            remote_started = True
+            label = {
+                ACTION_REMOVE: "Removendo",
+                ACTION_SET_DEFAULT: "Definindo como padrão",
+                ACTION_TEST_PAGE: "Enviando página de teste",
+            }.get(action, "Executando")
+            log(f'{label} "{name}" (/{flag})...')
+
+            if needs_user:
+                capture = self._run_user_printui_action(
+                    host,
+                    printer_name=name,
+                    flag=flag,
+                    username=user,
+                    creds=creds,
+                    operation_id=op_id,
+                    should_cancel=should_cancel,
+                )
+            elif flag == PRINTUI_GD:
+                capture = self.run_remote_script(
+                    host,
+                    build_computer_disconnect_script(name),
+                    creds,
+                    timeout_s=CONNECT_TIMEOUT_S,
+                    should_cancel=should_cancel,
+                    as_system=True,
+                )
+                capture.payload = parse_json_payload(capture.stdout)
+            else:
+                capture = self.run_remote_script(
+                    host,
+                    build_local_delete_script(name),
+                    creds,
+                    timeout_s=CONNECT_TIMEOUT_S,
+                    should_cancel=should_cancel,
+                    as_system=True,
+                )
+                capture.payload = parse_json_payload(capture.stdout)
+
+            if self._cancelled(should_cancel) or capture.cancelled:
+                result.cancelled = True
+                result.message = "Operação cancelada."
+                return result
+            if capture.timed_out:
+                result.message = capture.error or "Timeout na operação de impressora."
+                return result
+
+            if needs_user:
+                ok = payload_ok(capture.payload) if capture.payload else capture.ok
+            else:
+                ok = bool(capture.ok)
+                if capture.payload and "ok" in capture.payload:
+                    ok = payload_ok(capture.payload)
+            if not ok:
+                err = str(capture.payload.get("error") or "").strip() if capture.payload else ""
+                result.message = (
+                    err
+                    or capture.error
+                    or classify_printer_error(
+                        f"{capture.stdout}\n{capture.stderr}", capture.exit_code
+                    )
+                    or "PrintUIEntry retornou erro."
+                )
+                return result
+
+            result.ok = True
+            if action == ACTION_REMOVE:
+                result.message = f'Impressora "{name}" removida.'
+            elif action == ACTION_SET_DEFAULT:
+                result.message = f'Impressora "{name}" definida como padrão.'
+            elif action == ACTION_TEST_PAGE:
+                result.message = f'Página de teste enviada para "{name}".'
+            else:
+                result.message = "Operação concluída."
+            return result
+        finally:
+            if remote_started:
+                self.cleanup_operation(host, op_id, creds)
+
+    def _run_user_printui_action(
+        self,
+        host: str,
+        *,
+        printer_name: str,
+        flag: str,
+        username: str,
+        creds: CredentialContext,
+        operation_id: str = "",
+        timeout_s: int = USER_TASK_TIMEOUT_S,
+        should_cancel: Optional[CancelFn] = None,
+    ) -> CommandCapture:
+        user = (username or "").strip()
+        if not user:
+            return CommandCapture(
+                ok=False, error="Usuário não possui sessão interativa."
+            )
+        op = operation_id or new_operation_id()
+        wrapper = build_user_action_wrapper_script(
+            printer_name=printer_name,
+            flag=flag,
+            result_filename=result_file_name(op),
         )
         orchestrator = build_user_task_orchestrator_script(
             username=user,

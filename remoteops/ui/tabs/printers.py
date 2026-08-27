@@ -19,6 +19,8 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
+    QMessageBox,
     QRadioButton,
     QSizePolicy,
     QTableWidget,
@@ -32,6 +34,8 @@ from remoteops.services.ops import CredentialContext
 from remoteops.services.printers import (
     InstallPrinterRequest,
     InstallPrinterResult,
+    PrinterActionRequest,
+    PrinterActionResult,
     PrinterService,
 )
 from remoteops.ui.style import (
@@ -74,6 +78,9 @@ from remoteops.utils.printer_settings import (
     get_print_server,
 )
 from remoteops.utils.printers import (
+    ACTION_REMOVE,
+    ACTION_SET_DEFAULT,
+    ACTION_TEST_PAGE,
     SCOPE_ALL,
     SCOPE_USER,
     NetworkPrinter,
@@ -81,14 +88,17 @@ from remoteops.utils.printers import (
     can_install_printer,
     effective_set_default,
     install_block_reason,
+    installed_action_requires_user,
     interactive_sessions,
     is_session_active,
     logical_printui_preview,
     new_operation_id,
     print_server_unc,
+    printer_action_name,
     printer_matches_query,
     printer_unc,
     qualify_interactive_user,
+    remove_printui_flag,
     select_default_active_session,
     share_status_label,
 )
@@ -308,6 +318,40 @@ class _InstallWorker(QThread):
             self._creds.clear()
 
 
+class _InstalledActionWorker(QThread):
+    log_line = pyqtSignal(str)
+    finished_result = pyqtSignal(object)
+
+    def __init__(
+        self,
+        request: PrinterActionRequest,
+        creds: CredentialContext,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._request = request
+        self._creds = creds
+        self._abort = False
+        self._service = PrinterService()
+
+    def abort(self) -> None:
+        self._abort = True
+        self._service.cancel()
+
+    def run(self) -> None:
+        try:
+            result = self._service.run_installed_action(
+                self._request,
+                self._creds,
+                progress=self.log_line.emit,
+                should_cancel=lambda: self._abort,
+                passwords=self._creds.passwords,
+            )
+            self.finished_result.emit(result)
+        finally:
+            self._creds.clear()
+
+
 class PrintersTab(QWidget):
     def __init__(
         self,
@@ -331,9 +375,12 @@ class PrintersTab(QWidget):
         self._session_worker: Optional[_SessionListWorker] = None
         self._install_worker: Optional[_InstallWorker] = None
         self._installed_worker: Optional[_InstalledPrintersWorker] = None
+        self._action_worker: Optional[_InstalledActionWorker] = None
         self._installing = False
+        self._action_busy = False
         self._install_host = ""
         self._install_generation = 0
+        self._action_generation = 0
         self._installed_generation = 0
         self._installed_query_key = ""
         self._closing = False
@@ -379,6 +426,8 @@ class PrintersTab(QWidget):
         if not online:
             if self._installing:
                 self._cancel_install()
+            if self._action_busy:
+                self._cancel_installed_action()
             self._invalidate_sessions()
             self._invalidate_installed(MSG_OFFLINE)
         self._refresh_actions()
@@ -388,6 +437,8 @@ class PrintersTab(QWidget):
         if host.casefold() != (self._sessions_host or "").casefold():
             if self._installing and self._install_host.casefold() != host.casefold():
                 self._cancel_install()
+            if self._action_busy:
+                self._cancel_installed_action()
             self._invalidate_sessions()
             self._invalidate_installed("")
             if self._is_online():
@@ -411,9 +462,17 @@ class PrintersTab(QWidget):
                 pass
         if self._installing:
             self._cancel_install()
+        if self._action_busy:
+            self._cancel_installed_action()
         self._abort_workers()
         remaining = max(0, int(wait_ms))
-        for attr in ("_list_worker", "_session_worker", "_install_worker", "_installed_worker"):
+        for attr in (
+            "_list_worker",
+            "_session_worker",
+            "_install_worker",
+            "_installed_worker",
+            "_action_worker",
+        ):
             worker = getattr(self, attr, None)
             if worker is None:
                 continue
@@ -654,6 +713,10 @@ class PrintersTab(QWidget):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         self.installed_table.setMinimumHeight(80)
+        self.installed_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.installed_table.customContextMenuRequested.connect(
+            self._show_installed_context_menu
+        )
         installed_lay.addWidget(self.installed_table, 1)
 
         idx_available = self._inner_tabs.addTab(available, self.tr("Disponíveis"))
@@ -824,6 +887,7 @@ class PrintersTab(QWidget):
             self._session_worker,
             self._install_worker,
             self._installed_worker,
+            self._action_worker,
         ):
             if worker is None:
                 continue
@@ -1171,6 +1235,170 @@ class PrintersTab(QWidget):
                         item.setData(Qt.ItemDataRole.UserRole, printer)
                     self.installed_table.setItem(row, col, item)
 
+    def _installed_printer_at(self, row: int) -> Optional[NetworkPrinter]:
+        if row < 0:
+            return None
+        item = self.installed_table.item(row, 0)
+        data = item.data(Qt.ItemDataRole.UserRole) if item else None
+        return data if isinstance(data, NetworkPrinter) else None
+
+    def _selected_installed_printer(self) -> Optional[NetworkPrinter]:
+        model = self.installed_table.selectionModel()
+        rows = model.selectedRows() if model is not None else []
+        if not rows:
+            return None
+        return self._installed_printer_at(rows[0].row())
+
+    def _show_installed_context_menu(self, pos) -> None:
+        if not self._ui_alive():
+            return
+        index = self.installed_table.indexAt(pos)
+        if index.isValid():
+            self.installed_table.selectRow(index.row())
+        printer = self._selected_installed_printer()
+        if printer is None:
+            return
+
+        online = self._is_online()
+        busy = self._installing or self._action_busy
+        session = self._selected_session()
+        session_ok = is_session_active(session)
+        can_base = bool(online and not busy and printer_action_name(printer))
+        can_user = can_base and session_ok
+        can_remove = can_base and (
+            session_ok
+            if installed_action_requires_user(ACTION_REMOVE, printer.printer_type)
+            else True
+        )
+        can_default = can_user and not printer.is_default
+        can_test = can_user
+
+        menu = QMenu(self)
+        act_default = menu.addAction(self.tr("Definir como padrão"))
+        act_test = menu.addAction(self.tr("Imprimir página de teste"))
+        menu.addSeparator()
+        act_remove = menu.addAction(self.tr("Remover"))
+
+        act_default.setEnabled(can_default)
+        act_test.setEnabled(can_test)
+        act_remove.setEnabled(can_remove)
+
+        if printer.is_default:
+            act_default.setToolTip(self.tr("Já é a impressora padrão."))
+        elif not session_ok:
+            tip = self.tr("Requer usuário com sessão ativa.")
+            act_default.setToolTip(tip)
+            act_test.setToolTip(tip)
+            if installed_action_requires_user(ACTION_REMOVE, printer.printer_type):
+                act_remove.setToolTip(tip)
+        if busy:
+            tip = self.tr("Operação em andamento.")
+            act_default.setToolTip(tip)
+            act_test.setToolTip(tip)
+            act_remove.setToolTip(tip)
+        if not online:
+            tip = self.tr("Host remoto precisa estar Online.")
+            act_default.setToolTip(tip)
+            act_test.setToolTip(tip)
+            act_remove.setToolTip(tip)
+
+        chosen = menu.exec(self.installed_table.viewport().mapToGlobal(pos))
+        if chosen is act_default:
+            self._run_installed_action(ACTION_SET_DEFAULT, printer)
+        elif chosen is act_test:
+            self._run_installed_action(ACTION_TEST_PAGE, printer)
+        elif chosen is act_remove:
+            self._confirm_remove_installed(printer)
+
+    def _confirm_remove_installed(self, printer: NetworkPrinter) -> None:
+        name = printer_action_name(printer) or printer.name or "—"
+        kind = (printer.printer_type or "").strip() or "—"
+        flag = remove_printui_flag(printer.printer_type)
+        answer = QMessageBox.question(
+            self,
+            self.tr("Remover impressora"),
+            self.tr(
+                f'Remover "{name}" ({kind}) do host remoto?\n\n'
+                f"Será usado PrintUIEntry /{flag}."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._run_installed_action(ACTION_REMOVE, printer)
+
+    def _run_installed_action(self, action: str, printer: NetworkPrinter) -> None:
+        if not self._ui_alive() or self._installing or self._action_busy:
+            return
+        host = self._get_host()
+        if not self._is_online() or not host:
+            self._log("Host remoto precisa estar Online.")
+            return
+        session = self._selected_session()
+        if installed_action_requires_user(action, printer.printer_type):
+            if not is_session_active(session):
+                self._log("Usuário não possui sessão interativa.")
+                return
+        user, password = self._creds()
+        creds = CredentialContext(user=user, password=password)
+        request = PrinterActionRequest(
+            host=host,
+            action=action,
+            printer=printer,
+            session=session,
+            operation_id=new_operation_id(),
+            domain_hint=self._domain_hint(),
+        )
+        self._action_busy = True
+        self._action_generation += 1
+        generation = self._action_generation
+        self._refresh_actions()
+        worker = _InstalledActionWorker(request, creds, parent=self)
+        self._action_worker = worker
+        worker.log_line.connect(self._on_install_log)
+        worker.finished_result.connect(
+            lambda result, gen=generation: self._on_installed_action_finished(
+                result, gen
+            )
+        )
+        worker.finished.connect(self._on_installed_action_thread_finished)
+        worker.start()
+
+    def _on_installed_action_finished(self, result: object, generation: int) -> None:
+        if not self._ui_alive() or generation != self._action_generation:
+            return
+        if not isinstance(result, PrinterActionResult):
+            return
+        if result.cancelled:
+            self._log("Operação cancelada.")
+            return
+        if result.ok:
+            self._log(result.message or "Operação concluída.")
+            self.refresh_installed_printers(force=True)
+            return
+        self._log(result.message or "Falha na operação de impressora.")
+
+    def _on_installed_action_thread_finished(self) -> None:
+        if not self._ui_alive():
+            return
+        self._action_busy = False
+        self._action_worker = None
+        self._refresh_actions()
+        self._update_refresh_enabled()
+
+    def _cancel_installed_action(self) -> None:
+        worker = self._action_worker
+        if worker is None:
+            self._action_busy = False
+            return
+        try:
+            worker.abort()
+        except Exception:
+            pass
+        self._action_generation += 1
+        self._action_busy = False
+
     def _on_list_worker_finished(self) -> None:
         if not self._ui_alive():
             return
@@ -1374,7 +1602,7 @@ class PrintersTab(QWidget):
             self._session_summary_row.show()
         self.session_combo.blockSignals(False)
         has_active = len(active) > 0
-        self.radio_user.setEnabled(has_active and not self._installing)
+        self.radio_user.setEnabled(has_active and not self._installing and not self._action_busy)
         if not has_active and self.radio_user.isChecked():
             self.radio_all.blockSignals(True)
             self.radio_all.setChecked(True)
@@ -1424,7 +1652,9 @@ class PrintersTab(QWidget):
             _set_fact_value(self.driver_lbl, printer.driver_name or _EMPTY_FACT)
         self._apply_session_facts(self._selected_session())
         user_scope = self._current_scope() == SCOPE_USER
-        self.default_check.setEnabled(user_scope and not self._installing)
+        self.default_check.setEnabled(
+            user_scope and not self._installing and not self._action_busy
+        )
         if not user_scope:
             self.default_check.blockSignals(True)
             self.default_check.setChecked(False)
@@ -1506,7 +1736,7 @@ class PrintersTab(QWidget):
 
     def _refresh_actions(self) -> None:
         online = self._is_online()
-        busy = self._installing
+        busy = self._installing or self._action_busy
         session = self._selected_session()
         configured = self._server_configured()
         enabled = can_install_printer(
@@ -1526,8 +1756,10 @@ class PrintersTab(QWidget):
             session=session,
             server_configured=configured,
         )
-        if busy:
+        if self._installing:
             self.install_btn.setToolTip(self.tr("Instalação em andamento."))
+        elif self._action_busy:
+            self.install_btn.setToolTip(self.tr("Operação de impressora em andamento."))
         else:
             self.install_btn.setToolTip(
                 reason or self.tr("Instalar silenciosamente no host remoto.")
@@ -1541,7 +1773,7 @@ class PrintersTab(QWidget):
         self._update_refresh_enabled()
 
     def _on_install_clicked(self) -> None:
-        if self._installing:
+        if self._installing or self._action_busy:
             return
         host = self._get_host()
         if not self._is_online() or not host:

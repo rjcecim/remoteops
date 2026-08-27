@@ -23,6 +23,25 @@ PRINTUI_IN = "in"
 PRINTUI_GA = "ga"
 PRINTUI_Y = "y"
 PRINTUI_DN = "dn"
+PRINTUI_GD = "gd"
+PRINTUI_DL = "dl"
+PRINTUI_K = "k"
+
+ACTION_REMOVE = "remove"
+ACTION_SET_DEFAULT = "set_default"
+ACTION_TEST_PAGE = "test_page"
+
+_PRINTUI_FLAGS = frozenset(
+    {
+        PRINTUI_IN,
+        PRINTUI_GA,
+        PRINTUI_Y,
+        PRINTUI_DN,
+        PRINTUI_GD,
+        PRINTUI_DL,
+        PRINTUI_K,
+    }
+)
 
 TASK_NAME_PREFIX = "RemoteOps_Printer_"
 
@@ -103,18 +122,61 @@ def result_file_name(operation_id: str) -> str:
 
 
 def printui_argv(flag: str, unc: str) -> List[str]:
-    """Argv lógico do PrintUIEntry silencioso. ``flag`` é ``in`` / ``ga`` / ``y`` / ``dn``."""
+    """Argv lógico do PrintUIEntry. Flags: in/ga/y/dn/gd/dl/k."""
     op = (flag or "").strip().lstrip("/").lower()
     path = (unc or "").strip()
     if not path:
-        raise ValueError("UNC da impressora vazio.")
-    if op not in {PRINTUI_IN, PRINTUI_GA, PRINTUI_Y, PRINTUI_DN}:
+        raise ValueError("Nome da impressora vazio.")
+    if op not in _PRINTUI_FLAGS:
         raise ValueError(f"Parâmetro PrintUIEntry inválido: {flag}")
-    return ["rundll32.exe", "printui.dll,PrintUIEntry", f"/{op}", f"/n{path}", "/q"]
+    argv = ["rundll32.exe", "printui.dll,PrintUIEntry", f"/{op}", f"/n{path}"]
+    # /k (página de teste) não usa /q; demais operações silenciosas.
+    if op != PRINTUI_K:
+        argv.append("/q")
+    return argv
 
 
 def printui_command_line(flag: str, unc: str) -> str:
     return argv_to_cmd_line(printui_argv(flag, unc))
+
+
+def printer_action_name(printer: Optional[NetworkPrinter]) -> str:
+    """Nome passado a ``/n`` (UNC ou nome local)."""
+    if printer is None:
+        return ""
+    return (printer.name or printer.share_name or "").strip()
+
+
+def remove_printui_flag(printer_type: str) -> str:
+    """Escolhe ``/dn``, ``/gd`` ou ``/dl`` conforme o tipo classificado."""
+    kind = (printer_type or "").strip()
+    if kind == "Rede — usuário":
+        return PRINTUI_DN
+    if kind == "Rede — computador":
+        return PRINTUI_GD
+    return PRINTUI_DL
+
+
+def installed_action_requires_user(action: str, printer_type: str = "") -> bool:
+    """True quando a ação precisa do token InteractiveToken do usuário ativo."""
+    kind = (action or "").strip().lower()
+    if kind in {ACTION_SET_DEFAULT, ACTION_TEST_PAGE}:
+        return True
+    if kind == ACTION_REMOVE:
+        return remove_printui_flag(printer_type) == PRINTUI_DN
+    return False
+
+
+def resolve_installed_action_flag(action: str, printer_type: str = "") -> str:
+    """Devolve a flag PrintUIEntry da ação, ou ``ValueError`` se inválida."""
+    kind = (action or "").strip().lower()
+    if kind == ACTION_SET_DEFAULT:
+        return PRINTUI_Y
+    if kind == ACTION_TEST_PAGE:
+        return PRINTUI_K
+    if kind == ACTION_REMOVE:
+        return remove_printui_flag(printer_type)
+    raise ValueError(f"Ação de impressora inválida: {action}")
 
 
 def effective_set_default(scope: str, requested: bool) -> bool:
@@ -463,6 +525,99 @@ def build_computer_connect_script(unc: str) -> str:
         "Write-Output ($payload | ConvertTo-Json -Compress)\n"
         "if ($code -ne 0) { exit $code }\n"
         "exit 0\n"
+    )
+
+
+def _build_elevated_printui_script(flag: str, printer_name: str) -> str:
+    """Script elevado silencioso para uma flag PrintUIEntry (``/ga``, ``/gd``, ``/dl``…)."""
+    args = printui_argv(flag, printer_name)
+    joined = ",".join(ps_single_quote(a) for a in args[1:])
+    name_lit = ps_single_quote(printer_name)
+    flag_lit = ps_single_quote((flag or "").strip().lstrip("/").lower())
+    return (
+        "$ErrorActionPreference = 'Continue'\n"
+        "$ProgressPreference = 'SilentlyContinue'\n"
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
+        f"$name = {name_lit}\n"
+        f"$flag = {flag_lit}\n"
+        f"$p = Start-Process -FilePath 'rundll32.exe' -ArgumentList @({joined})"
+        " -Wait -PassThru -WindowStyle Hidden\n"
+        "$code = [int]$p.ExitCode\n"
+        "$payload = [ordered]@{ ok = ($code -eq 0); exitCode = $code;"
+        " name = $name; flag = $flag }\n"
+        "Write-Output ($payload | ConvertTo-Json -Compress)\n"
+        "if ($code -ne 0) { exit $code }\n"
+        "exit 0\n"
+    )
+
+
+def build_computer_disconnect_script(printer_name: str) -> str:
+    """Remove conexão por computador (``/gd``)."""
+    return _build_elevated_printui_script(PRINTUI_GD, printer_name)
+
+
+def build_local_delete_script(printer_name: str) -> str:
+    """Remove fila local (``/dl``)."""
+    return _build_elevated_printui_script(PRINTUI_DL, printer_name)
+
+
+def build_user_action_wrapper_script(
+    *,
+    printer_name: str,
+    flag: str,
+    result_filename: str,
+) -> str:
+    """Roda no token do usuário: uma flag PrintUIEntry (``/dn``, ``/y``, ``/k``)."""
+    op = (flag or "").strip().lstrip("/").lower()
+    args = printui_argv(op, printer_name)
+    joined = ",".join(ps_single_quote(a) for a in args[1:])
+    name_lit = ps_single_quote(printer_name)
+    flag_lit = ps_single_quote(op)
+    file_lit = ps_single_quote(result_filename)
+    # /dn: sucesso se a impressora sumiu; /y e /k: exit code 0.
+    verify_block = (
+        "  $gone = -not (Test-UserPrinter $name)\n"
+        "  $ok = [bool]$gone\n"
+        if op == PRINTUI_DN
+        else "  $ok = ($code -eq 0)\n"
+    )
+    return (
+        "$ErrorActionPreference = 'Continue'\n"
+        "$ProgressPreference = 'SilentlyContinue'\n"
+        f"$name = {name_lit}\n"
+        f"$flag = {flag_lit}\n"
+        f"$out = Join-Path $env:PUBLIC {file_lit}\n"
+        "function Test-UserPrinter($printerName) {\n"
+        "  try {\n"
+        "    $p = Get-Printer -Name $printerName -ErrorAction SilentlyContinue\n"
+        "    if ($p) { return $true }\n"
+        "  } catch {}\n"
+        "  try {\n"
+        "    $hit = @(Get-Printer -ErrorAction SilentlyContinue |\n"
+        "      Where-Object { $_.Name -eq $printerName })\n"
+        "    if ($hit.Count -gt 0) { return $true }\n"
+        "  } catch {}\n"
+        "  return $false\n"
+        "}\n"
+        "try {\n"
+        f"  $p = Start-Process -FilePath 'rundll32.exe' -ArgumentList @({joined})"
+        " -Wait -PassThru -WindowStyle Hidden\n"
+        "  $code = [int]$p.ExitCode\n"
+        f"{verify_block}"
+        "  $payload = [ordered]@{\n"
+        "    ok = [bool]$ok\n"
+        "    exitCode = $code\n"
+        "    flag = $flag\n"
+        "    name = $name\n"
+        "  }\n"
+        "  ($payload | ConvertTo-Json -Compress) | Set-Content -LiteralPath $out"
+        " -Encoding UTF8\n"
+        "} catch {\n"
+        "  $payload = [ordered]@{ ok = $false; exitCode = -1;"
+        " error = [string]$_.Exception.Message; flag = $flag; name = $name }\n"
+        "  ($payload | ConvertTo-Json -Compress) | Set-Content -LiteralPath $out"
+        " -Encoding UTF8\n"
+        "}\n"
     )
 
 
