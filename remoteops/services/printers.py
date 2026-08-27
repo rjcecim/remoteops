@@ -1,7 +1,10 @@
 """Instalação remota silenciosa de impressoras de rede.
 
-A listagem consulta o servidor configurado em Configurações a partir desta
-máquina (PowerShell local / ``Get-Printer -ComputerName``), sem PsExec.
+A listagem do catálogo (aba Disponíveis) consulta o servidor configurado em
+Configurações a partir desta máquina (PowerShell local / ``Get-Printer``).
+
+A listagem da aba Instaladas consulta o host remoto a partir desta máquina:
+``Get-Printer -ComputerName``, API WTS e Registro Remoto. Sem PsExec.
 
 Driver, ``/ga`` e a tarefa do usuário rodam no host remoto via PsExec.
 A conexão ``/in`` do usuário NÃO usa ``PsExec -i``: a identidade vem de uma
@@ -19,6 +22,19 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 from remoteops.core.process_runner import run_argv_captured
 from remoteops.services.ops import CredentialContext, build_psexec_argv, resolve_psexec_exe
+from remoteops.utils.installed_printers import (
+    MSG_CANCELLED,
+    MSG_GET_PRINTER,
+    MSG_PARTIAL_USER,
+    MSG_SPOOLER,
+    MSG_TIMEOUT,
+    InstalledPrintersPayload,
+    assemble_installed_printers,
+    classify_computer_printer_error,
+    local_list_computer_printers_argv,
+    split_account,
+)
+from remoteops.utils.ipc_auth import connect_ipc, release_ipc
 from remoteops.utils.ping import is_valid_host, normalize_host
 from remoteops.utils.printer_settings import get_print_list_timeout, require_print_server
 from remoteops.utils.printers import (
@@ -29,7 +45,6 @@ from remoteops.utils.printers import (
     build_computer_connect_script,
     build_driver_prepare_script,
     build_driver_query_script,
-    build_list_host_installed_printers_script,
     build_user_task_orchestrator_script,
     build_user_wrapper_script,
     can_proceed_to_connect,
@@ -43,7 +58,6 @@ from remoteops.utils.printers import (
     local_list_printers_argv,
     new_operation_id,
     parse_json_payload,
-    parse_user_printers_payload,
     payload_ok,
     powershell_encoded_argv,
     print_server_host,
@@ -57,6 +71,8 @@ from remoteops.utils.printers import (
 )
 from remoteops.utils.pstools import get_pstools_dir
 from remoteops.utils.redaction import redact_command_text
+from remoteops.utils.remote_printers_query import query_remote_printers_registry
+from remoteops.utils.remote_registry_query import get_remote_registry_timeout
 from remoteops.utils.sessions import RemoteSession
 
 ProgressFn = Callable[[str], None]
@@ -112,8 +128,10 @@ class PrinterService:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._proc: Optional[subprocess.Popen] = None
+        self._abort = False
 
     def cancel(self) -> None:
+        self._abort = True
         with self._lock:
             proc = self._proc
         if proc is None:
@@ -184,46 +202,183 @@ class PrinterService:
             except OSError:
                 pass
 
-    def list_host_user_printers(
+    def list_host_installed_printers(
         self,
         host: str,
         *,
-        username: str,
-        creds: CredentialContext,
-        timeout_s: int = USER_TASK_TIMEOUT_S,
+        username: str = "",
+        domain: str = "",
+        session_id: Optional[int] = None,
+        session_name: str = "",
+        creds: Optional[CredentialContext] = None,
+        timeout_s: Optional[int] = None,
+        registry_timeout_s: Optional[float] = None,
         should_cancel: Optional[CancelFn] = None,
-    ) -> Tuple[List[NetworkPrinter], str]:
-        """Lista impressoras locais e conexões de rede do usuário no host remoto."""
-        user = (username or "").strip()
-        if not user:
-            return [], "Usuário não possui sessão interativa."
+    ) -> InstalledPrintersPayload:
+        """Lista impressoras do host remoto sem PsExec.
+
+        Combina ``Get-Printer -ComputerName`` (PowerShell local) com Registro
+        Remoto isolado em processo filho. Credenciais, se houver, autenticam
+        só em ``\\\\host\\IPC$``.
+        """
+        self._abort = False
         target = normalize_host(host)
-        if not target or not is_valid_host(target):
-            return [], "Host inválido."
-        script = build_list_host_installed_printers_script(username=user)
-        capture = self.run_remote_script(
-            target,
-            script,
-            creds,
-            timeout_s=max(30, int(timeout_s)),
-            should_cancel=should_cancel,
-            as_system=True,
+        embedded_domain, short = split_account(username)
+        login = short or (username or "").strip()
+        used_domain = embedded_domain or (domain or "").strip()
+        account = f"{used_domain}\\{login}" if used_domain and login else login
+        result = InstalledPrintersPayload(
+            ok=False,
+            host=target,
+            username=account,
+            session_id=session_id,
         )
-        if capture.cancelled:
-            return [], "Consulta cancelada."
-        if capture.timed_out:
-            return [], "Timeout consultando impressoras no host."
-        printers, err = parse_user_printers_payload(capture.stdout)
-        if err:
-            detail = err
-            if capture.stderr:
-                detail = f"{detail} ({capture.stderr.strip()[:180]})"
-            return [], detail
-        if capture.exit_code not in (0, None) and not printers:
-            return [], classify_printer_error(
-                f"{capture.stdout}\n{capture.stderr}", capture.exit_code
+
+        def stopped() -> bool:
+            return self._abort or self._cancelled(should_cancel)
+
+        if not target or not is_valid_host(target):
+            result.error = "Host inválido."
+            return result
+
+        used = creds if creds is not None else CredentialContext()
+        auth = connect_ipc(target, used.user, used.password)
+        try:
+            if auth.conflict:
+                result.error = auth.error
+                return result
+            if used.user.strip() and not auth.connected and auth.error:
+                result.error = auth.error
+                return result
+            if stopped():
+                result.error = MSG_CANCELLED
+                return result
+
+            spooler: List[NetworkPrinter] = []
+            spooler_error = ""
+            include_fallback = False
+            try:
+                spooler, spooler_error = self._list_computer_printers(
+                    target,
+                    timeout_s=timeout_s,
+                    should_cancel=stopped,
+                    passwords=used.passwords,
+                )
+            except Exception as exc:
+                spooler_error = str(exc) or MSG_GET_PRINTER
+            if stopped():
+                result.error = MSG_CANCELLED
+                return result
+            if spooler_error:
+                include_fallback = True
+                result.warnings.append(spooler_error)
+                result.partial = True
+
+            registry_timeout = (
+                float(registry_timeout_s)
+                if registry_timeout_s is not None
+                else get_remote_registry_timeout()
             )
-        return printers, ""
+            registry = query_remote_printers_registry(
+                target,
+                username=login,
+                domain=used_domain,
+                session_name=session_name,
+                include_local_fallback=include_fallback,
+                timeout=registry_timeout,
+                should_cancel=stopped,
+            )
+            if stopped() or str(registry.get("error_kind") or "") == "cancelled":
+                result.error = MSG_CANCELLED
+                return result
+            if str(registry.get("error_kind") or "") == "timed_out":
+                result.warnings.append(MSG_TIMEOUT)
+                result.partial = True
+            elif not registry.get("ok"):
+                reg_err = str(registry.get("error") or "").strip() or "Falha no Registro Remoto."
+                result.warnings.append(reg_err)
+                result.partial = True
+            else:
+                for warning in registry.get("warnings") or []:
+                    text = str(warning or "").strip()
+                    if text:
+                        result.warnings.append(text)
+                if registry.get("error_kind") == "ambiguous_sid":
+                    result.partial = True
+                elif login and not str(registry.get("user_sid") or "").strip():
+                    result.warnings.append(MSG_PARTIAL_USER)
+                    result.partial = True
+
+            default_name = str(registry.get("default_name") or "").strip()
+            local_rows = registry.get("local_printers") or [] if include_fallback else []
+            printers = assemble_installed_printers(
+                spooler=spooler,
+                user_connections=registry.get("user_connections") or [],
+                computer_connections=registry.get("computer_connections") or [],
+                local_fallback=local_rows,
+                default_name=default_name,
+            )
+            result.printers = printers
+            if printers:
+                result.ok = True
+                return result
+            if spooler_error and not registry.get("ok"):
+                result.ok = False
+                result.error = spooler_error or str(registry.get("error") or "") or MSG_SPOOLER
+                return result
+            result.ok = True
+            return result
+        finally:
+            release_ipc(auth)
+
+    def _list_computer_printers(
+        self,
+        host: str,
+        *,
+        timeout_s: Optional[int] = None,
+        should_cancel: Optional[CancelFn] = None,
+        passwords: Optional[Sequence[str]] = None,
+    ) -> Tuple[List[NetworkPrinter], str]:
+        """``Get-Printer -ComputerName`` local — arquivo temporário, timeout, cancelamento."""
+        limit = get_print_list_timeout() if timeout_s is None else int(timeout_s)
+        handle, catalog_path = tempfile.mkstemp(
+            prefix="RemoteOps_HostPrinters_", suffix=".json"
+        )
+        os.close(handle)
+        try:
+            try:
+                argv = local_list_computer_printers_argv(host, catalog_path)
+            except ValueError as exc:
+                return [], str(exc)
+            capture = self._run_argv(
+                argv,
+                timeout_s=limit,
+                should_cancel=should_cancel,
+                passwords=passwords,
+            )
+            if capture.cancelled:
+                return [], MSG_CANCELLED
+            combined = f"{capture.stdout}\n{capture.stderr}"
+            if capture.timed_out:
+                return [], MSG_TIMEOUT
+            if capture.exit_code != 0:
+                return [], classify_computer_printer_error(
+                    combined, capture.exit_code, host=host
+                )
+            try:
+                if not os.path.isfile(catalog_path) or os.path.getsize(catalog_path) == 0:
+                    return [], MSG_GET_PRINTER
+                printers = read_printers_catalog_file(catalog_path)
+            except OSError as extra:
+                return [], str(extra) or MSG_GET_PRINTER
+            except Exception as extra:
+                return [], str(extra) or MSG_GET_PRINTER
+            return printers, ""
+        finally:
+            try:
+                os.remove(catalog_path)
+            except OSError:
+                pass
 
     def check_driver(
         self,

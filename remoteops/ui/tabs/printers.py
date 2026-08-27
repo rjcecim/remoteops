@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -53,9 +54,20 @@ from remoteops.ui.widgets.card import (
 )
 from remoteops.ui.widgets.combobox import FluentComboBox
 from remoteops.ui.widgets.log import LogOutputWidget
+from remoteops.ui.widgets.mdl2_tab_bar import Mdl2TabBar
 from remoteops.ui.widgets.spinner import DotsSpinner
 from remoteops.ui.widgets.status_dot import STATUS_COLORS, StatusDot
 from remoteops.ui.widgets.table import configure_standard_table, pause_table_sorting
+from remoteops.utils.installed_printers import (
+    MSG_IDENTIFYING,
+    MSG_INVALID_HOST,
+    MSG_OFFLINE,
+    InstalledPrintersPayload,
+    display_or_dash,
+    installed_query_readiness,
+    result_belongs_to_current,
+    session_account,
+)
 from remoteops.utils.ping import is_valid_host, normalize_host
 from remoteops.utils.printer_settings import (
     PRINT_SERVER_REQUIRED_MSG,
@@ -85,6 +97,8 @@ from remoteops.utils.sessions import RemoteSession, list_remote_sessions
 
 LOG_PREFIX = "[IMPRESSORAS]"
 _EMPTY_FACT = "—"
+_TAB_AVAILABLE = 0
+_TAB_INSTALLED = 1
 
 _COMMAND_QSS = f"""
 QLabel#printersCommandPreview {{
@@ -189,6 +203,55 @@ class _PrinterListWorker(QThread):
         self.finished_ok.emit(printers)
 
 
+class _InstalledPrintersWorker(QThread):
+    finished_payload = pyqtSignal(object)
+
+    def __init__(
+        self,
+        host: str,
+        *,
+        username: str = "",
+        domain: str = "",
+        session_id: Optional[int] = None,
+        session_name: str = "",
+        creds: Optional[CredentialContext] = None,
+        generation: int = 0,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._host = host
+        self._username = username
+        self._domain = domain
+        self._session_id = session_id
+        self._session_name = session_name
+        self._creds = creds if creds is not None else CredentialContext()
+        self._generation = generation
+        self._abort = False
+        self._service = PrinterService()
+
+    def abort(self) -> None:
+        self._abort = True
+        self._service.cancel()
+
+    def run(self) -> None:
+        try:
+            payload = self._service.list_host_installed_printers(
+                self._host,
+                username=self._username,
+                domain=self._domain,
+                session_id=self._session_id,
+                session_name=self._session_name,
+                creds=self._creds,
+                should_cancel=lambda: self._abort,
+            )
+            payload.generation = self._generation
+            if self._abort:
+                return
+            self.finished_payload.emit(payload)
+        finally:
+            self._creds.clear()
+
+
 class _SessionListWorker(QThread):
     result = pyqtSignal(str, object, str)
 
@@ -201,7 +264,10 @@ class _SessionListWorker(QThread):
     def run(self) -> None:
         try:
             sessions, error = list_remote_sessions(
-                self._host, user=self._user, password=self._password
+                self._host,
+                user=self._user,
+                password=self._password,
+                allow_psexec_fallback=False,
             )
             self.result.emit(self._host, sessions, error)
         finally:
@@ -256,15 +322,20 @@ class PrintersTab(QWidget):
         self._creds_provider = creds_provider
         self._online_provider = online_provider
         self._printers: List[NetworkPrinter] = []
+        self._installed_printers: List[NetworkPrinter] = []
         self._sessions: List[RemoteSession] = []
         self._sessions_host = ""
+        self._sessions_loading = False
         self._selected: Optional[NetworkPrinter] = None
         self._list_worker: Optional[_PrinterListWorker] = None
         self._session_worker: Optional[_SessionListWorker] = None
         self._install_worker: Optional[_InstallWorker] = None
+        self._installed_worker: Optional[_InstalledPrintersWorker] = None
         self._installing = False
         self._install_host = ""
         self._install_generation = 0
+        self._installed_generation = 0
+        self._installed_query_key = ""
         self._closing = False
         self._host_online = bool(online_provider() if online_provider else False)
         self._bottom_stretch_idx = None
@@ -294,6 +365,7 @@ class PrintersTab(QWidget):
         self.destroyed.connect(self._abort_workers)
         self._refresh_server_chrome()
         self._update_install_panel()
+        self._update_installed_facts()
         self._refresh_actions()
 
     def start_initial_load(self) -> None:
@@ -308,6 +380,7 @@ class PrintersTab(QWidget):
             if self._installing:
                 self._cancel_install()
             self._invalidate_sessions()
+            self._invalidate_installed(MSG_OFFLINE)
         self._refresh_actions()
 
     def sync_from_host(self) -> None:
@@ -316,8 +389,13 @@ class PrintersTab(QWidget):
             if self._installing and self._install_host.casefold() != host.casefold():
                 self._cancel_install()
             self._invalidate_sessions()
+            self._invalidate_installed("")
             if self._is_online():
                 self.refresh_sessions()
+            else:
+                self._set_installed_status(
+                    MSG_OFFLINE if host else MSG_INVALID_HOST
+                )
         self._refresh_actions()
 
     def shutdown(self, wait_ms: int = 8000) -> None:
@@ -335,7 +413,7 @@ class PrintersTab(QWidget):
             self._cancel_install()
         self._abort_workers()
         remaining = max(0, int(wait_ms))
-        for attr in ("_list_worker", "_session_worker", "_install_worker"):
+        for attr in ("_list_worker", "_session_worker", "_install_worker", "_installed_worker"):
             worker = getattr(self, attr, None)
             if worker is None:
                 continue
@@ -353,6 +431,10 @@ class PrintersTab(QWidget):
                 pass
             try:
                 worker.finished_err.disconnect()
+            except (TypeError, AttributeError):
+                pass
+            try:
+                worker.finished_payload.disconnect()
             except (TypeError, AttributeError):
                 pass
             try:
@@ -411,15 +493,30 @@ class PrintersTab(QWidget):
         self.log_output.append_log(text)
 
     def _build_catalog_card(self) -> CardWidget:
-        card = CardWidget("\uE749", self.tr("Impressoras disponíveis"))
+        card = CardWidget("\uE749", self.tr("Impressoras"))
         card.set_collapsible(True, collapsed=False)
         card.set_expanding(True)
         card.set_layout_stretch(3)
         self.refresh_btn = card.make_header_button(
             "\uE72C", self.tr("Atualizar lista de impressoras")
         )
-        self.refresh_btn.clicked.connect(self.refresh_printers)
+        self.refresh_btn.clicked.connect(self._on_catalog_refresh_clicked)
         card.add_header_button(self.refresh_btn)
+
+        self._inner_tabs = QTabWidget()
+        inner_bar = Mdl2TabBar(self._inner_tabs)
+        inner_bar.setExpanding(False)
+        self._inner_tabs.setTabBar(inner_bar)
+        self._inner_tabs.setDocumentMode(True)
+        self._inner_tabs.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._inner_tabs.currentChanged.connect(self._on_inner_tab_changed)
+
+        available = QWidget()
+        available_lay = QVBoxLayout(available)
+        available_lay.setContentsMargins(0, SPACE_SM, 0, 0)
+        available_lay.setSpacing(SPACE_SM)
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
@@ -437,12 +534,12 @@ class PrintersTab(QWidget):
         top.addWidget(self.count_lbl, 0)
         top_wrap = QWidget()
         top_wrap.setLayout(top)
-        card.content_layout.addWidget(top_wrap, 0)
+        available_lay.addWidget(top_wrap, 0)
 
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText(self.tr("Buscar impressora..."))
         self.filter_edit.textChanged.connect(self._apply_filter)
-        card.content_layout.addWidget(self.filter_edit, 0)
+        available_lay.addWidget(self.filter_edit, 0)
 
         self._spinner = DotsSpinner()
         self._spinner.setVisible(False)
@@ -454,7 +551,7 @@ class PrintersTab(QWidget):
         self._spin_wrap = QWidget()
         self._spin_wrap.setLayout(spin_row)
         self._spin_wrap.setVisible(False)
-        card.content_layout.addWidget(self._spin_wrap, 0)
+        available_lay.addWidget(self._spin_wrap, 0)
 
         self.table = QTableWidget()
         self.table.setColumnCount(6)
@@ -472,7 +569,97 @@ class PrintersTab(QWidget):
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setMinimumHeight(80)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
-        card.content_layout.addWidget(self.table, 1)
+        available_lay.addWidget(self.table, 1)
+
+        installed = QWidget()
+        installed_lay = QVBoxLayout(installed)
+        installed_lay.setContentsMargins(0, SPACE_SM, 0, 0)
+        installed_lay.setSpacing(SPACE_SM)
+
+        facts = QHBoxLayout()
+        facts.setContentsMargins(0, 0, 0, 0)
+        facts.setSpacing(SPACE_MD + 4)
+        self.installed_host_lbl = QLabel("")
+        self.installed_user_lbl = QLabel("")
+        self.installed_session_lbl = QLabel("")
+        for lbl in (
+            self.installed_host_lbl,
+            self.installed_user_lbl,
+            self.installed_session_lbl,
+        ):
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            lbl.setStyleSheet(f"color: {COLOR_TEXT}; background: transparent;")
+        facts.addWidget(self.installed_host_lbl, 1)
+        facts.addWidget(self.installed_user_lbl, 1)
+        facts.addWidget(self.installed_session_lbl, 0)
+        facts_wrap = QWidget()
+        facts_wrap.setLayout(facts)
+        installed_lay.addWidget(facts_wrap, 0)
+
+        self.installed_status_lbl = QLabel("")
+        self.installed_status_lbl.setWordWrap(True)
+        self.installed_status_lbl.setStyleSheet(
+            f"color: {COLOR_TEXT_SECONDARY}; font-size: {SIZE_UI_SMALL}pt; background: transparent;"
+        )
+        installed_lay.addWidget(self.installed_status_lbl, 0)
+
+        inst_top = QHBoxLayout()
+        inst_top.setContentsMargins(0, 0, 0, 0)
+        inst_top.setSpacing(8)
+        self.installed_filter_edit = QLineEdit()
+        self.installed_filter_edit.setPlaceholderText(self.tr("Buscar impressora..."))
+        self.installed_filter_edit.textChanged.connect(self._apply_installed_filter)
+        self.installed_count_lbl = QLabel("")
+        self.installed_count_lbl.setStyleSheet(
+            f"color: palette(windowText); font-size: {SIZE_UI_SMALL}pt; opacity: 0.75;"
+        )
+        inst_top.addWidget(self.installed_filter_edit, 1)
+        inst_top.addWidget(self.installed_count_lbl, 0)
+        inst_top_wrap = QWidget()
+        inst_top_wrap.setLayout(inst_top)
+        installed_lay.addWidget(inst_top_wrap, 0)
+
+        self._installed_spinner = DotsSpinner()
+        self._installed_spinner.setVisible(False)
+        inst_spin_row = QHBoxLayout()
+        inst_spin_row.setContentsMargins(0, 2, 0, 2)
+        inst_spin_row.addStretch()
+        inst_spin_row.addWidget(self._installed_spinner)
+        inst_spin_row.addStretch()
+        self._installed_spin_wrap = QWidget()
+        self._installed_spin_wrap.setLayout(inst_spin_row)
+        self._installed_spin_wrap.setVisible(False)
+        installed_lay.addWidget(self._installed_spin_wrap, 0)
+
+        self.installed_table = QTableWidget()
+        self.installed_table.setColumnCount(6)
+        self.installed_table.setHorizontalHeaderLabels(
+            [
+                self.tr("Nome"),
+                self.tr("Driver"),
+                self.tr("Porta"),
+                self.tr("Tipo"),
+                self.tr("Localização"),
+                self.tr("Padrão"),
+            ]
+        )
+        configure_standard_table(
+            self.installed_table,
+            stretch_columns=(0, 1, 4),
+            fixed_columns={5: 72},
+        )
+        self.installed_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.installed_table.setMinimumHeight(80)
+        installed_lay.addWidget(self.installed_table, 1)
+
+        idx_available = self._inner_tabs.addTab(available, self.tr("Disponíveis"))
+        inner_bar.set_tab_meta(idx_available, "\uE8F1")
+        idx_installed = self._inner_tabs.addTab(installed, self.tr("Instaladas"))
+        inner_bar.set_tab_meta(idx_installed, "\uE7F4")
+        self._inner_tabs.setCurrentIndex(_TAB_AVAILABLE)
+        card.content_layout.addWidget(self._inner_tabs, 1)
         return card
 
     def _build_install_card(self) -> CardWidget:
@@ -630,7 +817,12 @@ class PrintersTab(QWidget):
     def _abort_workers(self, _destroyed: object = None) -> None:
         if sip.isdeleted(self):
             return
-        for worker in (self._list_worker, self._session_worker, self._install_worker):
+        for worker in (
+            self._list_worker,
+            self._session_worker,
+            self._install_worker,
+            self._installed_worker,
+        ):
             if worker is None:
                 continue
             try:
@@ -657,12 +849,9 @@ class PrintersTab(QWidget):
         if server:
             unc = print_server_unc(server)
             self.server_lbl.setText(self.tr(f"Servidor: {unc}"))
-            self.refresh_btn.setToolTip(self.tr(f"Atualizar impressoras de {unc}"))
-            return
-        self.server_lbl.setText(self.tr("Servidor: não configurado"))
-        self.refresh_btn.setToolTip(
-            self.tr("Configure o servidor de impressão em Configurações")
-        )
+        else:
+            self.server_lbl.setText(self.tr("Servidor: não configurado"))
+        self._update_refresh_tooltip()
 
     def on_print_server_changed(self) -> None:
         """Atualiza rótulos e recarrega o catálogo quando o Settings muda."""
@@ -701,11 +890,278 @@ class PrintersTab(QWidget):
         self._list_worker.start()
 
     def _set_listing(self, loading: bool) -> None:
-        self.refresh_btn.setEnabled(not loading)
         self._spinner.setVisible(loading)
         self._spin_wrap.setVisible(loading)
         if loading:
             self.count_lbl.setText(self.tr("Consultando…"))
+        self._update_refresh_enabled()
+
+    def _on_catalog_refresh_clicked(self) -> None:
+        if not self._ui_alive():
+            return
+        if self._inner_tabs.currentIndex() == _TAB_INSTALLED:
+            self.refresh_installed_printers(force=True)
+            return
+        self.refresh_printers()
+
+    def _on_inner_tab_changed(self, _index: int) -> None:
+        if not self._ui_alive():
+            return
+        self._update_refresh_tooltip()
+        self._update_refresh_enabled()
+        if self._inner_tabs.currentIndex() == _TAB_INSTALLED:
+            self._update_installed_facts()
+            if self._sessions_loading:
+                self._set_installed_status(MSG_IDENTIFYING)
+            elif not self._installed_printers and not self._installed_worker_running():
+                self._maybe_refresh_installed(force=False)
+
+    def _installed_worker_running(self) -> bool:
+        worker = self._installed_worker
+        return worker is not None and worker.isRunning()
+
+    def _update_refresh_tooltip(self) -> None:
+        if not self._ui_alive():
+            return
+        if self._inner_tabs.currentIndex() == _TAB_INSTALLED:
+            host = self._get_host() or "—"
+            self.refresh_btn.setToolTip(
+                self.tr(f"Atualizar impressoras instaladas em {host}")
+            )
+            return
+        server = get_print_server()
+        if server:
+            unc = print_server_unc(server)
+            self.refresh_btn.setToolTip(self.tr(f"Atualizar impressoras de {unc}"))
+            return
+        self.refresh_btn.setToolTip(
+            self.tr("Configure o servidor de impressão em Configurações")
+        )
+
+    def _update_refresh_enabled(self) -> None:
+        if not self._ui_alive():
+            return
+        if self._inner_tabs.currentIndex() == _TAB_INSTALLED:
+            busy = self._installed_worker_running()
+        else:
+            busy = self._list_worker is not None and self._list_worker.isRunning()
+        self.refresh_btn.setEnabled(not busy)
+
+    def _set_installed_listing(self, loading: bool) -> None:
+        self._installed_spinner.setVisible(loading)
+        self._installed_spin_wrap.setVisible(loading)
+        if loading:
+            self.installed_count_lbl.setText(self.tr("Consultando…"))
+        self._update_refresh_enabled()
+
+    def _set_installed_status(self, message: str) -> None:
+        self.installed_status_lbl.setText((message or "").strip())
+
+    def _update_installed_facts(self, session: Optional[RemoteSession] = None) -> None:
+        if not self._ui_alive():
+            return
+        host = self._get_host()
+        used = session if session is not None else self._selected_session()
+        user = session_account(used) if used is not None else ""
+        session_id = used.session_id if used is not None else None
+        self.installed_host_lbl.setText(self.tr(f"Host: {host or _EMPTY_FACT}"))
+        self.installed_user_lbl.setText(self.tr(f"Usuário: {user or _EMPTY_FACT}"))
+        self.installed_session_lbl.setText(
+            self.tr(f"Sessão: {session_id if session_id is not None else _EMPTY_FACT}")
+        )
+
+    def _invalidate_installed(self, message: str = "") -> None:
+        self._installed_generation += 1
+        self._installed_query_key = ""
+        worker = self._installed_worker
+        if worker is not None:
+            try:
+                worker.abort()
+            except Exception:
+                pass
+        self._installed_printers = []
+        self._apply_installed_filter()
+        self._set_installed_listing(False)
+        self._update_installed_facts(None)
+        self._set_installed_status(message)
+
+    def _maybe_refresh_installed(self, *, force: bool = False) -> None:
+        if not self._ui_alive():
+            return
+        status, session = installed_query_readiness(
+            host=self._get_host(),
+            online=self._is_online(),
+            sessions=self._sessions,
+            selected_session=self._selected_session(),
+            sessions_loading=self._sessions_loading,
+        )
+        self._update_installed_facts(session)
+        if session is None:
+            self._installed_query_key = ""
+            if self._installed_worker_running():
+                self._invalidate_installed(status)
+            else:
+                self._installed_printers = []
+                self._apply_installed_filter()
+                self._set_installed_listing(False)
+                self._set_installed_status(status)
+                if status and status != MSG_IDENTIFYING and force:
+                    self._log(status)
+            return
+        key = (
+            f"{self._get_host().casefold()}|{session.session_id}|"
+            f"{session_account(session).casefold()}"
+        )
+        if not force and key == self._installed_query_key and self._installed_printers:
+            self._set_installed_status("")
+            return
+        if not force and self._installed_worker_running() and key == self._installed_query_key:
+            return
+        self.refresh_installed_printers(force=True, session=session)
+
+    def refresh_installed_printers(
+        self,
+        force: bool = False,
+        session: Optional[RemoteSession] = None,
+    ) -> None:
+        if not self._ui_alive():
+            return
+        status, chosen = installed_query_readiness(
+            host=self._get_host(),
+            online=self._is_online(),
+            sessions=self._sessions,
+            selected_session=session or self._selected_session(),
+            sessions_loading=self._sessions_loading,
+        )
+        self._update_installed_facts(chosen)
+        if chosen is None:
+            if self._installed_worker_running():
+                self._invalidate_installed(status)
+            else:
+                self._installed_printers = []
+                self._apply_installed_filter()
+                self._set_installed_listing(False)
+                self._set_installed_status(status)
+                if status:
+                    self._log(status)
+            return
+        if self._installed_worker_running() and not force:
+            return
+        if self._installed_worker_running():
+            try:
+                self._installed_worker.abort()
+            except Exception:
+                pass
+        self._installed_generation += 1
+        generation = self._installed_generation
+        host = self._get_host()
+        account = session_account(chosen)
+        self._installed_query_key = (
+            f"{host.casefold()}|{chosen.session_id}|{account.casefold()}"
+        )
+        self._set_installed_status("")
+        self._set_installed_listing(True)
+        self._log(
+            f"Consultando impressoras instaladas em {host} "
+            f"({account or '—'}, sessão {chosen.session_id})..."
+        )
+        user, password = self._creds()
+        creds = CredentialContext(user=user, password=password)
+        worker = _InstalledPrintersWorker(
+            host,
+            username=chosen.username,
+            domain=chosen.domain,
+            session_id=chosen.session_id,
+            session_name=chosen.name,
+            creds=creds,
+            generation=generation,
+            parent=self,
+        )
+        self._installed_worker = worker
+        worker.finished_payload.connect(self._on_installed_payload)
+        worker.finished.connect(self._on_installed_worker_finished)
+        worker.start()
+
+    def _on_installed_worker_finished(self) -> None:
+        if not self._ui_alive():
+            return
+        self._set_installed_listing(False)
+
+    def _on_installed_payload(self, payload: object) -> None:
+        if not self._ui_alive():
+            return
+        if not isinstance(payload, InstalledPrintersPayload):
+            return
+        if not result_belongs_to_current(
+            result_host=payload.host,
+            current_host=self._get_host(),
+            result_generation=payload.generation,
+            current_generation=self._installed_generation,
+        ):
+            return
+        self._installed_printers = list(payload.printers or [])
+        self._apply_installed_filter()
+        self._update_installed_facts(self._selected_session())
+        if payload.username:
+            self.installed_user_lbl.setText(self.tr(f"Usuário: {payload.username}"))
+        if payload.session_id is not None:
+            self.installed_session_lbl.setText(
+                self.tr(f"Sessão: {payload.session_id}")
+            )
+        warnings = [w for w in (payload.warnings or []) if str(w).strip()]
+        if not payload.ok:
+            err = (payload.error or "").strip() or self.tr(
+                "Falha na consulta de impressoras instaladas."
+            )
+            self.installed_count_lbl.setText(self.tr("Falha na consulta"))
+            self._set_installed_status(err)
+            self._log(err)
+            for warning in warnings:
+                if warning != err:
+                    self._log(warning)
+            return
+        if payload.partial:
+            note = warnings[0] if warnings else self.tr("Consulta parcial.")
+            self._set_installed_status(note)
+            for warning in warnings:
+                self._log(warning)
+            self._log(
+                f"{len(self._installed_printers)} impressoras instaladas "
+                f"(resultado parcial) em {payload.host}."
+            )
+            return
+        self._set_installed_status("")
+        self._log(
+            f"{len(self._installed_printers)} impressoras instaladas em {payload.host}."
+        )
+
+    def _apply_installed_filter(self) -> None:
+        if not self._ui_alive():
+            return
+        query = self.installed_filter_edit.text()
+        shown = [p for p in self._installed_printers if printer_matches_query(p, query)]
+        self._populate_installed_table(shown)
+        self.installed_count_lbl.setText(
+            self.tr(f"{len(shown)} de {len(self._installed_printers)}")
+        )
+
+    def _populate_installed_table(self, printers: List[NetworkPrinter]) -> None:
+        with pause_table_sorting(self.installed_table):
+            self.installed_table.setRowCount(len(printers))
+            for row, printer in enumerate(printers):
+                values = [
+                    display_or_dash(printer.name),
+                    display_or_dash(printer.driver_name),
+                    display_or_dash(printer.port_name),
+                    display_or_dash(printer.printer_type),
+                    display_or_dash(printer.location),
+                    self.tr("Sim") if printer.is_default else _EMPTY_FACT,
+                ]
+                for col, text in enumerate(values):
+                    item = QTableWidgetItem(text)
+                    if col == 0:
+                        item.setData(Qt.ItemDataRole.UserRole, printer)
+                    self.installed_table.setItem(row, col, item)
 
     def _on_list_worker_finished(self) -> None:
         if not self._ui_alive():
@@ -805,10 +1261,12 @@ class PrintersTab(QWidget):
 
     def _on_session_changed(self, *_args) -> None:
         self._update_install_panel()
+        self._maybe_refresh_installed(force=False)
 
     def _invalidate_sessions(self) -> None:
         self._sessions_host = ""
         self._sessions = []
+        self._sessions_loading = False
         self._fill_session_widgets()
 
     def refresh_sessions(self) -> None:
@@ -817,12 +1275,18 @@ class PrintersTab(QWidget):
         host = self._get_host()
         if not host or not is_valid_host(host) or not self._is_online():
             self._invalidate_sessions()
+            self._invalidate_installed(
+                MSG_OFFLINE if host else MSG_INVALID_HOST
+            )
             self._refresh_actions()
             return
         if self._session_worker is not None and self._session_worker.isRunning():
             return
         user, password = self._creds()
         self.refresh_sessions_btn.setEnabled(False)
+        self._sessions_loading = True
+        if self._inner_tabs.currentIndex() == _TAB_INSTALLED:
+            self._set_installed_status(MSG_IDENTIFYING)
         self._session_worker = _SessionListWorker(
             host, user=user, password=password, parent=self
         )
@@ -833,6 +1297,7 @@ class PrintersTab(QWidget):
     def _on_session_worker_finished(self) -> None:
         if not self._ui_alive():
             return
+        self._sessions_loading = False
         self.refresh_sessions_btn.setEnabled(True)
 
     def _on_sessions_result(self, host: str, sessions, error: str) -> None:
@@ -841,6 +1306,7 @@ class PrintersTab(QWidget):
         current = self._get_host()
         if host.casefold() != current.casefold():
             return
+        self._sessions_loading = False
         valid: List[RemoteSession] = []
         if isinstance(sessions, list):
             valid = [s for s in sessions if isinstance(s, RemoteSession)]
@@ -849,14 +1315,20 @@ class PrintersTab(QWidget):
         self._fill_session_widgets()
         if error and not valid:
             self._log(error)
-        elif valid:
+            self._invalidate_installed(error)
+            self._refresh_actions()
+            return
+        if valid:
             active = active_sessions(valid)
             if len(active) == 1:
                 session = active[0]
-                user = qualify_interactive_user(session.username, self._domain_hint())
+                user = session_account(session) or qualify_interactive_user(
+                    session.username, self._domain_hint()
+                )
                 self._log(
                     f"Usuário ativo: {user} — sessão {session.session_id}."
                 )
+        self._maybe_refresh_installed(force=True)
         self._refresh_actions()
 
     def _fill_session_widgets(self) -> None:
@@ -1058,8 +1530,7 @@ class PrintersTab(QWidget):
         )
         self.session_combo.setEnabled(not busy)
         self.refresh_sessions_btn.setEnabled(not busy)
-        if busy:
-            self.refresh_btn.setEnabled(False)
+        self._update_refresh_enabled()
 
     def _on_install_clicked(self) -> None:
         if self._installing:
@@ -1132,6 +1603,7 @@ class PrintersTab(QWidget):
                 self._log("Operação cancelada.")
             elif result.ok:
                 self._log(result.message or "Instalação concluída.")
+                self.refresh_installed_printers(force=True)
             else:
                 self._log(result.message or "Falha na instalação.")
 
@@ -1142,7 +1614,7 @@ class PrintersTab(QWidget):
         self._install_host = ""
         self._install_worker = None
         self._refresh_actions()
-        self.refresh_btn.setEnabled(True)
+        self._update_refresh_enabled()
 
     def _cancel_install(self) -> None:
         worker = self._install_worker
