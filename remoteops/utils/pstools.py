@@ -82,6 +82,9 @@ def probe_pstools(pstools_dir: Optional[str] = None) -> Dict[str, object]:
     tools: List[Tuple[str, Sequence[str]]] = [
         ("PsExec", ("PsExec64.exe", "PsExec.exe")),
         ("PsInfo", ("PsInfo64.exe", "PsInfo.exe")),
+        ("PsList", ("PsList64.exe", "PsList.exe")),
+        ("PsKill", ("PsKill64.exe", "PsKill.exe")),
+        ("PsSuspend", ("PsSuspend64.exe", "PsSuspend.exe")),
     ]
     items = []
     found_count = 0
@@ -106,13 +109,16 @@ def probe_pstools(pstools_dir: Optional[str] = None) -> Dict[str, object]:
             }
         )
     dir_ok = os.path.isdir(base)
+    psexec_ok = bool(items and items[0].get("found"))
+    psinfo_ok = bool(len(items) > 1 and items[1].get("found"))
     return {
         "dir": base,
         "dir_ok": dir_ok,
         "tools": items,
         "ok_count": found_count,
         "total": len(items),
-        "healthy": dir_ok and found_count >= 2,  # PsExec + PsInfo
+        # Saudável enquanto PsExec e PsInfo existirem; demais ferramentas são opcionais.
+        "healthy": dir_ok and psexec_ok and psinfo_ok,
     }
 
 

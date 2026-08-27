@@ -199,6 +199,7 @@ class PsExecTab(QWidget):
     openHostAppsRequested = pyqtSignal()
     openWinGetRequested = pyqtSignal()
     openPsInfoRequested = pyqtSignal()
+    openProcessosRequested = pyqtSignal()
     openRustDeskRequested = pyqtSignal()
     openMessageRequested = pyqtSignal()
     openPrintersRequested = pyqtSignal()
@@ -260,6 +261,12 @@ class PsExecTab(QWidget):
         )
         self.psinfo_button.clicked.connect(self.openPsInfoRequested.emit)
         card1.add_header_button(self.psinfo_button)
+
+        self.processos_button = card1.make_header_button(
+            "\uE9D9", self.tr("Processos remotos (PsList)")
+        )
+        self.processos_button.clicked.connect(self.openProcessosRequested.emit)
+        card1.add_header_button(self.processos_button)
 
         self.rustdesk_button = card1.make_header_button(
             "\uE774", self.tr("Conectar via RustDesk")
@@ -973,6 +980,7 @@ class PsExecTab(QWidget):
             self.hostapps_button,
             self.winget_button,
             self.psinfo_button,
+            self.processos_button,
             self.rustdesk_button,
             self.message_button,
             self.printers_button,
@@ -981,6 +989,24 @@ class PsExecTab(QWidget):
     def _update_host_action_buttons(self, online: bool) -> None:
         for btn in self._host_action_buttons():
             btn.setEnabled(online)
+        self.refresh_processos_button_state(online=online)
+
+    def refresh_processos_button_state(self, online: bool | None = None) -> None:
+        """Habilita Processos só com host Online e PsList disponível."""
+        from remoteops.utils.processos import pslist_available
+
+        is_online = self._host_online if online is None else bool(online)
+        has_pslist = pslist_available()
+        enabled = is_online and has_pslist
+        self.processos_button.setEnabled(enabled)
+        if is_online and not has_pslist:
+            self.processos_button.setToolTip(
+                self.tr("PsList não encontrado na pasta PSTools configurada.")
+            )
+        else:
+            self.processos_button.setToolTip(
+                self.tr("Processos remotos (PsList)")
+            )
 
     def _set_host_status(self, state: str, text: str | None = None) -> None:
         color = _STATUS_COLORS.get(state, _STATUS_COLORS["idle"])

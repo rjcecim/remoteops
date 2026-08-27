@@ -176,7 +176,7 @@ class SettingsTab(QWidget):
         idx_ps = tabs.addTab(_wrap_page(self._pstools_card), self.tr("PSTools"))
         inner_bar.set_tab_meta(idx_ps, "\uE8B7")
         tabs.setTabToolTip(
-            idx_ps, self.tr("Pasta do PsExec, PsInfo e demais utilitários")
+            idx_ps, self.tr("Pasta do PsExec, PsInfo, PsList e demais utilitários")
         )
 
         self._rustdesk_card = self._build_rustdesk_card()
@@ -217,7 +217,7 @@ class SettingsTab(QWidget):
         self.pstools_edit.setReadOnly(True)
         self.pstools_edit.setText(get_pstools_dir())
         self.pstools_edit.setToolTip(
-            self.tr("Pasta onde estão PsExec, PsInfo e utilitários")
+            self.tr("Pasta onde estão PsExec, PsInfo, PsList e utilitários")
         )
         self.pstools_browse_btn = make_icon_button(
             "\uED25", self.tr("Alterar pasta PSTools")
@@ -239,7 +239,7 @@ class SettingsTab(QWidget):
         status_wrap = QWidget()
         status_wrap.setMinimumWidth(0)
         status_flow = FlowLayout(status_wrap, margin=0, h_spacing=16, v_spacing=4)
-        for _ in range(2):
+        for _ in range(5):
             chip = QHBoxLayout()
             chip.setSpacing(6)
             chip.setContentsMargins(0, 0, 0, 0)
