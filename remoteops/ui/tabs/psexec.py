@@ -200,6 +200,7 @@ class PsExecTab(QWidget):
     openWinGetRequested = pyqtSignal()
     openPsInfoRequested = pyqtSignal()
     openProcessosRequested = pyqtSignal()
+    openServicosRequested = pyqtSignal()
     openRustDeskRequested = pyqtSignal()
     openMessageRequested = pyqtSignal()
     openPrintersRequested = pyqtSignal()
@@ -267,6 +268,12 @@ class PsExecTab(QWidget):
         )
         self.processos_button.clicked.connect(self.openProcessosRequested.emit)
         card1.add_header_button(self.processos_button)
+
+        self.servicos_button = card1.make_header_button(
+            "\uE90F", self.tr("Serviços remotos (PsService)")
+        )
+        self.servicos_button.clicked.connect(self.openServicosRequested.emit)
+        card1.add_header_button(self.servicos_button)
 
         self.rustdesk_button = card1.make_header_button(
             "\uE774", self.tr("Conectar via RustDesk")
@@ -981,6 +988,7 @@ class PsExecTab(QWidget):
             self.winget_button,
             self.psinfo_button,
             self.processos_button,
+            self.servicos_button,
             self.rustdesk_button,
             self.message_button,
             self.printers_button,
@@ -990,6 +998,7 @@ class PsExecTab(QWidget):
         for btn in self._host_action_buttons():
             btn.setEnabled(online)
         self.refresh_processos_button_state(online=online)
+        self.refresh_servicos_button_state(online=online)
 
     def refresh_processos_button_state(self, online: bool | None = None) -> None:
         """Habilita Processos só com host Online e PsList disponível."""
@@ -1006,6 +1015,23 @@ class PsExecTab(QWidget):
         else:
             self.processos_button.setToolTip(
                 self.tr("Processos remotos (PsList)")
+            )
+
+    def refresh_servicos_button_state(self, online: bool | None = None) -> None:
+        """Habilita Serviços só com host Online e PsService disponível."""
+        from remoteops.utils.servicos import psservice_available
+
+        is_online = self._host_online if online is None else bool(online)
+        has_tool = psservice_available()
+        enabled = is_online and has_tool
+        self.servicos_button.setEnabled(enabled)
+        if is_online and not has_tool:
+            self.servicos_button.setToolTip(
+                self.tr("PsService não encontrado na pasta PSTools configurada.")
+            )
+        else:
+            self.servicos_button.setToolTip(
+                self.tr("Serviços remotos (PsService)")
             )
 
     def _set_host_status(self, state: str, text: str | None = None) -> None:

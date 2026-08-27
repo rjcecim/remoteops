@@ -33,6 +33,7 @@ from remoteops.ui.tabs.processos import ProcessosTab
 from remoteops.ui.tabs.psexec import PsExecTab
 from remoteops.ui.tabs.psinfo import PsInfoTab
 from remoteops.ui.tabs.robocopy import RobocopyTab
+from remoteops.ui.tabs.servicos import ServicosTab
 from remoteops.ui.tabs.settings import SettingsTab
 from remoteops.ui.tabs.winget import WinGetTab
 from remoteops.ui.widgets.content_tab_widget import ContentSizedTabWidget
@@ -98,6 +99,7 @@ class MainWindow(QMainWindow):
         self.message_tab = None
         self.printers_tab = None
         self.processos_tab = None
+        self.servicos_tab = None
         self.appsearch_tab = None
         self.settings_tab = None
         self.msi_tab = MsiTab()
@@ -168,6 +170,7 @@ class MainWindow(QMainWindow):
         self.psexec_tab.openWinGetRequested.connect(self.open_winget_tab)
         self.psexec_tab.openPsInfoRequested.connect(self.open_psinfo_tab)
         self.psexec_tab.openProcessosRequested.connect(self.open_processos_tab)
+        self.psexec_tab.openServicosRequested.connect(self.open_servicos_tab)
         self.psexec_tab.openRustDeskRequested.connect(self.on_rustdesk_clicked)
         self.psexec_tab.openMessageRequested.connect(self.open_message_tab)
         self.psexec_tab.openPrintersRequested.connect(self.open_printers_tab)
@@ -672,6 +675,46 @@ class MainWindow(QMainWindow):
         self.processos_tab.refresh_processes()
         self._update_psinfo_mode_ui()
 
+    def open_servicos_tab(self) -> None:
+        """Abre a aba Serviços sob demanda (PsService)."""
+        host = self.psexec_tab.host_edit.text().strip()
+        if not host:
+            self.log_output.append_log(
+                self.tr("[SERVIÇOS] Preencha o Host remoto antes de abrir Serviços.")
+            )
+            return
+
+        self._remember_window_size()
+
+        if self.servicos_tab is not None:
+            idx = self.tabs.indexOf(self.servicos_tab)
+            if idx != -1:
+                self.tabs.setCurrentIndex(idx)
+                self.servicos_tab.sync_from_host()
+                self._update_psinfo_mode_ui()
+                return
+
+        self.servicos_tab = ServicosTab(
+            host_source=self.psexec_tab.host_edit,
+            creds_provider=lambda: (
+                self.psexec_tab.auth_username(),
+                self.psexec_tab.pass_edit.text() or "",
+            ),
+            online_provider=lambda: bool(self.psexec_tab.is_host_online),
+        )
+        self.psexec_tab.hostOnlineChanged.connect(self.servicos_tab.set_host_online)
+        self.tabs.addTab(self.servicos_tab, self.tr("Serviços"))
+        idx = self.tabs.indexOf(self.servicos_tab)
+        bar = self.tabs.tabBar()
+        if isinstance(bar, Mdl2TabBar):
+            bar.set_tab_meta(idx, "\uE90F", closable=True)
+        else:
+            bar.setTabData(idx, "\uE90F")
+        self._refresh_tab_bar_layout()
+        self.tabs.setCurrentIndex(idx)
+        self.servicos_tab.refresh_services()
+        self._update_psinfo_mode_ui()
+
     def open_appsearch_tab(self) -> None:
         """Cria a aba Pesquisa de Aplicativos sob demanda e foca nela."""
         self._remember_window_size()
@@ -775,6 +818,7 @@ class MainWindow(QMainWindow):
         self._close_message_tab()
         self._close_printers_tab()
         self._close_processos_tab()
+        self._close_servicos_tab()
         self._close_appsearch_tab()
         self._close_settings_tab()
 
@@ -830,6 +874,8 @@ class MainWindow(QMainWindow):
             self._close_printers_tab()
         elif widget is self.processos_tab:
             self._close_processos_tab()
+        elif widget is self.servicos_tab:
+            self._close_servicos_tab()
         elif widget is self.appsearch_tab:
             self._close_appsearch_tab()
         elif widget is self.settings_tab:
@@ -925,6 +971,28 @@ class MainWindow(QMainWindow):
             pass
         self.processos_tab.deleteLater()
         self.processos_tab = None
+        self._update_psinfo_mode_ui()
+        self._last_tab_widget = self.tabs.currentWidget()
+        self._refresh_tab_bar_layout()
+
+    def _close_servicos_tab(self) -> None:
+        if self.servicos_tab is None:
+            return
+        idx = self.tabs.indexOf(self.servicos_tab)
+        if idx != -1:
+            self.tabs.removeTab(idx)
+        try:
+            self.psexec_tab.hostOnlineChanged.disconnect(
+                self.servicos_tab.set_host_online
+            )
+        except TypeError:
+            pass
+        try:
+            self.servicos_tab.shutdown()
+        except Exception:
+            pass
+        self.servicos_tab.deleteLater()
+        self.servicos_tab = None
         self._update_psinfo_mode_ui()
         self._last_tab_widget = self.tabs.currentWidget()
         self._refresh_tab_bar_layout()
@@ -1028,8 +1096,11 @@ class MainWindow(QMainWindow):
     def _on_pstools_path_changed(self, _path: str) -> None:
         self.update_command()
         self.psexec_tab.refresh_processos_button_state()
+        self.psexec_tab.refresh_servicos_button_state()
         if self.processos_tab is not None:
             self.processos_tab.refresh_tool_capabilities()
+        if self.servicos_tab is not None:
+            self.servicos_tab.refresh_tool_capabilities()
 
     def _on_tab_changed(self, _index: int) -> None:
         # PsInfo: fecha ao sair da aba.
