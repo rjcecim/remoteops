@@ -55,7 +55,7 @@ from remoteops.ui.widgets.card import (
 from remoteops.ui.widgets.combobox import FluentComboBox
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.mdl2_tab_bar import Mdl2TabBar
-from remoteops.ui.widgets.spinner import DotsSpinner
+from remoteops.ui.widgets.spinner import LoadingEllipsisLabel
 from remoteops.ui.widgets.status_dot import STATUS_COLORS, StatusDot
 from remoteops.ui.widgets.table import configure_standard_table, pause_table_sorting
 from remoteops.utils.installed_printers import (
@@ -541,15 +541,15 @@ class PrintersTab(QWidget):
         self.filter_edit.textChanged.connect(self._apply_filter)
         available_lay.addWidget(self.filter_edit, 0)
 
-        self._spinner = DotsSpinner()
-        self._spinner.setVisible(False)
-        spin_row = QHBoxLayout()
-        spin_row.setContentsMargins(0, 2, 0, 2)
-        spin_row.addStretch()
-        spin_row.addWidget(self._spinner)
-        spin_row.addStretch()
+        self._loading_lbl = LoadingEllipsisLabel(base_text=self.tr("Carregando"))
+        self._loading_lbl.setVisible(False)
+        load_row = QHBoxLayout()
+        load_row.setContentsMargins(0, 6, 0, 6)
+        load_row.addStretch()
+        load_row.addWidget(self._loading_lbl)
+        load_row.addStretch()
         self._spin_wrap = QWidget()
-        self._spin_wrap.setLayout(spin_row)
+        self._spin_wrap.setLayout(load_row)
         self._spin_wrap.setVisible(False)
         available_lay.addWidget(self._spin_wrap, 0)
 
@@ -619,15 +619,17 @@ class PrintersTab(QWidget):
         inst_top_wrap.setLayout(inst_top)
         installed_lay.addWidget(inst_top_wrap, 0)
 
-        self._installed_spinner = DotsSpinner()
-        self._installed_spinner.setVisible(False)
-        inst_spin_row = QHBoxLayout()
-        inst_spin_row.setContentsMargins(0, 2, 0, 2)
-        inst_spin_row.addStretch()
-        inst_spin_row.addWidget(self._installed_spinner)
-        inst_spin_row.addStretch()
+        self._installed_loading_lbl = LoadingEllipsisLabel(
+            base_text=self.tr("Carregando")
+        )
+        self._installed_loading_lbl.setVisible(False)
+        inst_load_row = QHBoxLayout()
+        inst_load_row.setContentsMargins(0, 6, 0, 6)
+        inst_load_row.addStretch()
+        inst_load_row.addWidget(self._installed_loading_lbl)
+        inst_load_row.addStretch()
         self._installed_spin_wrap = QWidget()
-        self._installed_spin_wrap.setLayout(inst_spin_row)
+        self._installed_spin_wrap.setLayout(inst_load_row)
         self._installed_spin_wrap.setVisible(False)
         installed_lay.addWidget(self._installed_spin_wrap, 0)
 
@@ -890,10 +892,13 @@ class PrintersTab(QWidget):
         self._list_worker.start()
 
     def _set_listing(self, loading: bool) -> None:
-        self._spinner.setVisible(loading)
+        self._loading_lbl.setVisible(loading)
         self._spin_wrap.setVisible(loading)
         if loading:
-            self.count_lbl.setText(self.tr("Consultando…"))
+            self._loading_lbl.start()
+            self.count_lbl.setText("")
+        else:
+            self._loading_lbl.stop()
         self._update_refresh_enabled()
 
     def _on_catalog_refresh_clicked(self) -> None:
@@ -948,10 +953,13 @@ class PrintersTab(QWidget):
         self.refresh_btn.setEnabled(not busy)
 
     def _set_installed_listing(self, loading: bool) -> None:
-        self._installed_spinner.setVisible(loading)
+        self._installed_loading_lbl.setVisible(loading)
         self._installed_spin_wrap.setVisible(loading)
         if loading:
-            self.installed_count_lbl.setText(self.tr("Consultando…"))
+            self._installed_loading_lbl.start()
+            self.installed_count_lbl.setText("")
+        else:
+            self._installed_loading_lbl.stop()
         self._update_refresh_enabled()
 
     def _set_installed_status(self, message: str) -> None:

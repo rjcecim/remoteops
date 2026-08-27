@@ -2,7 +2,65 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QLabel, QWidget
+
+from remoteops.ui.style import COLOR_TEXT_SECONDARY, SIZE_UI_SMALL
+
+
+class LoadingEllipsisLabel(QLabel):
+    """Texto ``Carregando`` com reticências animadas (``.``, ``..``, ``...``)."""
+
+    def __init__(
+        self,
+        parent=None,
+        *,
+        base_text: str = "Carregando",
+        interval_ms: int = 420,
+    ):
+        super().__init__(parent)
+        self._base = (base_text or "Carregando").rstrip(".")
+        self._phase = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(max(200, int(interval_ms)))
+        self._timer.timeout.connect(self._tick)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet(
+            f"color: {COLOR_TEXT_SECONDARY}; font-size: {SIZE_UI_SMALL}pt;"
+            " background: transparent; border: none;"
+        )
+        self._apply_text()
+
+    def set_base_text(self, text: str) -> None:
+        self._base = (text or "Carregando").rstrip(".")
+        self._apply_text()
+
+    def start(self) -> None:
+        self._phase = 0
+        self._apply_text()
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def stop(self) -> None:
+        if self._timer.isActive():
+            self._timer.stop()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.start()
+
+    def hideEvent(self, event) -> None:
+        self.stop()
+        super().hideEvent(event)
+
+    def _tick(self) -> None:
+        self._phase = (self._phase + 1) % 4
+        self._apply_text()
+
+    def _apply_text(self) -> None:
+        # 0 → sem pontos; 1–3 → ".", "..", "..."
+        dots = "." * self._phase
+        # Largura estável evita “pulo” do layout ao animar.
+        self.setText(f"{self._base}{dots:<3}")
 
 
 class DotsSpinner(QWidget):
