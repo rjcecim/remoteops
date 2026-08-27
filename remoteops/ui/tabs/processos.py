@@ -9,7 +9,6 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 from PyQt6 import sip
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QAbstractItemView,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -20,7 +19,6 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
-    QPushButton,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -39,7 +37,11 @@ from remoteops.ui.widgets.combobox import FluentComboBox
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.mdl2_tab_bar import Mdl2TabBar
 from remoteops.ui.widgets.spinner import DotsSpinner
-from remoteops.ui.widgets.table import enable_header_sorting, pause_table_sorting
+from remoteops.ui.widgets.table import (
+    SortableTableItem,
+    configure_standard_table,
+    pause_table_sorting,
+)
 from remoteops.utils.processos import (
     DETAIL_FIELD_ORDER,
     MEMORY_FIELD_LABELS,
@@ -73,24 +75,6 @@ from remoteops.utils.processos import (
 )
 from remoteops.utils.pstools import get_pstools_dir
 from remoteops.utils.redaction import redact_command_text
-
-
-class _SortItem(QTableWidgetItem):
-    """Ordena por UserRole numérico/texto quando disponível."""
-
-    def __lt__(self, other: QTableWidgetItem) -> bool:  # type: ignore[override]
-        a = self.data(Qt.ItemDataRole.UserRole)
-        b = other.data(Qt.ItemDataRole.UserRole) if other is not None else None
-        if a is None and b is None:
-            return super().__lt__(other)
-        if a is None:
-            return True
-        if b is None:
-            return False
-        try:
-            return a < b
-        except TypeError:
-            return str(a) < str(b)
 
 
 class _ListWorker(QThread):
@@ -468,20 +452,6 @@ class _DetailWorker(QThread):
             self.password = ""
 
 
-def _style_table(table: QTableWidget) -> None:
-    table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-    table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-    table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-    table.setAlternatingRowColors(True)
-    table.verticalHeader().setVisible(False)
-    table.setShowGrid(False)
-    table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-    table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-    table.setStyleSheet(
-        table_frame_qss() + "QTableWidget::item { padding: 4px 6px; }"
-    )
-
-
 def _style_tree(tree: QTreeWidget) -> None:
     tree.setEditTriggers(QTreeWidget.EditTrigger.NoEditTriggers)
     tree.setSelectionBehavior(QTreeWidget.SelectionBehavior.SelectRows)
@@ -616,8 +586,7 @@ def _show_threads_dialog(
             parent.tr("Elapsed Time"),
         ]
     )
-    _style_table(table)
-    enable_header_sorting(table)
+    configure_standard_table(table, stretch_columns=(3,))
     table.setRowCount(len(rows))
     for i, row in enumerate(rows):
         cells = [
@@ -635,10 +604,9 @@ def _show_threads_dialog(
             (row.elapsed_time, row.elapsed_time),
         ]
         for col, (text, sort_val) in enumerate(cells):
-            item = _SortItem(text)
+            item = SortableTableItem(text)
             item.setData(Qt.ItemDataRole.UserRole, sort_val)
             table.setItem(i, col, item)
-    table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
     dlg.set_body(table)
     dlg.resize(720, 420)
     dlg.exec()
@@ -673,6 +641,13 @@ class ProcessosTab(QWidget):
         self._loading = False
         self._closing = False
         self._selected_pid: Optional[int] = None
+        self._can_details = False
+        self._can_memory = False
+        self._can_threads = False
+        self._can_kill = False
+        self._can_kill_tree = False
+        self._can_suspend = False
+        self._can_resume = False
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         root = make_card_stack(self)
@@ -720,39 +695,6 @@ class ProcessosTab(QWidget):
         top_wrap.setLayout(top)
         self.proc_card.content_layout.addWidget(top_wrap, 0)
 
-        actions = QHBoxLayout()
-        actions.setContentsMargins(0, 0, 0, 0)
-        actions.setSpacing(6)
-        self.btn_details = QPushButton(self.tr("Detalhes"))
-        self.btn_memory = QPushButton(self.tr("Ver memória"))
-        self.btn_threads = QPushButton(self.tr("Ver threads"))
-        self.btn_kill = QPushButton(self.tr("Encerrar processo"))
-        self.btn_kill_tree = QPushButton(self.tr("Encerrar processo e filhos"))
-        self.btn_suspend = QPushButton(self.tr("Suspender"))
-        self.btn_resume = QPushButton(self.tr("Retomar"))
-        for btn in (
-            self.btn_details,
-            self.btn_memory,
-            self.btn_threads,
-            self.btn_kill,
-            self.btn_kill_tree,
-            self.btn_suspend,
-            self.btn_resume,
-        ):
-            actions.addWidget(btn)
-        actions.addStretch()
-        actions_wrap = QWidget()
-        actions_wrap.setLayout(actions)
-        self.proc_card.content_layout.addWidget(actions_wrap, 0)
-
-        self.btn_details.clicked.connect(lambda: self._request_detail("details"))
-        self.btn_memory.clicked.connect(lambda: self._request_detail("memory"))
-        self.btn_threads.clicked.connect(lambda: self._request_detail("threads"))
-        self.btn_kill.clicked.connect(lambda: self._confirm_kill(False))
-        self.btn_kill_tree.clicked.connect(lambda: self._confirm_kill(True))
-        self.btn_suspend.clicked.connect(lambda: self._run_action("suspend"))
-        self.btn_resume.clicked.connect(lambda: self._run_action("resume"))
-
         self._spinner = DotsSpinner()
         self._spinner.setVisible(False)
         spin_row = QHBoxLayout()
@@ -787,16 +729,7 @@ class ProcessosTab(QWidget):
                 self.tr("Handles"),
             ]
         )
-        _style_table(self.table)
-        self.table.horizontalHeader().setStretchLastSection(False)
-        self.table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch
-        )
-        for col in range(1, 7):
-            self.table.horizontalHeader().setSectionResizeMode(
-                col, QHeaderView.ResizeMode.ResizeToContents
-            )
-        enable_header_sorting(self.table)
+        configure_standard_table(self.table, stretch_columns=(0,))
         self.table.itemSelectionChanged.connect(self._on_table_selection)
         self.table.itemDoubleClicked.connect(
             lambda *_: self._request_detail("details")
@@ -989,7 +922,14 @@ class ProcessosTab(QWidget):
         user, password = self._creds()
         self._req_id += 1
         req = self._req_id
-        self._set_loading(True, host)
+        same_host = host.casefold() == (self._data_host or "").casefold()
+        show_spinner = not (same_host and self._rows)
+        if show_spinner:
+            self._set_loading(True, host)
+        else:
+            self._status_lbl.setText(
+                self.tr(f"Atualizando processos de {host}...")
+            )
         self._list_worker = _ListWorker(
             host,
             user=user,
@@ -1001,9 +941,10 @@ class ProcessosTab(QWidget):
         self._list_worker.finished_err.connect(self._on_list_err)
         self._list_worker.finished.connect(self._on_list_finished)
         self._list_worker.start()
-        self.log_output.append_log(
-            self.tr(f"[PROCESSOS] Consultando processos em {host} via PsList...")
-        )
+        if show_spinner:
+            self.log_output.append_log(
+                self.tr(f"[PROCESSOS] Consultando processos em {host} via PsList...")
+            )
 
     def _set_loading(self, loading: bool, host: str = "") -> None:
         self._loading = loading
@@ -1095,7 +1036,7 @@ class ProcessosTab(QWidget):
                     ),
                 ]
                 for col, (text, sort_val) in enumerate(values):
-                    item = _SortItem(text)
+                    item = SortableTableItem(text)
                     item.setData(Qt.ItemDataRole.UserRole, sort_val)
                     if col == 0:
                         item.setData(Qt.ItemDataRole.UserRole + 1, row.pid)
@@ -1242,40 +1183,15 @@ class ProcessosTab(QWidget):
             self._detail_worker is not None and self._detail_worker.isRunning()
         )
 
-        for btn in (self.btn_details, self.btn_memory, self.btn_threads):
-            btn.setEnabled(bool(has_sel and list_ok and not detail_busy and not busy))
-            if not list_ok:
-                btn.setToolTip(
-                    self.tr("PsList não encontrado na pasta PSTools configurada.")
-                )
-            else:
-                btn.setToolTip("")
-
-        for btn in (self.btn_kill, self.btn_kill_tree):
-            btn.setEnabled(bool(has_sel and kill_ok and not busy))
-            if not kill_ok:
-                btn.setToolTip(
-                    self.tr("PsKill não encontrado na pasta PSTools configurada.")
-                )
-            else:
-                btn.setToolTip("")
-
+        can_detail = bool(has_sel and list_ok and not detail_busy and not busy)
+        self._can_details = can_detail
+        self._can_memory = can_detail
+        self._can_threads = can_detail
+        self._can_kill = bool(has_sel and kill_ok and not busy)
+        self._can_kill_tree = self._can_kill
         suspended = has_sel and self._selected_pid in self._suspended_pids
-        self.btn_suspend.setEnabled(
-            bool(has_sel and sus_ok and not busy and not suspended)
-        )
-        self.btn_resume.setEnabled(
-            bool(has_sel and sus_ok and not busy and suspended)
-        )
-        if not sus_ok:
-            tip = self.tr(
-                "PsSuspend não encontrado na pasta PSTools configurada."
-            )
-            self.btn_suspend.setToolTip(tip)
-            self.btn_resume.setToolTip(tip)
-        else:
-            self.btn_suspend.setToolTip("")
-            self.btn_resume.setToolTip("")
+        self._can_suspend = bool(has_sel and sus_ok and not busy and not suspended)
+        self._can_resume = bool(has_sel and sus_ok and not busy and suspended)
 
         self.refresh_btn.setEnabled(not self._loading and list_ok)
 
@@ -1304,13 +1220,13 @@ class ProcessosTab(QWidget):
         act_sus = menu.addAction(self.tr("Suspender"))
         act_res = menu.addAction(self.tr("Retomar"))
 
-        act_details.setEnabled(self.btn_details.isEnabled())
-        act_mem.setEnabled(self.btn_memory.isEnabled())
-        act_thr.setEnabled(self.btn_threads.isEnabled())
-        act_kill.setEnabled(self.btn_kill.isEnabled())
-        act_kill_t.setEnabled(self.btn_kill_tree.isEnabled())
-        act_sus.setEnabled(self.btn_suspend.isEnabled())
-        act_res.setEnabled(self.btn_resume.isEnabled())
+        act_details.setEnabled(self._can_details)
+        act_mem.setEnabled(self._can_memory)
+        act_thr.setEnabled(self._can_threads)
+        act_kill.setEnabled(self._can_kill)
+        act_kill_t.setEnabled(self._can_kill_tree)
+        act_sus.setEnabled(self._can_suspend)
+        act_res.setEnabled(self._can_resume)
 
         chosen = menu.exec(global_pos)
         if chosen is act_details:

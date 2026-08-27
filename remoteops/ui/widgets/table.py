@@ -2,20 +2,41 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 
 from PyQt6.QtCore import QEvent, QObject, Qt
 from PyQt6.QtGui import QHelpEvent
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QHeaderView,
     QTableView,
     QTableWidget,
+    QTableWidgetItem,
     QWidget,
 )
 
+from remoteops.ui.style import flat_table_qss, standard_table_qss
 from remoteops.ui.widgets.tooltip import hide_fluent_tooltip, show_fluent_tooltip
+
+
+class SortableTableItem(QTableWidgetItem):
+    """Ordena por UserRole numérico/texto quando disponível."""
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:  # type: ignore[override]
+        a = self.data(Qt.ItemDataRole.UserRole)
+        b = other.data(Qt.ItemDataRole.UserRole) if other is not None else None
+        if a is None and b is None:
+            return super().__lt__(other)
+        if a is None:
+            return True
+        if b is None:
+            return False
+        try:
+            return a < b
+        except TypeError:
+            return str(a) < str(b)
 
 
 class _CopyCellOnDoubleClickFilter(QObject):
@@ -199,3 +220,60 @@ def pause_table_sorting(table: QTableWidget) -> Iterator[None]:
         yield
     finally:
         table.setSortingEnabled(enabled)
+
+
+def configure_standard_table(
+    table: QTableWidget,
+    *,
+    stretch_columns: Sequence[int] = (0,),
+    fixed_columns: Mapping[int, int] | None = None,
+    sort: bool = True,
+    skip_sort_columns: Sequence[int] = (),
+    flat: bool = False,
+    hide_horizontal_scrollbar: bool = True,
+    object_name: str | None = None,
+) -> None:
+    """Aplica o visual e o comportamento padrão de QTableWidget do RemoteOps.
+
+    Linhas intercaladas são obrigatórias no modo padrão. Use ``flat=True`` só
+    para listas com checkbox (ex. WinGet), onde stripe/seleção visual atrapalham.
+    """
+    if object_name:
+        table.setObjectName(object_name)
+
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    if not flat:
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    table.setAlternatingRowColors(not flat)
+    table.verticalHeader().setVisible(False)
+    table.setShowGrid(False)
+    table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    if hide_horizontal_scrollbar:
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+    header = table.horizontalHeader()
+    header.setStretchLastSection(False)
+    header.setMinimumSectionSize(40)
+    fixed = dict(fixed_columns or {})
+    stretch = {int(c) for c in stretch_columns}
+    cols = table.columnCount()
+    for col in range(cols):
+        if col in fixed:
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+            table.setColumnWidth(col, int(fixed[col]))
+        elif col in stretch:
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+        else:
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+
+    selector = f"QTableWidget#{object_name}" if object_name else "QTableWidget"
+    if flat:
+        table.setStyleSheet(flat_table_qss(selector))
+    else:
+        table.setStyleSheet(standard_table_qss(selector))
+
+    apply_table_cell_behavior(table)
+    if sort:
+        enable_header_sorting(table, skip_columns=skip_sort_columns)

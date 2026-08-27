@@ -29,6 +29,7 @@ from remoteops.utils.printers import (
     build_computer_connect_script,
     build_driver_prepare_script,
     build_driver_query_script,
+    build_list_host_installed_printers_script,
     build_user_task_orchestrator_script,
     build_user_wrapper_script,
     can_proceed_to_connect,
@@ -42,6 +43,7 @@ from remoteops.utils.printers import (
     local_list_printers_argv,
     new_operation_id,
     parse_json_payload,
+    parse_user_printers_payload,
     payload_ok,
     powershell_encoded_argv,
     print_server_host,
@@ -181,6 +183,47 @@ class PrinterService:
                 os.remove(catalog_path)
             except OSError:
                 pass
+
+    def list_host_user_printers(
+        self,
+        host: str,
+        *,
+        username: str,
+        creds: CredentialContext,
+        timeout_s: int = USER_TASK_TIMEOUT_S,
+        should_cancel: Optional[CancelFn] = None,
+    ) -> Tuple[List[NetworkPrinter], str]:
+        """Lista impressoras locais e conexões de rede do usuário no host remoto."""
+        user = (username or "").strip()
+        if not user:
+            return [], "Usuário não possui sessão interativa."
+        target = normalize_host(host)
+        if not target or not is_valid_host(target):
+            return [], "Host inválido."
+        script = build_list_host_installed_printers_script(username=user)
+        capture = self.run_remote_script(
+            target,
+            script,
+            creds,
+            timeout_s=max(30, int(timeout_s)),
+            should_cancel=should_cancel,
+            as_system=True,
+        )
+        if capture.cancelled:
+            return [], "Consulta cancelada."
+        if capture.timed_out:
+            return [], "Timeout consultando impressoras no host."
+        printers, err = parse_user_printers_payload(capture.stdout)
+        if err:
+            detail = err
+            if capture.stderr:
+                detail = f"{detail} ({capture.stderr.strip()[:180]})"
+            return [], detail
+        if capture.exit_code not in (0, None) and not printers:
+            return [], classify_printer_error(
+                f"{capture.stdout}\n{capture.stderr}", capture.exit_code
+            )
+        return printers, ""
 
     def check_driver(
         self,

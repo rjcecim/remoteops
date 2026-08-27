@@ -1,0 +1,32 @@
+---
+description: Padrão obrigatório para QTableWidget no RemoteOps (stripes, colunas, sort).
+globs: remoteops/ui/**/*.py
+alwaysApply: false
+---
+
+# QTableWidget padrão
+
+Ao criar ou configurar qualquer `QTableWidget` em `remoteops/ui/`:
+
+1. Use `configure_standard_table(...)` de `remoteops.ui.widgets.table`.
+2. Não copie setup ad hoc de borda, stripe, sort, header ou scrollbar horizontal.
+3. O padrão inclui **intercalação de cores por linha** (obrigatório).
+4. `flat=True` só para listas com checkbox estilo WinGet (única exceção sem stripes).
+5. Ordenação numérica/custom: `SortableTableItem` + `Qt.ItemDataRole.UserRole`.
+6. Durante preenchimento em massa: `pause_table_sorting(table)`.
+
+Exemplo:
+
+```python
+from remoteops.ui.widgets.table import configure_standard_table
+
+table = QTableWidget()
+table.setColumnCount(5)
+table.setHorizontalHeaderLabels([...])
+configure_standard_table(
+    table,
+    stretch_columns=(0,),
+    fixed_columns={4: 36},
+    skip_sort_columns=(4,),
+)
+```

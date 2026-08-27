@@ -39,10 +39,7 @@ from remoteops.ui.winget.parsers.winget_text import (
     parse_winget_upgrade,
 )
 from remoteops.ui.winget.preview import build_preview_text
-from remoteops.ui.winget.table_style import (
-    apply_flat_list_table_style,
-    apply_interactive_list_headers,
-)
+from remoteops.ui.winget.table_style import apply_flat_list_table_style
 from remoteops.ui.winget.workers.winget_worker import WinGetWorker
 from remoteops.utils.pstools import get_pstools_dir, resolve_pstools_tool
 from remoteops.winget.clixml import clixml_to_text, looks_like_clixml, summarize_one_line
@@ -384,15 +381,10 @@ class WinGetTab(QWidget):
 
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["", "Nome", "Id", "Instalado", "Disponível", "Fonte"])
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
-        apply_interactive_list_headers(self.table)
+        apply_flat_list_table_style(self.table, object_name="wingetTblUpgrades")
         self.table.setMinimumWidth(0)
         self.table.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
-        apply_flat_list_table_style(self.table, object_name="wingetTblUpgrades")
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
@@ -439,18 +431,13 @@ class WinGetTab(QWidget):
 
         self.search_table = QTableWidget(0, 5)
         self.search_table.setHorizontalHeaderLabels(["", "Nome", "Id", "Versão", "Fonte"])
-        self.search_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.search_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.search_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.search_table.verticalHeader().setVisible(False)
-        self.search_table.setShowGrid(False)
-        apply_interactive_list_headers(self.search_table)
+        apply_flat_list_table_style(self.search_table, object_name="wingetTblSearch")
         self.search_table.setMinimumWidth(0)
         self.search_table.setMinimumHeight(160)
         self.search_table.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
         )
-        apply_flat_list_table_style(self.search_table, object_name="wingetTblSearch")
 
         self.search_mark_all = QCheckBox("Marcar tudo")
         self.search_mark_all.toggled.connect(self._toggle_all_search)
@@ -501,18 +488,13 @@ class WinGetTab(QWidget):
 
         self.inst_table = QTableWidget(0, 6)
         self.inst_table.setHorizontalHeaderLabels(["", "Nome", "Id", "Versão", "Disponível", "Fonte"])
-        self.inst_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.inst_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.inst_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.inst_table.verticalHeader().setVisible(False)
-        self.inst_table.setShowGrid(False)
-        apply_interactive_list_headers(self.inst_table)
+        apply_flat_list_table_style(self.inst_table, object_name="wingetTblInstalled")
         self.inst_table.setMinimumWidth(0)
         self.inst_table.setMinimumHeight(180)
         self.inst_table.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
         )
-        apply_flat_list_table_style(self.inst_table, object_name="wingetTblInstalled")
 
         wrap = QVBoxLayout()
         wrap.setContentsMargins(0, 0, 0, 0)

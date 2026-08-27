@@ -24,15 +24,14 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QTableWidget,
     QTableWidgetItem,
-    QHeaderView,
-    QAbstractItemView,
 )
 
 from remoteops.core.console_codec import decode_best_effort
 from remoteops.core.win_cmd import run_captured
-from remoteops.ui.style import make_icon_button, multiline_edit_qss, table_frame_qss
+from remoteops.ui.style import make_icon_button, multiline_edit_qss
 from remoteops.ui.widgets.card import CardWidget
 from remoteops.ui.widgets.spinner import DotsSpinner
+from remoteops.ui.widgets.table import configure_standard_table
 from remoteops.utils.pstools import get_pstools_dir
 from remoteops.utils.psinfo import (
     PsInfoDiskRow,
@@ -539,18 +538,7 @@ class PsInfoTab(QWidget):
             [self.tr("Hotfix"), self.tr("Descrição"), self.tr("Instalado em")]
         )
         table.setRowCount(len(hotfixes))
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        table.setAlternatingRowColors(True)
-        table.verticalHeader().setVisible(False)
-        table.setShowGrid(False)
-        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        table.horizontalHeader().setStretchLastSection(False)
-        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        table.setStyleSheet(table_frame_qss())
+        configure_standard_table(table, stretch_columns=(1,))
         table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         table.setMinimumHeight(80)
 
@@ -704,21 +692,7 @@ class PsInfoTab(QWidget):
             ]
         )
         table.setRowCount(len(display_rows))
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        table.setAlternatingRowColors(True)
-        table.verticalHeader().setVisible(False)
-        table.horizontalHeader().setStretchLastSection(False)
-        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
-        table.setStyleSheet(table_frame_qss())
+        configure_standard_table(table, stretch_columns=(3,))
 
         bold = QFont(table.font())
         bold.setBold(True)

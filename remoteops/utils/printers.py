@@ -11,7 +11,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 from remoteops.core.win_cmd import argv_to_cmd_line
 from remoteops.utils.sessions import RemoteSession
@@ -45,6 +45,8 @@ class NetworkPrinter:
     location: str = ""
     comment: str = ""
     published: bool = False
+    printer_type: str = ""
+    is_default: bool = False
 
     @property
     def is_shared(self) -> bool:
@@ -180,8 +182,10 @@ def printer_matches_query(printer: NetworkPrinter, query: str) -> bool:
             printer.name or "",
             printer.share_name or "",
             printer.driver_name or "",
+            printer.port_name or "",
             printer.location or "",
             printer.comment or "",
+            printer.printer_type or "",
         ]
     ).casefold()
     return q in haystack
@@ -244,9 +248,33 @@ def parse_printers_json(text: str) -> List[NetworkPrinter]:
                 location=str(item.get("Location") or "").strip(),
                 comment=str(item.get("Comment") or "").strip(),
                 published=_as_bool(item.get("Published")),
+                printer_type=str(
+                    item.get("Type") or item.get("PrinterType") or ""
+                ).strip(),
+                is_default=_as_bool(item.get("Default") or item.get("IsDefault")),
             )
         )
     return printers
+
+
+def parse_user_printers_payload(text: str) -> Tuple[List[NetworkPrinter], str]:
+    """Interpreta JSON da listagem (array ou ``{ok,printers}``)."""
+    obj = extract_json_value(text)
+    if obj is None:
+        return [], "Resposta vazia da listagem de impressoras."
+    if isinstance(obj, dict):
+        if obj.get("ok") is False:
+            err = str(obj.get("error") or "").strip()
+            return [], err or "Falha ao listar impressoras do usuário."
+        raw = obj.get("printers", obj.get("Printers"))
+        if raw is None and any(k in obj for k in ("Name", "ShareName")):
+            raw = obj
+        printers = parse_printers_json(
+            json.dumps(raw, ensure_ascii=False) if raw is not None else "[]"
+        )
+        return printers, ""
+    printers = parse_printers_json(text)
+    return printers, ""
 
 
 def read_printers_catalog_file(path: str) -> List[NetworkPrinter]:
@@ -375,6 +403,150 @@ def build_list_printers_script(server: str = "", output_path: str = "") -> str:
         "  exit 0\n"
         "} catch {\n"
         "  Write-Error $_.Exception.Message\n"
+        "  exit 1\n"
+        "}\n"
+    )
+
+
+def build_list_user_printers_wrapper_script(*, result_filename: str) -> str:
+    """Grava a listagem em ``%PUBLIC%`` (usado só em testes/compat)."""
+    file_lit = ps_single_quote(result_filename)
+    return (
+        "$ErrorActionPreference = 'Continue'\n"
+        f"$outFile = Join-Path $env:PUBLIC {file_lit}\n"
+        "$raw = & {\n"
+        f"{build_list_host_installed_printers_script(username='')}"
+        "}\n"
+        "if (-not $raw) {\n"
+        "  $raw = '{\"ok\":false,\"error\":\"sem saida\",\"printers\":[]}'\n"
+        "}\n"
+        "[System.IO.File]::WriteAllText($outFile, [string]$raw,"
+        " [System.Text.UTF8Encoding]::new($false))\n"
+    )
+
+
+def build_list_host_installed_printers_script(*, username: str = "") -> str:
+    """Lista locais (Get-Printer) + conexões de rede do usuário (HKU) e da máquina (HKLM).
+
+    Roda elevado no host remoto via PsExec; não depende de InteractiveToken.
+    Emite JSON ``{ok,printers}`` no stdout.
+    """
+    user_lit = ps_single_quote(username or "")
+    return (
+        "$ErrorActionPreference = 'Continue'\n"
+        "$ProgressPreference = 'SilentlyContinue'\n"
+        "$WarningPreference = 'SilentlyContinue'\n"
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
+        f"$wantUser = {user_lit}\n"
+        "$rows = New-Object System.Collections.ArrayList\n"
+        "$seen = @{}\n"
+        "function Add-PrinterRow {\n"
+        "  param([hashtable]$Row)\n"
+        "  $name = [string]$Row['Name']\n"
+        "  if (-not $name) { return }\n"
+        "  $key = $name.Trim().ToLowerInvariant()\n"
+        "  if ($seen.ContainsKey($key)) {\n"
+        "    $cur = $seen[$key]\n"
+        "    foreach ($p in @('ShareName','DriverName','PortName','Location','Comment','Type')) {\n"
+        "      if (-not [string]$cur[$p] -and [string]$Row[$p]) { $cur[$p] = $Row[$p] }\n"
+        "    }\n"
+        "    if ($Row['Default']) { $cur['Default'] = $true }\n"
+        "    if ($Row['Published']) { $cur['Published'] = $true }\n"
+        "    return\n"
+        "  }\n"
+        "  [void]$rows.Add($Row)\n"
+        "  $seen[$key] = $Row\n"
+        "}\n"
+        "function Add-ConnectionKey {\n"
+        "  param([string]$Leaf, [string]$TypeName, [string]$DefaultName)\n"
+        "  if (-not $Leaf) { return }\n"
+        "  $parts = @(($Leaf -split ',') | Where-Object { $_ -ne '' })\n"
+        "  if ($parts.Count -lt 2) { return }\n"
+        "  $server = [string]$parts[0]\n"
+        "  $share = [string]$parts[1]\n"
+        "  $unc = '\\\\' + $server + '\\' + $share\n"
+        "  $isDef = $false\n"
+        "  if ($DefaultName) {\n"
+        "    $isDef = ($DefaultName -eq $unc -or $DefaultName -eq $share)\n"
+        "  }\n"
+        "  Add-PrinterRow @{\n"
+        "    Name = $unc; ShareName = $share; DriverName = ''; PortName = $unc;\n"
+        "    Location = ''; Comment = ''; Published = $false;\n"
+        "    Type = $TypeName; Default = $isDef\n"
+        "  }\n"
+        "}\n"
+        "try {\n"
+        "  $defaultName = ''\n"
+        "  $sid = ''\n"
+        "  if ($wantUser) {\n"
+        "    try {\n"
+        "      $acct = New-Object System.Security.Principal.NTAccount($wantUser)\n"
+        "      $sid = $acct.Translate([System.Security.Principal.SecurityIdentifier]).Value\n"
+        "    } catch { $sid = '' }\n"
+        "    if (-not $sid -and $wantUser.Contains([char]92)) {\n"
+        "      $short = ($wantUser.Split([char]92))[-1]\n"
+        "      try {\n"
+        "        $acct = New-Object System.Security.Principal.NTAccount($short)\n"
+        "        $sid = $acct.Translate([System.Security.Principal.SecurityIdentifier]).Value\n"
+        "      } catch { $sid = '' }\n"
+        "    }\n"
+        "  }\n"
+        "  if (-not $sid) {\n"
+        "    foreach ($k in @(Get-ChildItem 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue)) {\n"
+        "      $name = [string]$k.PSChildName\n"
+        "      if ($name -match '^S-1-5-21-' -and $name -notmatch '_Classes$') {\n"
+        "        if (Test-Path -LiteralPath (\"Registry::HKEY_USERS\\$name\\Printers\")) {\n"
+        "          $sid = $name; break\n"
+        "        }\n"
+        "        if (-not $sid) { $sid = $name }\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "  if ($sid) {\n"
+        "    try {\n"
+        "      $devPath = \"Registry::HKEY_USERS\\$sid\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows\"\n"
+        "      $dev = [string](Get-ItemProperty -LiteralPath $devPath -Name Device -ErrorAction SilentlyContinue).Device\n"
+        "      if ($dev) { $defaultName = ($dev -split ',')[0].Trim() }\n"
+        "    } catch {}\n"
+        "  }\n"
+        "  Import-Module PrintManagement -ErrorAction SilentlyContinue | Out-Null\n"
+        "  if (Get-Command Get-Printer -ErrorAction SilentlyContinue) {\n"
+        "    foreach ($p in @(Get-Printer -ErrorAction SilentlyContinue)) {\n"
+        "      $isDef = $false\n"
+        "      try { $isDef = [bool]$p.Default } catch { $isDef = $false }\n"
+        "      if (-not $isDef -and $defaultName -and ([string]$p.Name -eq $defaultName)) { $isDef = $true }\n"
+        "      $typeName = ''\n"
+        "      try { $typeName = [string]$p.Type } catch { $typeName = '' }\n"
+        "      $published = $false\n"
+        "      try { $published = [bool]$p.Published } catch { $published = $false }\n"
+        "      Add-PrinterRow @{\n"
+        "        Name = [string]$p.Name; ShareName = [string]$p.ShareName;\n"
+        "        DriverName = [string]$p.DriverName; PortName = [string]$p.PortName;\n"
+        "        Location = [string]$p.Location; Comment = [string]$p.Comment;\n"
+        "        Published = $published; Type = $typeName; Default = $isDef\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "  if ($sid) {\n"
+        "    $userConn = \"Registry::HKEY_USERS\\$sid\\Printers\\Connections\"\n"
+        "    if (Test-Path -LiteralPath $userConn) {\n"
+        "      foreach ($key in @(Get-ChildItem -LiteralPath $userConn -ErrorAction SilentlyContinue)) {\n"
+        "        Add-ConnectionKey -Leaf ([string]$key.PSChildName) -TypeName 'Connection' -DefaultName $defaultName\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "  $machineRoot = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Print\\Connections'\n"
+        "  if (Test-Path -LiteralPath $machineRoot) {\n"
+        "    foreach ($key in @(Get-ChildItem -LiteralPath $machineRoot -ErrorAction SilentlyContinue)) {\n"
+        "      Add-ConnectionKey -Leaf ([string]$key.PSChildName) -TypeName 'Connection' -DefaultName $defaultName\n"
+        "    }\n"
+        "  }\n"
+        "  $payload = [ordered]@{ ok = $true; printers = @($rows) }\n"
+        "  Write-Output ($payload | ConvertTo-Json -Compress -Depth 6)\n"
+        "  exit 0\n"
+        "} catch {\n"
+        "  $payload = [ordered]@{ ok = $false; error = [string]$_.Exception.Message; printers = @() }\n"
+        "  Write-Output ($payload | ConvertTo-Json -Compress -Depth 4)\n"
         "  exit 1\n"
         "}\n"
     )

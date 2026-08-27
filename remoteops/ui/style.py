@@ -320,6 +320,56 @@ def table_frame_qss(selector: str = "QTableWidget") -> str:
     """
 
 
+def standard_table_qss(selector: str = "QTableWidget") -> str:
+    """QSS padrão de inventário: borda Fluent + linhas intercaladas + seleção."""
+    return table_frame_qss(selector) + f"""
+        {selector} {{
+            alternate-background-color: {COLOR_SURFACE_MUTED};
+            selection-background-color: {COLOR_ACCENT_SOFT};
+            selection-color: {COLOR_TEXT};
+        }}
+        {selector}::item:alternate {{
+            background: {COLOR_SURFACE_MUTED};
+        }}
+        {selector}::item:selected,
+        {selector}::item:selected:hover,
+        {selector}::item:selected:focus {{
+            background: {COLOR_ACCENT_SOFT};
+            color: {COLOR_TEXT};
+        }}
+        {selector}::item:hover {{
+            background: {COLOR_HOVER};
+        }}
+    """
+
+
+def flat_table_qss(selector: str = "QTableWidget") -> str:
+    """QSS sem stripe/seleção visual (listas com checkbox, ex. WinGet)."""
+    return table_frame_qss(selector) + f"""
+        {selector} {{
+            alternate-background-color: {COLOR_SURFACE};
+            selection-background-color: {COLOR_SURFACE};
+            selection-color: {COLOR_TEXT};
+            outline: none;
+        }}
+        {selector}::item {{
+            background: {COLOR_SURFACE};
+            color: {COLOR_TEXT};
+        }}
+        {selector}::item:alternate {{
+            background: {COLOR_SURFACE};
+        }}
+        {selector}::item:hover,
+        {selector}::item:selected,
+        {selector}::item:selected:hover,
+        {selector}::item:focus,
+        {selector}::item:selected:focus {{
+            background: {COLOR_SURFACE};
+            color: {COLOR_TEXT};
+        }}
+    """
+
+
 def composite_field_qss(object_name: str = "AuthField") -> str:
     """Container visual de QLineEdit + ícone (host, senha, etc.)."""
     return f"""
@@ -544,8 +594,19 @@ def apply_ui_defaults(app: QApplication) -> None:
         }}
         QTableWidget {{
             background: {COLOR_SURFACE};
+            alternate-background-color: {COLOR_SURFACE_MUTED};
+            selection-background-color: {COLOR_ACCENT_SOFT};
+            selection-color: {COLOR_TEXT};
             gridline-color: {COLOR_BORDER};
             outline: none;
+        }}
+        QTableWidget::item:alternate {{
+            background: {COLOR_SURFACE_MUTED};
+        }}
+        QTableWidget::item:selected,
+        QTableWidget::item:selected:hover {{
+            background: {COLOR_ACCENT_SOFT};
+            color: {COLOR_TEXT};
         }}
         QProgressBar {{
             border: 1px solid {COLOR_BORDER};

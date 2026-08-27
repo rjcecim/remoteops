@@ -11,10 +11,8 @@ from PyQt6 import sip
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QAbstractItemView,
     QFileDialog,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -32,12 +30,11 @@ from remoteops.ui.style import (
     ICON_FONT_PT,
     RADIUS_SMALL,
     make_icon_button,
-    table_frame_qss,
 )
 from remoteops.ui.widgets.card import CardWidget, make_card_stack, make_field_label
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.spinner import DotsSpinner
-from remoteops.ui.widgets.table import enable_header_sorting, pause_table_sorting
+from remoteops.ui.widgets.table import configure_standard_table, pause_table_sorting
 from remoteops.utils.app_catalog import resolve_uninstall_extras
 from remoteops.utils.psinfo import (
     InstalledApp,
@@ -155,25 +152,11 @@ class HostAppsTab(QWidget):
         self.table.setHorizontalHeaderLabels(
             [self.tr("Nome"), self.tr("Editor"), self.tr("Versão"), self.tr("Tipo"), ""]
         )
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
-        self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self.table.horizontalHeader().setStretchLastSection(False)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(4, 36)
-        enable_header_sorting(self.table, skip_columns=(4,))
-        self.table.setStyleSheet(
-            table_frame_qss()
-            + "QTableWidget::item { padding: 4px 6px; }"
+        configure_standard_table(
+            self.table,
+            stretch_columns=(0,),
+            fixed_columns={4: 36},
+            skip_sort_columns=(4,),
         )
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setMinimumHeight(80)

@@ -12,17 +12,16 @@ from PyQt6 import sip
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QAbstractItemView,
     QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
-    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -36,12 +35,16 @@ from PyQt6.QtWidgets import (
 from remoteops.core.console_codec import decode_best_effort
 from remoteops.core.win_cmd import run_captured
 from remoteops.services.ops import CredentialContext
-from remoteops.ui.style import make_icon_button, table_frame_qss
+from remoteops.ui.style import make_icon_button
 from remoteops.ui.widgets.card import CardWidget, make_card_stack
 from remoteops.ui.widgets.combobox import FluentComboBox
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.spinner import DotsSpinner
-from remoteops.ui.widgets.table import enable_header_sorting, pause_table_sorting
+from remoteops.ui.widgets.table import (
+    SortableTableItem,
+    configure_standard_table,
+    pause_table_sorting,
+)
 from remoteops.utils.pstools import get_pstools_dir
 from remoteops.utils.redaction import redact_command_text
 from remoteops.utils.servicos import (
@@ -82,38 +85,6 @@ _EXPECTED_STATE = {
     "pause": "PAUSED",
     "cont": "RUNNING",
 }
-
-
-class _SortItem(QTableWidgetItem):
-    """Ordena por UserRole numérico/texto quando disponível."""
-
-    def __lt__(self, other: QTableWidgetItem) -> bool:  # type: ignore[override]
-        a = self.data(Qt.ItemDataRole.UserRole)
-        b = other.data(Qt.ItemDataRole.UserRole) if other is not None else None
-        if a is None and b is None:
-            return super().__lt__(other)
-        if a is None:
-            return True
-        if b is None:
-            return False
-        try:
-            return a < b
-        except TypeError:
-            return str(a) < str(b)
-
-
-def _style_table(table: QTableWidget) -> None:
-    table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-    table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-    table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-    table.setAlternatingRowColors(True)
-    table.verticalHeader().setVisible(False)
-    table.setShowGrid(False)
-    table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-    table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-    table.setStyleSheet(
-        table_frame_qss() + "QTableWidget::item { padding: 4px 6px; }"
-    )
 
 
 def _safe_argv_text(args: Sequence[str], password: str = "") -> str:
@@ -1042,8 +1013,7 @@ def _show_dependents_dialog(
             parent.tr("Status"),
         ]
     )
-    _style_table(table)
-    enable_header_sorting(table)
+    configure_standard_table(table, stretch_columns=(0,))
     table.setRowCount(len(deps))
     for i, row in enumerate(deps):
         cells = [
@@ -1052,10 +1022,9 @@ def _show_dependents_dialog(
             (row.state_label, (row.state or "").casefold()),
         ]
         for col, (text, sort_val) in enumerate(cells):
-            item = _SortItem(text)
+            item = SortableTableItem(text)
             item.setData(Qt.ItemDataRole.UserRole, sort_val)
             table.setItem(i, col, item)
-    table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
     dlg.set_body(table)
     dlg.resize(640, 360)
     dlg.exec()
@@ -1158,14 +1127,7 @@ class _FindDialog(QDialog):
         self.table.setHorizontalHeaderLabels(
             [parent.tr("Computador"), parent.tr("Detalhe")]
         )
-        _style_table(self.table)
-        enable_header_sorting(self.table)
-        self.table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
-        )
+        configure_standard_table(self.table, stretch_columns=(1,))
         root.addWidget(self.table, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -1228,7 +1190,7 @@ class _FindDialog(QDialog):
                     (hit.detail or "", (hit.detail or "").casefold()),
                 ]
                 for col, (text, sort_val) in enumerate(cells):
-                    item = _SortItem(text)
+                    item = SortableTableItem(text)
                     item.setData(Qt.ItemDataRole.UserRole, sort_val)
                     self.table.setItem(i, col, item)
         self.status_lbl.setText(
@@ -1282,6 +1244,16 @@ class ServicosTab(QWidget):
         self._closing = False
         self._pending_action: Optional[str] = None
         self._host_online = True
+        self._can_details = False
+        self._can_depend = False
+        self._can_security = False
+        self._can_find = False
+        self._can_setconfig = False
+        self._can_start = False
+        self._can_stop = False
+        self._can_restart = False
+        self._can_pause = False
+        self._can_cont = False
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         root = make_card_stack(self)
@@ -1344,50 +1316,6 @@ class ServicosTab(QWidget):
         top_wrap.setLayout(top)
         self.svc_card.content_layout.addWidget(top_wrap, 0)
 
-        actions = QHBoxLayout()
-        actions.setContentsMargins(0, 0, 0, 0)
-        actions.setSpacing(6)
-        self.btn_details = QPushButton(self.tr("Detalhes"))
-        self.btn_start = QPushButton(self.tr("Iniciar"))
-        self.btn_stop = QPushButton(self.tr("Parar"))
-        self.btn_restart = QPushButton(self.tr("Reiniciar"))
-        self.btn_pause = QPushButton(self.tr("Pausar"))
-        self.btn_cont = QPushButton(self.tr("Continuar"))
-        self.btn_setconfig = QPushButton(self.tr("Alterar inicialização"))
-        self.btn_depend = QPushButton(self.tr("Dependentes"))
-        self.btn_security = QPushButton(self.tr("Segurança"))
-        self.btn_find = QPushButton(self.tr("Localizar na rede"))
-        for btn in (
-            self.btn_details,
-            self.btn_start,
-            self.btn_stop,
-            self.btn_restart,
-            self.btn_pause,
-            self.btn_cont,
-            self.btn_setconfig,
-            self.btn_depend,
-            self.btn_security,
-            self.btn_find,
-        ):
-            actions.addWidget(btn)
-        actions.addStretch()
-        actions_wrap = QWidget()
-        actions_wrap.setLayout(actions)
-        self.svc_card.content_layout.addWidget(actions_wrap, 0)
-
-        self.btn_details.clicked.connect(self._request_details)
-        self.btn_start.clicked.connect(lambda: self._run_action("start"))
-        self.btn_stop.clicked.connect(lambda: self._confirm_stop_or_restart("stop"))
-        self.btn_restart.clicked.connect(
-            lambda: self._confirm_stop_or_restart("restart")
-        )
-        self.btn_pause.clicked.connect(lambda: self._run_action("pause"))
-        self.btn_cont.clicked.connect(lambda: self._run_action("cont"))
-        self.btn_setconfig.clicked.connect(self._change_start_type)
-        self.btn_depend.clicked.connect(self._request_dependents)
-        self.btn_security.clicked.connect(self._request_security)
-        self.btn_find.clicked.connect(self._open_find_dialog)
-
         self._spinner = DotsSpinner()
         self._spinner.setVisible(False)
         spin_row = QHBoxLayout()
@@ -1411,18 +1339,11 @@ class ServicosTab(QWidget):
                 self.tr("Conta"),
             ]
         )
-        _style_table(self.table)
-        self.table.horizontalHeader().setStretchLastSection(False)
-        self.table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch
-        )
-        for col in range(1, 5):
-            self.table.horizontalHeader().setSectionResizeMode(
-                col, QHeaderView.ResizeMode.ResizeToContents
-            )
-        enable_header_sorting(self.table)
+        configure_standard_table(self.table, stretch_columns=(0,))
         self.table.itemSelectionChanged.connect(self._on_selection)
         self.table.itemDoubleClicked.connect(lambda *_: self._request_details())
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
         self.svc_card.content_layout.addWidget(self.table, 1)
 
         root.addWidget(self.svc_card, 2)
@@ -1602,7 +1523,8 @@ class ServicosTab(QWidget):
         user, password = self._creds()
         self._generation += 1
         gen = self._generation
-        show_spinner = bool(full) or not self._services
+        same_host = host.casefold() == (self._data_host or "").casefold()
+        show_spinner = not (same_host and self._services)
         if show_spinner:
             self._set_loading(True, host)
         else:
@@ -1624,12 +1546,13 @@ class ServicosTab(QWidget):
         self._refresh_worker.finished_err.connect(self._on_refresh_err)
         self._refresh_worker.finished.connect(self._on_refresh_finished)
         self._refresh_worker.start()
-        kind = "query+config" if full else "query"
-        self.log_output.append_log(
-            self.tr(
-                f"[SERVIÇOS] Consultando serviços em {host} via PsService ({kind})..."
+        if show_spinner:
+            kind = "query+config" if full else "query"
+            self.log_output.append_log(
+                self.tr(
+                    f"[SERVIÇOS] Consultando serviços em {host} via PsService ({kind})..."
+                )
             )
-        )
 
     def _set_loading(self, loading: bool, host: str = "") -> None:
         self._loading = loading
@@ -1709,7 +1632,7 @@ class ServicosTab(QWidget):
                     (row.account or "", (row.account or "").casefold()),
                 ]
                 for col, (text, sort_val) in enumerate(values):
-                    item = _SortItem(text)
+                    item = SortableTableItem(text)
                     item.setData(Qt.ItemDataRole.UserRole, sort_val)
                     if col == 1:
                         item.setData(
@@ -1773,6 +1696,60 @@ class ServicosTab(QWidget):
             stored = name_item.data(Qt.ItemDataRole.UserRole + 1)
             self._selected_name = str(stored or name_item.text() or "") or None
         self._refresh_action_buttons()
+
+    def _show_context_menu(self, pos) -> None:
+        idx = self.table.indexAt(pos)
+        if idx.isValid():
+            self.table.selectRow(idx.row())
+        global_pos = self.table.viewport().mapToGlobal(pos)
+
+        menu = QMenu(self)
+        act_details = menu.addAction(self.tr("Detalhes"))
+        act_depend = menu.addAction(self.tr("Dependentes"))
+        act_security = menu.addAction(self.tr("Segurança"))
+        menu.addSeparator()
+        act_start = menu.addAction(self.tr("Iniciar"))
+        act_stop = menu.addAction(self.tr("Parar"))
+        act_restart = menu.addAction(self.tr("Reiniciar"))
+        menu.addSeparator()
+        act_pause = menu.addAction(self.tr("Pausar"))
+        act_cont = menu.addAction(self.tr("Continuar"))
+        menu.addSeparator()
+        act_setconfig = menu.addAction(self.tr("Alterar inicialização"))
+        act_find = menu.addAction(self.tr("Localizar na rede"))
+
+        act_details.setEnabled(self._can_details)
+        act_depend.setEnabled(self._can_depend)
+        act_security.setEnabled(self._can_security)
+        act_start.setEnabled(self._can_start)
+        act_stop.setEnabled(self._can_stop)
+        act_restart.setEnabled(self._can_restart)
+        act_pause.setEnabled(self._can_pause)
+        act_cont.setEnabled(self._can_cont)
+        act_setconfig.setEnabled(self._can_setconfig)
+        act_find.setEnabled(self._can_find)
+
+        chosen = menu.exec(global_pos)
+        if chosen is act_details:
+            self._request_details()
+        elif chosen is act_depend:
+            self._request_dependents()
+        elif chosen is act_security:
+            self._request_security()
+        elif chosen is act_start:
+            self._run_action("start")
+        elif chosen is act_stop:
+            self._confirm_stop_or_restart("stop")
+        elif chosen is act_restart:
+            self._confirm_stop_or_restart("restart")
+        elif chosen is act_pause:
+            self._run_action("pause")
+        elif chosen is act_cont:
+            self._run_action("cont")
+        elif chosen is act_setconfig:
+            self._change_start_type()
+        elif chosen is act_find:
+            self._open_find_dialog()
 
     def _select_service(self, service_name: str) -> None:
         key = (service_name or "").casefold()
@@ -1839,13 +1816,13 @@ class ServicosTab(QWidget):
 
         self.refresh_btn.setEnabled(not self._loading and tool_ok)
 
-        self.btn_details.setEnabled(bool(has_sel and tool_ok and not busy))
-        self.btn_depend.setEnabled(bool(has_sel and tool_ok and not busy))
-        self.btn_security.setEnabled(bool(has_sel and tool_ok and not busy))
-        self.btn_find.setEnabled(bool(tool_ok and not busy))
-        self.btn_setconfig.setEnabled(bool(has_sel and tool_ok and not busy))
+        self._can_details = bool(has_sel and tool_ok and not busy)
+        self._can_depend = self._can_details
+        self._can_security = self._can_details
+        self._can_find = bool(tool_ok and not busy)
+        self._can_setconfig = bool(has_sel and tool_ok and not busy)
 
-        can_start = bool(
+        self._can_start = bool(
             has_sel
             and tool_ok
             and not busy
@@ -1853,7 +1830,7 @@ class ServicosTab(QWidget):
             and state == "STOPPED"
             and not disabled_start
         )
-        can_stop = bool(
+        self._can_stop = bool(
             has_sel
             and tool_ok
             and not busy
@@ -1861,8 +1838,8 @@ class ServicosTab(QWidget):
             and state == "RUNNING"
             and (svc.accepts_stop if svc else True)
         )
-        can_restart = can_stop
-        can_pause = bool(
+        self._can_restart = self._can_stop
+        self._can_pause = bool(
             has_sel
             and tool_ok
             and not busy
@@ -1870,7 +1847,7 @@ class ServicosTab(QWidget):
             and state == "RUNNING"
             and (svc.accepts_pause if svc else False)
         )
-        can_cont = bool(
+        self._can_cont = bool(
             has_sel
             and tool_ok
             and not busy
@@ -1878,37 +1855,12 @@ class ServicosTab(QWidget):
             and state == "PAUSED"
         )
 
-        self.btn_start.setEnabled(can_start)
-        self.btn_stop.setEnabled(can_stop)
-        self.btn_restart.setEnabled(can_restart)
-        self.btn_pause.setEnabled(can_pause)
-        self.btn_cont.setEnabled(can_cont)
-
-        tip_missing = self.tr(
-            "PsService não encontrado na pasta PSTools configurada."
-        )
-        for btn in (
-            self.btn_details,
-            self.btn_start,
-            self.btn_stop,
-            self.btn_restart,
-            self.btn_pause,
-            self.btn_cont,
-            self.btn_setconfig,
-            self.btn_depend,
-            self.btn_security,
-            self.btn_find,
-            self.refresh_btn,
-        ):
-            if not tool_ok:
-                btn.setToolTip(tip_missing)
-            else:
-                btn.setToolTip("")
-
-        if has_sel and disabled_start and state == "STOPPED":
-            self.btn_start.setToolTip(
-                self.tr("Serviço desabilitado — altere a inicialização primeiro.")
+        if not tool_ok:
+            self.refresh_btn.setToolTip(
+                self.tr("PsService não encontrado na pasta PSTools configurada.")
             )
+        else:
+            self.refresh_btn.setToolTip("")
 
     def _request_details(self) -> None:
         svc = self._selected_service()
