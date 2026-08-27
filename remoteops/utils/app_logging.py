@@ -1,8 +1,12 @@
-"""Logging seguro da aplicação (nunca registra senhas)."""
+"""Logging seguro da aplicação (nunca registra senhas).
+
+Única porta de escrita em disco: ``logging.Logger`` → ``FileHandler``
+(quando a preferência está ativa). ``log_operation`` / ``append_history``
+redigem e emitem via o logger — sem append manual paralelo.
+"""
 
 from __future__ import annotations
 
-import datetime
 import logging
 import os
 from typing import Iterable, Optional
@@ -147,19 +151,6 @@ def _remove_file_handlers() -> None:
                 pass
 
 
-def _append_log_line(text: str) -> None:
-    """Única escrita direta em logs/app.log (além do FileHandler do logger)."""
-    if not _file_logging_enabled:
-        return
-    try:
-        path = get_log_file_path()
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(f"[{timestamp}] {text}\n")
-    except OSError:
-        pass
-
-
 def log_operation(
     operation: str,
     *,
@@ -171,7 +162,7 @@ def log_operation(
     """
     Registra uma operação já sanitizada.
 
-    Escreve uma única vez em ``logs/app.log`` quando o log em arquivo está ativo.
+    Escreve via ``logging`` → ``FileHandler`` quando o log em arquivo está ativo.
     """
     safe_detail = redact_command_text(detail or "", passwords=passwords)
     parts = [operation]
@@ -180,9 +171,8 @@ def log_operation(
     if exit_code is not None:
         parts.append(f"exit_code={exit_code}")
     message = " | ".join(parts)
-    if _file_logging_enabled:
-        # Uma única gravação (evita duplicar via FileHandler + append)
-        _append_log_line(message)
+    if is_file_logging_enabled():
+        get_logger().log(level, message)
     return message
 
 
@@ -191,10 +181,10 @@ def append_history(
     passwords: Optional[Iterable[str]] = None,
 ) -> None:
     """API pública para histórico livre (UI). Preferir ``log_operation`` quando tipado."""
-    if not _file_logging_enabled:
+    if not is_file_logging_enabled():
         return
     safe = redact_command_text(text or "", passwords=passwords)
-    _append_log_line(safe)
+    get_logger().info(safe)
 
 
 def reset_logging_for_tests() -> None:

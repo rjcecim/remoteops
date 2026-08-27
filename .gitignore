@@ -69,8 +69,7 @@ logs/
 *.orig
 *.rej
 
-# Testes / qualidade (pasta local e temporária — não versionar)
-tests/
+# Cache / cobertura de testes (a pasta tests/ É versionada)
 .pytest_cache/
 .tox/
 .nox/

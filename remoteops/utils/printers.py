@@ -188,18 +188,10 @@ def printer_matches_query(printer: NetworkPrinter, query: str) -> bool:
 
 
 def decode_console_bytes(data: bytes) -> str:
-    if not data:
-        return ""
-    if data.startswith(b"\xff\xfe"):
-        return data.decode("utf-16-le", errors="replace")
-    if data.startswith(b"\xfe\xff"):
-        return data.decode("utf-16-be", errors="replace")
-    if data.startswith(b"\xef\xbb\xbf"):
-        return data.decode("utf-8-sig")
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data.decode("cp850", errors="replace")
+    """Delega ao codec canónico em ``remoteops.core.console_codec``."""
+    from remoteops.core.console_codec import decode_console_bytes as _decode
+
+    return _decode(data)
 
 
 def extract_json_value(text: str):

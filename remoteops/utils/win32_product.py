@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from typing import Any, List, Optional
 
-from remoteops.core.win_cmd import CREATE_NO_WINDOW
+from remoteops.core.console_codec import decode_console_bytes
+from remoteops.core.win_cmd import run_captured
 from remoteops.utils.psinfo import HostInventoryStatus, InstalledApp
 
 WIN32_PRODUCT_TIMEOUT_SECONDS = 90.0
@@ -104,51 +104,47 @@ def list_remote_win32_products(
     env["RO_W32_HOST"] = h
     env["RO_W32_USER"] = (user or "").strip()
     env["RO_W32_PASS"] = password if (user or "").strip() else ""
-    creationflags = CREATE_NO_WINDOW if CREATE_NO_WINDOW else 0
     try:
-        proc = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                script,
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=seconds,
-            creationflags=creationflags,
-            shell=False,
-            env=env,
-        )
-    except subprocess.TimeoutExpired:
-        return HostInventoryStatus(
-            host=h,
-            ok=False,
-            apps=[],
-            error_kind="timed_out",
-            message=f"Win32_Product excedeu {int(seconds)}s.",
-            stage="timeout",
-        )
-    except OSError as exc:
-        return HostInventoryStatus(
-            host=h,
-            ok=False,
-            apps=[],
-            error_kind="internal_error",
-            message=f"Falha ao iniciar PowerShell: {exc}",
-            stage="spawn",
-        )
+        from subprocess import TimeoutExpired
+
+        try:
+            proc = run_captured(
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    script,
+                ],
+                timeout=seconds,
+                env=env,
+            )
+        except TimeoutExpired:
+            return HostInventoryStatus(
+                host=h,
+                ok=False,
+                apps=[],
+                error_kind="timed_out",
+                message=f"Win32_Product excedeu {int(seconds)}s.",
+                stage="timeout",
+            )
+        except OSError as exc:
+            return HostInventoryStatus(
+                host=h,
+                ok=False,
+                apps=[],
+                error_kind="internal_error",
+                message=f"Falha ao iniciar PowerShell: {exc}",
+                stage="spawn",
+            )
     finally:
         env["RO_W32_PASS"] = ""
 
-    out = (proc.stdout or "").strip()
-    err = (proc.stderr or "").strip()
+    out = decode_console_bytes(proc.stdout or b"").strip()
+    err = decode_console_bytes(proc.stderr or b"").strip()
     if proc.returncode == 0:
         return HostInventoryStatus(
             host=h,

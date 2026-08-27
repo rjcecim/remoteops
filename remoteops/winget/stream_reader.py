@@ -31,24 +31,10 @@ def _looks_like_utf16le(buffer: bytearray) -> bool:
 
 
 def decode_bytes(buf: bytes) -> str:
-    """Decodifica bytes em texto, escolhendo o codec correto sem gerar ``�``.
+    """Decodifica bytes de stdout/stderr do PsExec (codec canónico do RemoteOps)."""
+    from remoteops.core.console_codec import decode_console_bytes
 
-    Tenta ``utf-8`` de forma *estrita* primeiro: se falhar, é sinal de que a linha
-    veio do próprio PsExec na code page OEM do console (ex.: ``cp850`` em PT-BR),
-    e não em ``cp1252``/``utf-8``. Só cai para ``latin-1`` (com ``replace``) como
-    último recurso, para nunca explodir.
-    """
-    if buf and (buf.count(b"\x00") >= max(2, len(buf) // 8)):
-        try:
-            return buf.decode("utf-16le", errors="replace")
-        except Exception:
-            pass
-    for enc in ("utf-8", "oem", "cp850", "cp1252"):
-        try:
-            return buf.decode(enc)
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return buf.decode("latin-1", errors="replace")
+    return decode_console_bytes(buf)
 
 
 def _split_utf16le_line(buffer: bytearray) -> tuple[bytes, int] | None:

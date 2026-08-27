@@ -21,8 +21,9 @@ from .clixml import (
     looks_like_clixml,
     parse_clixml,
 )
+from remoteops.core.win_cmd import CREATE_NO_WINDOW, popen_argv
+
 from .constants import (
-    CREATE_NO_WINDOW,
     CREATEPROCESS_CMDLINE_MAX,
     EXEC_ACTIONS,
     PSEXEC_ACTION_TIMEOUT_S,
@@ -59,13 +60,13 @@ def _emit(log_cb: Callable[[str], None] | None, msg: str) -> None:
 
 
 def _spawn(args: list[str]) -> subprocess.Popen:
-    return subprocess.Popen(
+    return popen_argv(
         args,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         bufsize=0,
-        creationflags=CREATE_NO_WINDOW,
+        creationflags=CREATE_NO_WINDOW if CREATE_NO_WINDOW else 0,
     )
 
 

@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import ctypes
 import re
-import subprocess
 from ctypes import wintypes
 from dataclasses import dataclass
 from typing import List, Sequence, Tuple
 
-from remoteops.core.win_cmd import CREATE_NO_WINDOW
+from remoteops.core.console_codec import decode_console_bytes
+from remoteops.core.win_cmd import run_captured
 from remoteops.utils.ping import is_valid_host, normalize_host
 
 WTS_CONNECT_STATES = {
@@ -232,42 +232,32 @@ def _query_session_psexec(
         extra_flags=["-accepteula", "-nobanner", "-s"],
         include_password=True,
     )
-    creationflags = CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     try:
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=20,
-            creationflags=creationflags,
-            shell=False,
-        )
+        result = run_captured(argv, timeout=20)
     except Exception:
         return []
     finally:
         creds.clear()
-    text = f"{result.stdout or ''}{result.stderr or ''}"
+    text = (
+        decode_console_bytes(result.stdout or b"")
+        + decode_console_bytes(result.stderr or b"")
+    )
     return parse_query_session_output(text)
 
 
 def _query_session_cli(host: str) -> List[RemoteSession]:
-    creationflags = CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     for argv in (
         ["query", "session", f"/server:{host}"],
         ["qwinsta", f"/server:{host}"],
     ):
         try:
-            result = subprocess.run(
-                argv,
-                capture_output=True,
-                text=True,
-                timeout=8,
-                creationflags=creationflags,
-                shell=False,
-            )
+            result = run_captured(argv, timeout=8)
         except Exception:
             continue
-        text = f"{result.stdout or ''}{result.stderr or ''}"
+        text = (
+            decode_console_bytes(result.stdout or b"")
+            + decode_console_bytes(result.stderr or b"")
+        )
         found = parse_query_session_output(text)
         if found:
             return found

@@ -7,6 +7,9 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from remoteops.core.console_codec import decode_console_bytes
+from remoteops.core.win_cmd import run_captured
+
 
 @dataclass
 class PsInfoHotfix:
@@ -798,17 +801,13 @@ def list_remote_hotfixes(
         f"Get-HotFix -ComputerName $h | {_GET_HOTFIX_SELECT} "
         "}"
     )
-    creationflags = 0
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        creationflags = subprocess.CREATE_NO_WINDOW
-
     env = os.environ.copy()
     env["RO_HF_HOST"] = h
     env["RO_HF_USER"] = u
     env["RO_HF_PASS"] = p if u else ""
 
     try:
-        proc = subprocess.run(
+        proc = run_captured(
             [
                 "powershell.exe",
                 "-NoLogo",
@@ -819,13 +818,7 @@ def list_remote_hotfixes(
                 "-Command",
                 script,
             ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=max(5.0, float(timeout)),
-            creationflags=creationflags,
-            shell=False,
             env=env,
         )
     except subprocess.TimeoutExpired:
@@ -835,8 +828,8 @@ def list_remote_hotfixes(
     finally:
         env["RO_HF_PASS"] = ""
 
-    out = (proc.stdout or "").strip()
-    err = (proc.stderr or "").strip()
+    out = decode_console_bytes(proc.stdout or b"").strip()
+    err = decode_console_bytes(proc.stderr or b"").strip()
     if out:
         items, parse_err = _parse_hotfix_json(out)
         if items:
@@ -906,19 +899,10 @@ def _list_hotfixes_via_psexec(
         extra_flags=["-accepteula", "-nobanner", "-h", "-s"],
         include_password=True,
     )
-    creationflags = 0
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        creationflags = subprocess.CREATE_NO_WINDOW
     try:
-        proc = subprocess.run(
+        proc = run_captured(
             argv,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=max(15.0, float(timeout)),
-            creationflags=creationflags,
-            shell=False,
         )
     except subprocess.TimeoutExpired:
         return [], f"PsExec/Get-HotFix excedeu {int(timeout)}s."
@@ -927,7 +911,9 @@ def _list_hotfixes_via_psexec(
     finally:
         creds.clear()
 
-    out = (proc.stdout or "").strip()
+    out = decode_console_bytes(proc.stdout or b"").strip()
+    err = decode_console_bytes(proc.stderr or b"").strip()
+
     # PsExec mistura banner/erros; tenta achar JSON no stdout
     json_blob = out
     if not json_blob.startswith("{") and not json_blob.startswith("["):
@@ -941,7 +927,7 @@ def _list_hotfixes_via_psexec(
             return items, ""
         if parse_err and proc.returncode == 0:
             return [], parse_err
-    err = (proc.stderr or "").strip() or (out[:200] if out else "")
+    err = err or (out[:200] if out else "")
     return [], _shorten_hotfix_error(err or f"PsExec exit {proc.returncode}")
 
 

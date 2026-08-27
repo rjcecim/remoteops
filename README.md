@@ -30,6 +30,7 @@ Versão: **`2.0.0`** (`remoteops.core.version.__version__`).
 - [Segurança de credenciais](#segurança-de-credenciais)
 - [hosts.json e faixa de IP](#hostsjson-e-faixa-de-ip)
 - [Logging](#logging)
+- [Testes](#testes)
 - [Build](#build)
 - [Estrutura do projeto](#estrutura-do-projeto)
 
@@ -47,6 +48,8 @@ Versão: **`2.0.0`** (`remoteops.core.version.__version__`).
 | **Lote** | Instala o EXE selecionado em vários hosts (faixa de IP ou `hosts.json`) |
 | **WinGet** | Listar, buscar, instalar, atualizar e desinstalar pacotes no host remoto |
 | **Inventário** | PsInfo (sistema, hotfix, discos) e aplicativos via Remote Registry |
+| **Mensagem** | Aviso interativo na sessão do usuário remoto |
+| **Impressoras** | Catálogo do servidor de impressão e instalação/conexão no host |
 | **Pesquisa** | Aplicativos em vários hosts, com desinstalação quando houver `UninstallString` |
 | **RustDesk** | Coleta o ID no remoto e abre `rustdesk.exe --connect <ID>` localmente |
 | **UI** | Fluent / PyQt6, tooltips em card, tabelas em uma linha com elipse |
@@ -69,8 +72,10 @@ Aba **PsExec** está sempre visível. As demais abrem sob demanda.
 | **PsInfo** | Botão na aba PsExec | Inventário remoto (host preenchido) |
 | **Aplicativos** | Botão na aba PsExec | Lista instalados no host; desinstalação |
 | **WinGet** | Botão na aba PsExec | `winget` remoto (host preenchido) |
+| **Mensagem** | Botão na aba PsExec | Envia mensagem interativa ao usuário da sessão remota |
+| **Impressoras** | Botão na aba PsExec | Lista o servidor de impressão e instala/conecta impressoras no host |
 | **Pesquisa de Aplicativos** | Ícone de busca no cabeçalho | Multi-host (faixa de IP ou `hosts.json`) |
-| **Configurações** | Ícone de engrenagem no cabeçalho | Pasta PSTools, RustDesk, logs, Remote Registry, faixa de IP |
+| **Configurações** | Ícone de engrenagem no cabeçalho | PSTools, RustDesk, logs, Remote Registry, faixa de IP, servidor de impressão |
 
 ---
 
@@ -172,8 +177,18 @@ Política em `remoteops.utils.redaction`:
 Preferência **Salvar log em arquivo** em Configurações:
 
 - Pasta `logs\` na raiz do repo (dev) ou ao lado do `RemoteOps.exe`
-- Arquivo: `logs\app.log`
-- Demais preferências em `settings.ini` (local, não versionado): pasta PSTools, workers, timeout do Remote Registry, faixa de IP
+- Arquivo: `logs\app.log` (via `logging.FileHandler`; uma única rota de escrita)
+- Demais preferências em `settings.ini` (local, não versionado): pasta PSTools, workers, timeout do Remote Registry, faixa de IP, servidor de impressão
+
+---
+
+## Testes
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+A pasta `tests/` é versionada; o `RemoteOps.spec` continua a excluí-la do EXE.
 
 ---
 
@@ -196,14 +211,15 @@ RemoteOps/
 ├── remoteops/
 │   ├── bootstrap.py             # QApplication, Fluent, MainWindow
 │   ├── paths.py                 # caminhos portáteis (dev / exe)
-│   ├── core/                    # builder, executor, ConPTY, opções PsExec/CMD/PS
-│   ├── services/                # execução, lote, uninstall, RustDesk
+│   ├── core/                    # builder, executor, ConPTY, win_cmd, process_runner, console_codec
+│   ├── services/                # execução, lote, impressoras, messaging, RustDesk
 │   ├── ui/                      # janela, abas, widgets, estilo Fluent
-│   ├── utils/                   # settings, hosts, catálogo, rede, redação
-│   └── winget/                  # execução remota do winget
-├── config/                      # ApplicationCatalog.json
-├── assets/                      # ícones e marca
+│   ├── utils/                   # settings, hosts, catálogo, rede, redação, sessões
+│   └── winget/                  # backend WinGet remoto
+├── tests/                       # unittest (stdlib)
+├── assets/
+├── config/
 ├── hosts.example.json
-├── pyproject.toml
-└── RemoteOps.spec               # PyInstaller → dist/RemoteOps.exe
+├── RemoteOps.spec
+└── pyproject.toml
 ```

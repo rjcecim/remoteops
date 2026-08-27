@@ -28,6 +28,8 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
 )
 
+from remoteops.core.console_codec import decode_best_effort
+from remoteops.core.win_cmd import run_captured
 from remoteops.ui.style import make_icon_button, multiline_edit_qss, table_frame_qss
 from remoteops.ui.widgets.card import CardWidget
 from remoteops.ui.widgets.spinner import DotsSpinner
@@ -119,18 +121,10 @@ class _PsInfoWorker(QThread):
                 self.finished_err.emit("Não foi possível montar o comando PsInfo.")
                 return
 
-            creationflags = 0
-            if hasattr(subprocess, "CREATE_NO_WINDOW"):
-                creationflags = subprocess.CREATE_NO_WINDOW
-
             try:
-                proc = subprocess.run(
+                proc = run_captured(
                     args,
-                    capture_output=True,
-                    text=False,
-                    creationflags=creationflags,
                     timeout=PSINFO_TIMEOUT_SECONDS,
-                    shell=False,
                 )
             except subprocess.TimeoutExpired:
                 self.finished_err.emit(
@@ -152,19 +146,6 @@ class _PsInfoWorker(QThread):
 
             stdout_b = proc.stdout or b""
             stderr_b = proc.stderr or b""
-
-            def decode_best_effort(b: bytes) -> str:
-                if not b:
-                    return ""
-                try:
-                    return b.decode("utf-8-sig")
-                except Exception:
-                    pass
-                try:
-                    return b.decode("mbcs", errors="replace")
-                except Exception:
-                    pass
-                return b.decode("cp1252", errors="replace")
 
             out = decode_best_effort(stdout_b).strip()
             err = decode_best_effort(stderr_b).strip()

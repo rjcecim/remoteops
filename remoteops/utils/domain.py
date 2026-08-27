@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from remoteops.core.win_cmd import CREATE_NO_WINDOW
+from remoteops.core.console_codec import decode_console_bytes
+from remoteops.core.win_cmd import run_captured
 from remoteops.utils.ping import is_valid_host, normalize_host
 
 NBTSTAT_TIMEOUT_SEC = 3.0
@@ -205,28 +205,12 @@ def parse_nbtstat_names(output: str) -> Tuple[str, str]:
     return group, unique
 
 
-def _decode_console(data: bytes) -> str:
-    if not data:
-        return ""
-    for enc in ("oem", "mbcs", "cp850", "utf-8"):
-        try:
-            return data.decode(enc)
-        except (LookupError, UnicodeDecodeError):
-            continue
-    return data.decode("utf-8", errors="replace")
-
-
 def _run_nbtstat(args: list[str]) -> str:
     try:
-        result = subprocess.run(
-            args,
-            capture_output=True,
-            timeout=NBTSTAT_TIMEOUT_SEC,
-            creationflags=CREATE_NO_WINDOW,
-        )
+        result = run_captured(args, timeout=NBTSTAT_TIMEOUT_SEC)
     except Exception:
         return ""
-    return _decode_console(result.stdout or b"")
+    return decode_console_bytes(result.stdout or b"")
 
 
 def _host_ip(host: str) -> str:

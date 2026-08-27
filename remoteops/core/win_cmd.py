@@ -61,6 +61,7 @@ def popen_argv(
     stdin=None,
     creationflags: int = 0,
     env: Optional[dict] = None,
+    bufsize: int = -1,
 ) -> subprocess.Popen:
     """subprocess.Popen com lista de argumentos (shell=False)."""
     if not argv:
@@ -74,6 +75,7 @@ def popen_argv(
         shell=False,
         env=env,
         creationflags=creationflags,
+        bufsize=bufsize,
     )
 
 
@@ -185,9 +187,12 @@ def run_captured(
     *,
     timeout: Optional[float] = None,
     cwd: Optional[str] = None,
+    env: Optional[dict] = None,
     creationflags: Optional[int] = None,
 ) -> subprocess.CompletedProcess:
-    """subprocess.run sem shell, capturando stdout/stderr em bytes."""
+    """subprocess.run sem shell, capturando stdout/stderr em bytes (CREATE_NO_WINDOW)."""
+    if not argv:
+        raise ValueError("argv vazio")
     flags = CREATE_NO_WINDOW if creationflags is None else creationflags
     return subprocess.run(
         list(argv),
@@ -195,6 +200,7 @@ def run_captured(
         text=False,
         timeout=timeout,
         cwd=cwd,
+        env=env,
         shell=False,
         creationflags=flags if sys.platform == "win32" else 0,
     )

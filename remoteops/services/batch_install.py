@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from remoteops.core.builder import CommandBuilder
-from remoteops.core.executor import decode_best_effort
+from remoteops.core.console_codec import decode_best_effort
 from remoteops.core.models import CommandSpec
 from remoteops.core.win_cmd import CREATE_NO_WINDOW, popen_argv
 from remoteops.services.ops import materialize_password_in_argv

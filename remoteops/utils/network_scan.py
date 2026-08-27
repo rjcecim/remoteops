@@ -7,11 +7,11 @@ Não depende de Qt.
 from __future__ import annotations
 
 import socket
-import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional, Sequence
 
-from remoteops.core.win_cmd import CREATE_NO_WINDOW
+from remoteops.core.console_codec import decode_console_bytes
+from remoteops.core.win_cmd import run_captured
 from remoteops.utils.network_range import (
     DEFAULT_SCAN_THREADS,
     MAX_SCAN_THREADS,
@@ -55,15 +55,17 @@ def parse_nbtstat_name(output: str) -> Optional[str]:
     return None
 
 
-def _decode_console(data: bytes) -> str:
-    if not data:
-        return ""
-    for enc in ("oem", "mbcs", "cp850", "utf-8"):
-        try:
-            return data.decode(enc)
-        except (LookupError, UnicodeDecodeError):
-            continue
-    return data.decode("utf-8", errors="replace")
+def netbios_name(ip: str) -> Optional[str]:
+    if not is_valid_host(ip):
+        return None
+    try:
+        result = run_captured(
+            ["nbtstat", "-A", ip],
+            timeout=NBTSTAT_TIMEOUT_SEC,
+        )
+    except Exception:
+        return None
+    return parse_nbtstat_name(decode_console_bytes(result.stdout or b""))
 
 
 def _tcp_port_open(ip: str, port: int, timeout: float = PORT_TIMEOUT_SEC) -> bool:
@@ -81,21 +83,6 @@ def has_windows_port(ip: str, should_cancel: Optional[CancelCallback] = None) ->
         if _tcp_port_open(ip, port):
             return True
     return False
-
-
-def netbios_name(ip: str) -> Optional[str]:
-    if not is_valid_host(ip):
-        return None
-    try:
-        result = subprocess.run(
-            ["nbtstat", "-A", ip],
-            capture_output=True,
-            timeout=NBTSTAT_TIMEOUT_SEC,
-            creationflags=CREATE_NO_WINDOW,
-        )
-    except Exception:
-        return None
-    return parse_nbtstat_name(_decode_console(result.stdout or b""))
 
 
 def dns_short_name(ip: str) -> Optional[str]:

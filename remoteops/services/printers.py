@@ -14,11 +14,10 @@ import os
 import subprocess
 import tempfile
 import threading
-import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from remoteops.core.win_cmd import CREATE_NO_WINDOW
+from remoteops.core.process_runner import run_argv_captured
 from remoteops.services.ops import CredentialContext, build_psexec_argv, resolve_psexec_exe
 from remoteops.utils.ping import is_valid_host, normalize_host
 from remoteops.utils.printer_settings import get_print_list_timeout, require_print_server
@@ -570,82 +569,31 @@ class PrinterService:
         passwords: Optional[Sequence[str]] = None,
     ) -> CommandCapture:
         secrets = list(passwords or [])
-        creationflags = CREATE_NO_WINDOW if CREATE_NO_WINDOW else 0
-        try:
-            proc = subprocess.Popen(
-                list(argv),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                shell=False,
-                creationflags=creationflags,
-            )
-        except OSError as exc:
-            return CommandCapture(ok=False, error=str(exc) or "Falha ao iniciar o processo.")
-        with self._lock:
-            self._proc = proc
-        timed_out = False
-        cancelled = False
-        out_b = b""
-        err_b = b""
-        out_chunks: List[bytes] = []
-        err_chunks: List[bytes] = []
 
-        def _read_pipe(stream, chunks: List[bytes]) -> None:
-            if stream is None:
-                return
-            try:
-                while True:
-                    data = stream.read(65536)
-                    if not data:
-                        break
-                    chunks.append(data)
-            except Exception:
-                pass
-
-        readers = [
-            threading.Thread(
-                target=_read_pipe, args=(proc.stdout, out_chunks), daemon=True
-            ),
-            threading.Thread(
-                target=_read_pipe, args=(proc.stderr, err_chunks), daemon=True
-            ),
-        ]
-        for reader in readers:
-            reader.start()
-        try:
-            deadline = time.monotonic() + max(5, int(timeout_s))
-            while proc.poll() is None:
-                if self._cancelled(should_cancel):
-                    cancelled = True
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    break
-                if time.monotonic() >= deadline:
-                    timed_out = True
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    break
-                time.sleep(0.15)
-            for reader in readers:
-                reader.join(timeout=8)
-            out_b = b"".join(out_chunks)
-            err_b = b"".join(err_chunks)
-        finally:
+        def _started(proc: subprocess.Popen) -> None:
             with self._lock:
-                if self._proc is proc:
-                    self._proc = None
+                self._proc = proc
 
-        stdout = decode_console_bytes(out_b or b"")
-        stderr = decode_console_bytes(err_b or b"")
+        def _finished() -> None:
+            with self._lock:
+                self._proc = None
+
+        captured = run_argv_captured(
+            argv,
+            timeout_s=max(5, int(timeout_s)),
+            should_cancel=lambda: self._cancelled(should_cancel),
+            on_started=_started,
+            on_finished=_finished,
+        )
+        if captured.spawn_error:
+            return CommandCapture(ok=False, error=captured.spawn_error)
+
+        stdout = decode_console_bytes(captured.stdout or b"")
+        stderr = decode_console_bytes(captured.stderr or b"")
         stdout = redact_command_text(stdout, passwords=secrets)
         stderr = redact_command_text(stderr, passwords=secrets)
-        code = int(proc.returncode if proc.returncode is not None else 1)
-        if cancelled:
+        code = int(captured.returncode)
+        if captured.cancelled:
             return CommandCapture(
                 ok=False,
                 stdout=stdout,
@@ -654,7 +602,7 @@ class PrinterService:
                 cancelled=True,
                 error="Operação cancelada.",
             )
-        if timed_out:
+        if captured.timed_out:
             return CommandCapture(
                 ok=False,
                 stdout=stdout,

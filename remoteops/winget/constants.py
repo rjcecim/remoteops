@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import re
-import subprocess
-
-CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 PSEXEC_ACTION_TIMEOUT_S = 30 * 60  # 30 minutos
 REMOTE_CANCEL_GRACE_S = 12.0

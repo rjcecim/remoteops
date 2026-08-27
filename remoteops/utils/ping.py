@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import subprocess
 from typing import Tuple
+
+from remoteops.core.console_codec import decode_console_bytes
+from remoteops.core.win_cmd import run_captured
 
 
 _INVALID_CHARS = ('&', '|', '<', '>', '^', '"', "'", '%', ' ', '\t')
@@ -31,19 +33,18 @@ def ping_host(host: str, timeout_ms: int = 1000) -> Tuple[bool, str]:
     if not is_valid_host(h):
         return False, "invalid"
 
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        result = subprocess.run(
+        result = run_captured(
             ["ping", "-n", "1", "-w", str(max(200, int(timeout_ms))), h],
-            capture_output=True,
-            text=True,
             timeout=max(3.0, (timeout_ms / 1000.0) + 2.0),
-            creationflags=creationflags,
         )
     except Exception:
         return False, "error"
 
-    out = f"{result.stdout or ''}{result.stderr or ''}".lower()
+    out = (
+        decode_console_bytes(result.stdout or b"")
+        + decode_console_bytes(result.stderr or b"")
+    ).lower()
     offline_markers = (
         "destination host unreachable",
         "host de destino inacessível",

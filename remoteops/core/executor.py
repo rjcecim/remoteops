@@ -10,53 +10,13 @@ from typing import List, Optional, Sequence, Union
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
+from remoteops.core.console_codec import decode_best_effort
 from remoteops.core.models import CommandSpec, ExecutionResult, OperationStatus, is_robocopy_success
 from remoteops.core.win_cmd import CREATE_NO_WINDOW, popen_argv
 from remoteops.utils.redaction import redact_command_text
 
-
-def _oem_encoding() -> str:
-    try:
-        import ctypes
-
-        cp = int(ctypes.windll.kernel32.GetOEMCP())
-        if cp in (65001, 20127):
-            return "utf-8"
-        if cp > 0:
-            return f"cp{cp}"
-    except Exception:
-        pass
-    return ""
-
-
-def decode_best_effort(b: bytes) -> str:
-    """Decodifica pipes de console: UTF-16 (BOM), UTF-8, OEM, ANSI (mbcs).
-
-    ConPTY entrega UTF-8. Pipes de cmd.exe usam a OEM code page do processo
-    (GetOEMCP), não UTF-8. ``/U`` em internos redirecionados pode ser UTF-16LE.
-    """
-    if not b:
-        return ""
-    if b.startswith(b"\xff\xfe") or b.startswith(b"\xfe\xff"):
-        try:
-            return b.decode("utf-16")
-        except Exception:
-            pass
-    try:
-        return b.decode("utf-8")
-    except UnicodeDecodeError:
-        pass
-    oem = _oem_encoding()
-    if oem:
-        try:
-            return b.decode(oem, errors="replace")
-        except Exception:
-            pass
-    try:
-        return b.decode("mbcs", errors="replace")
-    except Exception:
-        pass
-    return b.decode("cp1252", errors="replace")
+# Reexport para callers históricos (batch_install, etc.).
+__all__ = ("Executor", "decode_best_effort")
 
 
 def _read_pipe(pipe, callback, prefix: str = "") -> str:
@@ -282,7 +242,7 @@ class Executor(QObject):
                     stdout_acc=stdout_acc,
                 )
 
-            creationflags = CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+            creationflags = CREATE_NO_WINDOW if CREATE_NO_WINDOW else 0
 
             def on_out(line: str) -> None:
                 stdout_acc.append(line)
