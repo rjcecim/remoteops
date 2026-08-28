@@ -38,7 +38,7 @@ from remoteops.ui.style import (
 from remoteops.ui.widgets.card import (
     CardWidget,
     add_row,
-    finish_card_stack,
+    bind_card_stack,
     grid_in_card,
     make_card_stack,
     make_field_label,
@@ -164,7 +164,6 @@ class PowerShellTab(QWidget):
         g2.setVerticalSpacing(CARD_GRID_VERTICAL_SPACING)
 
         vbox.addWidget(card_cmd)
-        finish_card_stack(vbox)
 
         self._form_cards = (card_opts, card_cmd)
         for card, on_reset in zip(
@@ -175,6 +174,7 @@ class PowerShellTab(QWidget):
             card.set_resettable(True, self.tr("Restaurar padrões deste card"))
             card.resetRequested.connect(on_reset)
             card.collapsedChanged.connect(self._on_form_card_collapsed)
+        bind_card_stack(vbox, self._form_cards)
 
         self._connect_signals()
         self.update_powershell_option_state()

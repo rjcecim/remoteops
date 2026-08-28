@@ -28,7 +28,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from remoteops.ui.widgets.card import CardWidget, add_row, grid_in_card, make_card_stack
+from remoteops.ui.widgets.card import (
+    CardWidget,
+    add_row,
+    bind_card_stack,
+    grid_in_card,
+    make_card_stack,
+)
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.mdl2_tab_bar import Mdl2TabBar
 from remoteops.ui.winget.controllers.exec_log import ExecLogRouter
@@ -69,7 +75,6 @@ class WinGetTab(QWidget):
         self._root_layout = make_card_stack(self)
         self._collapsible_cards: list[CardWidget] = []
         self._bottom_stretch_idx: int | None = None
-        self._page_stretch_idx: dict[int, int] = {}
         self._progress = None
         self._exec_log = None
 
@@ -176,17 +181,12 @@ class WinGetTab(QWidget):
             else:
                 tabs.setMaximumHeight(16777215)
 
-            # Dentro da página: card aberto absorve; recolhido → cabeçalho no topo.
-            self._redistribute_tab_page(tabs.currentWidget(), page_card)
-
         if log_output is not None:
             log_idx = layout.indexOf(log_output)
             if log_idx >= 0:
-                if log_stretch > 0:
-                    log_output.set_layout_stretch(log_stretch)
                 layout.setStretch(log_idx, log_stretch)
 
-        # Sem AlignTop: stretch final mantém cabeçalhos no topo ao recolher tudo.
+        # Spacer final só quando abas e console não absorvem a sobra.
         need_tail = tabs_stretch == 0 and log_stretch == 0
         if need_tail:
             if self._bottom_stretch_idx is None:
@@ -199,36 +199,6 @@ class WinGetTab(QWidget):
 
         layout.activate()
         self.updateGeometry()
-
-    def _redistribute_tab_page(self, page: QWidget | None, card: CardWidget | None) -> None:
-        """Empilha o card da subaba no topo quando recolhido (stretch final na página)."""
-        if page is None:
-            return
-        lay = page.layout()
-        if lay is None:
-            return
-
-        if card is not None:
-            idx = lay.indexOf(card)
-            if idx >= 0:
-                if card.is_collapsed:
-                    lay.setStretch(idx, 0)
-                else:
-                    card.set_layout_stretch(1)
-                    lay.setStretch(idx, 1)
-
-        # Stretch final da página (mesmo padrão das outras abas).
-        page_id = id(page)
-        tail_idx = self._page_stretch_idx.get(page_id)
-        need_tail = card is None or card.is_collapsed
-        if need_tail:
-            if tail_idx is None:
-                lay.addStretch(1)
-                self._page_stretch_idx[page_id] = lay.count() - 1
-            else:
-                lay.setStretch(tail_idx, 1)
-        elif tail_idx is not None:
-            lay.setStretch(tail_idx, 0)
 
     def _reset_progress_ui(self) -> None:
         if self._exec_log is not None:
@@ -287,19 +257,28 @@ class WinGetTab(QWidget):
         up_v = QVBoxLayout(upgrades)
         up_v.setContentsMargins(0, 0, 0, 0)
         up_v.setSpacing(3)
-        up_v.addWidget(self._register_card(self._build_upgrades_card()), stretch=1)
+        upgrades_card = self._register_card(self._build_upgrades_card())
+        upgrades_card.set_layout_stretch(1)
+        up_v.addWidget(upgrades_card)
+        bind_card_stack(up_v, (upgrades_card,))
 
         search = QWidget()
         s_v = QVBoxLayout(search)
         s_v.setContentsMargins(0, 0, 0, 0)
         s_v.setSpacing(3)
-        s_v.addWidget(self._register_card(self._build_search_card()), stretch=1)
+        search_card = self._register_card(self._build_search_card())
+        search_card.set_layout_stretch(1)
+        s_v.addWidget(search_card)
+        bind_card_stack(s_v, (search_card,))
 
         installed = QWidget()
         i_v = QVBoxLayout(installed)
         i_v.setContentsMargins(0, 0, 0, 0)
         i_v.setSpacing(3)
-        i_v.addWidget(self._register_card(self._build_installed_card()), stretch=1)
+        installed_card = self._register_card(self._build_installed_card())
+        installed_card.set_layout_stretch(1)
+        i_v.addWidget(installed_card)
+        bind_card_stack(i_v, (installed_card,))
 
         idx_up = tabs.addTab(upgrades, "Atualizações")
         inner_bar.set_tab_meta(idx_up, "\uE8A7")  # UpdateRestore

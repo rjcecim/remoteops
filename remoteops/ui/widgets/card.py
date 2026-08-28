@@ -1,7 +1,9 @@
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QSizePolicy,
-    QGridLayout, QToolButton, QMainWindow, QTabWidget,
-)
+from __future__ import annotations
+
+from collections.abc import Sequence
+from weakref import WeakKeyDictionary
+
+from PyQt6 import sip
 from PyQt6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
@@ -11,6 +13,19 @@ from PyQt6.QtCore import (
     pyqtSignal,
 )
 from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QSizePolicy,
+    QSpacerItem,
+    QTabWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from remoteops.ui.style import (
     ANIM_CARD,
@@ -76,19 +91,185 @@ def make_card_stack(parent: QWidget) -> QVBoxLayout:
     """
     Layout padrão para empilhar cards: um abaixo do outro, sem vãos.
 
-    Não usa ``AlignTop`` — no Qt isso sobrepõe widgets ao recolher com
-    altura fixa. O empilhamento no topo vem do stretch final
-    (``finish_card_stack``) ou de um card expansível que absorve a sobra.
+    Não usa ``AlignTop`` — no Qt isso sobrepõe widgets ao recolher.
+    A sobra vertical é gerida por ``bind_card_stack`` (cards abertos ou
+    spacer final somente quando todos estão recolhidos).
     """
     layout = QVBoxLayout(parent)
     layout.setContentsMargins(4, 4, 4, 4)
     layout.setSpacing(SPACE_SM)
+    # PyQt6: Qt.AlignmentFlag(0) limpa o alinhamento; nunca Qt.Alignment().
+    layout.setAlignment(Qt.AlignmentFlag(0))
     return layout
 
 
-def finish_card_stack(layout: QVBoxLayout) -> None:
-    """Absorve o espaço vertical sobrando abaixo dos cards (mantém o stack no topo)."""
-    layout.addStretch(1)
+class _CardStackBinding:
+    """Estado idempotente de um stack de CardWidget (stretch + spacer)."""
+
+    def __init__(self, layout: QVBoxLayout) -> None:
+        self.layout = layout
+        self.cards: list[CardWidget] = []
+        self.fill = True
+        self._connected: set[int] = set()
+        self._spacer_item: QSpacerItem | None = None
+
+    def rebind(self, cards: Sequence[CardWidget], *, fill: bool) -> None:
+        self.fill = bool(fill)
+        new_cards = list(cards)
+        new_ids = {id(c) for c in new_cards}
+        for card in self.cards:
+            if id(card) in new_ids:
+                continue
+            self._disconnect_card(card)
+        for card in new_cards:
+            self._capture_stretch(card)
+            self._connect_card(card)
+        self.cards = new_cards
+        self.apply()
+
+    def _alive_cards(self) -> list[CardWidget]:
+        alive: list[CardWidget] = []
+        for card in self.cards:
+            try:
+                if sip.isdeleted(card):
+                    self._connected.discard(id(card))
+                    continue
+            except RuntimeError:
+                self._connected.discard(id(card))
+                continue
+            alive.append(card)
+        self.cards = alive
+        return alive
+
+    def _capture_stretch(self, card: CardWidget) -> None:
+        if card.layout_stretch > 0:
+            return
+        idx = self.layout.indexOf(card)
+        if idx < 0:
+            return
+        current = self.layout.stretch(idx)
+        if current > 0:
+            card.set_layout_stretch(current)
+
+    def _connect_card(self, card: CardWidget) -> None:
+        cid = id(card)
+        card._stack_bound = True
+        if cid in self._connected:
+            return
+        card.collapsedChanged.connect(
+            self._on_collapsed,
+            Qt.ConnectionType.UniqueConnection,
+        )
+        self._connected.add(cid)
+
+    def _disconnect_card(self, card: CardWidget) -> None:
+        cid = id(card)
+        self._connected.discard(cid)
+        try:
+            if sip.isdeleted(card):
+                return
+        except RuntimeError:
+            return
+        card._stack_bound = False
+        try:
+            card.collapsedChanged.disconnect(self._on_collapsed)
+        except TypeError:
+            pass
+
+    def _on_collapsed(self, _collapsed: bool = False) -> None:
+        self.apply()
+
+    def apply(self) -> None:
+        cards = self._alive_cards()
+        if not self.fill:
+            for card in cards:
+                self._set_card_stretch(card, 0)
+            self._set_tail_spacer(False)
+            self._activate()
+            return
+
+        open_cards = [c for c in cards if not c.is_collapsed]
+        for card in cards:
+            if card.is_collapsed:
+                self._set_card_stretch(card, 0)
+            else:
+                self._set_card_stretch(card, max(1, card.layout_stretch))
+        self._set_tail_spacer(len(open_cards) == 0)
+        self._activate()
+
+    def _set_card_stretch(self, card: CardWidget, stretch: int) -> None:
+        idx = self.layout.indexOf(card)
+        if idx >= 0:
+            self.layout.setStretch(idx, int(stretch))
+        if card.is_collapsed:
+            return
+        card._apply_vertical_policies(absorb_extra=stretch > 0)
+
+    def _find_spacer_index(self) -> int | None:
+        if self._spacer_item is None:
+            return None
+        for i in range(self.layout.count()):
+            item = self.layout.itemAt(i)
+            if item is not None and item.spacerItem() is self._spacer_item:
+                return i
+        self._spacer_item = None
+        return None
+
+    def _set_tail_spacer(self, active: bool) -> None:
+        layout = self.layout
+        idx = self._find_spacer_index()
+        if active:
+            if idx is None:
+                layout.addStretch(1)
+                last = layout.itemAt(layout.count() - 1)
+                self._spacer_item = last.spacerItem() if last is not None else None
+                return
+            if idx != layout.count() - 1:
+                item = layout.takeAt(idx)
+                layout.addItem(item)
+                idx = layout.count() - 1
+            layout.setStretch(idx, 1)
+            return
+        if idx is not None:
+            layout.setStretch(idx, 0)
+
+    def _activate(self) -> None:
+        layout = self.layout
+        layout.invalidate()
+        layout.activate()
+        parent = layout.parentWidget()
+        if parent is not None:
+            parent.updateGeometry()
+
+
+_STACK_BINDINGS: WeakKeyDictionary[QVBoxLayout, _CardStackBinding] = (
+    WeakKeyDictionary()
+)
+
+
+def bind_card_stack(
+    layout: QVBoxLayout,
+    cards: Sequence[CardWidget],
+    *,
+    fill: bool = True,
+) -> None:
+    """
+    Liga um stack de ``CardWidget`` ao algoritmo padrão de stretch.
+
+    Idempotente: chamadas repetidas não duplicam conexões nem spacers e
+    não alteram os pesos gravados em ``layout_stretch``.
+
+    * Cards abertos: stretch ``max(1, card.layout_stretch)`` (se ``fill``).
+    * Cards recolhidos: stretch 0 (não absorvem sobra).
+    * Todos recolhidos: spacer final ``addStretch(1)`` ativo.
+    * ``fill=False``: nenhum card absorve sobra e o spacer fica inativo
+      (útil em stacks mistos cuja sobra vai para outro widget).
+    """
+    binding = _STACK_BINDINGS.get(layout)
+    if binding is None:
+        binding = _CardStackBinding(layout)
+        _STACK_BINDINGS[layout] = binding
+    binding.rebind(cards, fill=fill)
 
 
 class CardWidget(QWidget):
@@ -96,8 +277,10 @@ class CardWidget(QWidget):
     Widget de card com cabeçalho (ícone Unicode + título em negrito),
     linha divisória e área de conteúdo em grid.
 
-    Por padrão a altura segue o conteúdo (não estica). Use ``set_expanding``
-    quando o card deve ocupar o espaço vertical restante (tabelas, log, etc.).
+    Por padrão a altura segue o conteúdo. O stack (``bind_card_stack``)
+    pode dar altura extra ao card sem esticar o conteúdo interno.
+    Use ``set_expanding`` somente quando o widget interno (tabela, log,
+    editor de resultado) deve absorver essa sobra.
     """
 
     collapsedChanged = pyqtSignal(bool)
@@ -113,9 +296,11 @@ class CardWidget(QWidget):
         self._is_collapsible = False
         self._is_collapsed = False
         self._wants_expanding = False
-        # 0 = formulário (não estica). Cards expansíveis chamam set_layout_stretch.
+        self._stack_bound = False
+        # 0 = peso padrão; no stack o stretch efetivo aberto é max(1, valor).
         self._layout_stretch = 0
         self._divider_spacing_idx: int | None = None
+        self._container_tail_idx: int | None = None
         self._collapse_anim: QPropertyAnimation | None = None
         self._anim_hint_h: int | None = None
         self._collapse_target: bool | None = None
@@ -257,6 +442,10 @@ class CardWidget(QWidget):
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(CARD_GRID_VERTICAL_SPACING)
         self._container_layout.addWidget(self._content_widget)
+        # Stretch interno: formulários empilham o conteúdo no topo do card
+        # quando o stack dá altura extra. Cards com set_expanding desligam isto.
+        self._container_layout.addStretch(0)
+        self._container_tail_idx = self._container_layout.count() - 1
 
         outer.addWidget(self._container)
 
@@ -325,15 +514,47 @@ class CardWidget(QWidget):
         header.insertWidget(idx, button)
 
     def set_expanding(self, expanding: bool = True) -> None:
-        """Faz o card (e a área de conteúdo) ocupar o espaço vertical restante."""
+        """Faz a área de conteúdo interna absorver o espaço extra do card.
+
+        Não use em formulários só para o card preencher a aba — o stack
+        já pode dar altura ao ``CardWidget`` sem esticar campos.
+        """
         self._wants_expanding = bool(expanding)
         if self._is_collapsed:
             return
-        v_policy = QSizePolicy.Policy.Expanding if expanding else QSizePolicy.Policy.Preferred
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, v_policy)
-        self._container.setSizePolicy(QSizePolicy.Policy.Expanding, v_policy)
-        self._content_widget.setSizePolicy(QSizePolicy.Policy.Expanding, v_policy)
-        self._container_layout.setStretchFactor(self._content_widget, 1 if expanding else 0)
+        self._apply_vertical_policies(absorb_extra=self._wants_expanding)
+
+    def _apply_vertical_policies(self, *, absorb_extra: bool) -> None:
+        """Política do card no stack vs. expansão do conteúdo interno."""
+        if self._is_collapsed:
+            return
+        v_card = (
+            QSizePolicy.Policy.Expanding
+            if (absorb_extra or self._wants_expanding)
+            else QSizePolicy.Policy.Maximum
+        )
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, v_card)
+        self._container.setSizePolicy(QSizePolicy.Policy.Expanding, v_card)
+        if self._wants_expanding:
+            self._content_widget.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            )
+            self._container_layout.setStretchFactor(self._content_widget, 1)
+            self._set_container_tail_stretch(0)
+            self.content_layout.setAlignment(Qt.AlignmentFlag(0))
+        else:
+            self._content_widget.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
+            )
+            self._container_layout.setStretchFactor(self._content_widget, 0)
+            self._set_container_tail_stretch(1 if absorb_extra else 0)
+            self.content_layout.setAlignment(Qt.AlignmentFlag(0))
+
+    def _set_container_tail_stretch(self, stretch: int) -> None:
+        idx = self._container_tail_idx
+        if idx is None:
+            return
+        self._container_layout.setStretch(idx, max(0, int(stretch)))
 
     def set_layout_stretch(self, stretch: int) -> None:
         """Guarda o stretch no layout pai (usado ao expandir de novo após minimizar)."""
@@ -419,8 +640,8 @@ class CardWidget(QWidget):
         if not animate:
             self._stop_collapse_anim()
             self._apply_collapsed_state(collapsed)
-            self._notify_geometry()
             self.collapsedChanged.emit(self._is_collapsed)
+            self._notify_geometry()
             return
 
         self._animate_collapsed(collapsed)
@@ -483,8 +704,8 @@ class CardWidget(QWidget):
         ms = anim_ms(ANIM_CARD)
         if ms <= 0 or start == end:
             self._apply_collapsed_state(collapsed)
-            self._notify_geometry()
             self.collapsedChanged.emit(self._is_collapsed)
+            self._notify_geometry()
             return
 
         self._anim_hint_h = self._composed_height(start)
@@ -511,8 +732,8 @@ class CardWidget(QWidget):
         self._anim_hint_h = None
         self._content_widget.setMaximumHeight(_QWIDGETSIZE_MAX)
         self._apply_collapsed_state(collapsed)
-        self._notify_geometry()
         self.collapsedChanged.emit(self._is_collapsed)
+        self._notify_geometry()
 
     def _apply_collapsed_state(self, collapsed: bool) -> None:
         self._is_collapsed = bool(collapsed)
@@ -536,22 +757,13 @@ class CardWidget(QWidget):
                 QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored
             )
             self._container_layout.setStretchFactor(self._content_widget, 0)
-            self._apply_parent_stretch(0)
+            self._set_container_tail_stretch(0)
+            if not self._stack_bound:
+                self._apply_parent_stretch(0)
         else:
-            if self._wants_expanding:
-                self.set_expanding(True)
-            else:
-                self.setSizePolicy(
-                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
-                )
-                self._container.setSizePolicy(
-                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
-                )
-                self._content_widget.setSizePolicy(
-                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
-                )
-                self._container_layout.setStretchFactor(self._content_widget, 0)
-            self._apply_parent_stretch(self._layout_stretch)
+            self._apply_vertical_policies(absorb_extra=self._wants_expanding)
+            if not self._stack_bound:
+                self._apply_parent_stretch(self._layout_stretch)
 
     def _notify_geometry(self) -> None:
         self.updateGeometry()
@@ -590,6 +802,8 @@ class CardWidget(QWidget):
             self._container_layout.invalidate()
 
     def _apply_parent_stretch(self, stretch: int) -> None:
+        if self._stack_bound:
+            return
         parent = self.parentWidget()
         if parent is None:
             return

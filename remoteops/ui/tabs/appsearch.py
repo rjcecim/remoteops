@@ -32,6 +32,7 @@ from remoteops.ui.style import (
 from remoteops.ui.widgets.card import (
     CardWidget,
     add_row,
+    bind_card_stack,
     grid_in_card,
     make_card_stack,
     make_field_label,
@@ -310,7 +311,6 @@ class AppSearchTab(QWidget):
         # Pesquisa no topo; Resultados + Console de Saída próprios (não misturam com a main)
         root = make_card_stack(self)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._bottom_stretch_idx = None
 
         # ── Card Pesquisa ──────────────────────────────────────────────
         search_card = CardWidget("\uE721", self.tr("Pesquisa"))
@@ -504,44 +504,10 @@ class AppSearchTab(QWidget):
         self.log_output = LogOutputWidget()
         self.log_output.set_layout_stretch(1)
         root.addWidget(self.log_output, 1)
-
-        self.results_card.collapsedChanged.connect(self._redistribute_expandable_space)
-        self.log_output.collapsedChanged.connect(self._redistribute_expandable_space)
-        self._redistribute_expandable_space()
+        bind_card_stack(root, (search_card, self.results_card, self.log_output))
 
         self.destroyed.connect(self._abort_worker)
         self.refresh_hosts_status()
-
-    def _redistribute_expandable_space(self, _collapsed: bool = False) -> None:
-        """Divide o espaço entre Resultados e Console abertos; cards ficam no topo."""
-        lay = self.layout()
-        if lay is None:
-            return
-        open_cards = []
-        for w, stretch in ((self.results_card, 2), (self.log_output, 1)):
-            idx = lay.indexOf(w)
-            if idx < 0:
-                continue
-            if w.is_collapsed:
-                lay.setStretch(idx, 0)
-            else:
-                open_cards.append(w)
-                w.set_layout_stretch(stretch)
-                lay.setStretch(idx, stretch)
-
-        # Sem AlignTop: stretch final mantém cabeçalhos no topo ao recolher tudo.
-        need_tail = len(open_cards) == 0
-        if need_tail:
-            if getattr(self, "_bottom_stretch_idx", None) is None:
-                lay.addStretch(1)
-                self._bottom_stretch_idx = lay.count() - 1
-            else:
-                lay.setStretch(self._bottom_stretch_idx, 1)
-        elif getattr(self, "_bottom_stretch_idx", None) is not None:
-            lay.setStretch(self._bottom_stretch_idx, 0)
-
-        lay.activate()
-        self.updateGeometry()
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)

@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
 from remoteops.core.console_codec import decode_best_effort
 from remoteops.core.win_cmd import run_captured
 from remoteops.ui.style import make_icon_button, multiline_edit_qss
-from remoteops.ui.widgets.card import CardWidget
+from remoteops.ui.widgets.card import CardWidget, bind_card_stack
 from remoteops.ui.widgets.spinner import DotsSpinner
 from remoteops.ui.widgets.table import configure_standard_table
 from remoteops.utils.pstools import get_pstools_dir
@@ -255,9 +255,8 @@ class PsInfoTab(QWidget):
         self.results_layout = QVBoxLayout(self.results_root)
         self.results_layout.setContentsMargins(0, 0, 0, 0)
         self.results_layout.setSpacing(3)
-        # Stretch final (não AlignTop): evita sobreposição ao recolher cards.
-        self.results_layout.addStretch(1)
         root.addWidget(self.results_root, 1)
+        bind_card_stack(self.results_layout, [])
 
         if host_source is not None:
             host_source.textChanged.connect(self._on_host_changed)
@@ -270,17 +269,9 @@ class PsInfoTab(QWidget):
         return not sip.isdeleted(self)
 
     def _add_result_card(self, card: CardWidget, stretch: int = 1) -> None:
-        """Insere o card antes do stretch final e registra o stretch para restaurar ao expandir."""
         card.set_layout_stretch(stretch)
-        layout_stretch = 0 if card.is_collapsed else stretch
-        idx = max(0, self.results_layout.count() - 1)
-        self.results_layout.insertWidget(idx, card, layout_stretch)
-        try:
-            card.collapsedChanged.disconnect(self._redistribute_card_space)
-        except TypeError:
-            pass
-        card.collapsedChanged.connect(lambda _collapsed=False: self._redistribute_card_space())
-        self._redistribute_card_space()
+        self.results_layout.addWidget(card)
+        bind_card_stack(self.results_layout, list(self._iter_result_cards()))
 
     def _iter_result_cards(self):
         for i in range(self.results_layout.count()):
@@ -288,40 +279,6 @@ class PsInfoTab(QWidget):
             w = item.widget() if item is not None else None
             if isinstance(w, CardWidget):
                 yield w
-
-    def _redistribute_card_space(self) -> None:
-        """
-        Com algum card expandido: eles preenchem a janela (stretch final = 0).
-        Com todos minimizados: só cabeçalhos no topo (stretch final = 1).
-        """
-        if self.results_layout.count() == 0:
-            return
-
-        cards = list(self._iter_result_cards())
-        expanded = [c for c in cards if not c.is_collapsed]
-        last = self.results_layout.count() - 1
-
-        if not expanded:
-            # Todos minimizados → cabeçalhos no topo + espaço vazio embaixo
-            for c in cards:
-                idx = self.results_layout.indexOf(c)
-                if idx >= 0:
-                    self.results_layout.setStretch(idx, 0)
-            self.results_layout.setStretch(last, 1)
-        else:
-            # Há card(s) aberto(s) → preenchem a janela inteira
-            self.results_layout.setStretch(last, 0)
-            for c in cards:
-                idx = self.results_layout.indexOf(c)
-                if idx < 0:
-                    continue
-                if c.is_collapsed:
-                    self.results_layout.setStretch(idx, 0)
-                else:
-                    self.results_layout.setStretch(idx, max(1, c.layout_stretch))
-
-        self.results_layout.activate()
-        self.updateGeometry()
 
     def _abort_psinfo_worker(self, _destroyed: object = None) -> None:
         w = self._worker
@@ -390,8 +347,8 @@ class PsInfoTab(QWidget):
             w = item.widget()
             if w is not None:
                 w.deleteLater()
-        self.results_layout.addStretch(1)
         self._loading_card = None
+        bind_card_stack(self.results_layout, [])
 
     def _set_loading(self, loading: bool, host: str = "") -> None:
         if not self._ui_alive():

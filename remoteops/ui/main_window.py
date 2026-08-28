@@ -37,6 +37,7 @@ from remoteops.ui.tabs.robocopy import RobocopyTab
 from remoteops.ui.tabs.servicos import ServicosTab
 from remoteops.ui.tabs.settings import SettingsTab
 from remoteops.ui.tabs.winget import WinGetTab
+from remoteops.ui.widgets.card import bind_card_stack
 from remoteops.ui.widgets.content_tab_widget import ContentSizedTabWidget
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.mdl2_tab_bar import Mdl2TabBar
@@ -136,10 +137,7 @@ class MainWindow(QMainWindow):
 
         vbox.addWidget(self.log_output, 1)
         self._main_layout = vbox
-        self._bottom_stretch_idx = None
 
-        self.command_preview.collapsedChanged.connect(self._redistribute_expandable_space)
-        self.log_output.collapsedChanged.connect(self._redistribute_expandable_space)
         self._redistribute_expandable_space()
 
         self.setCentralWidget(central)
@@ -1213,12 +1211,7 @@ class MainWindow(QMainWindow):
             if tabs_idx >= 0:
                 lay.setStretch(tabs_idx, 1)
             self.tabs.set_fill_available(True)
-            for w in (self.command_preview, self.log_output):
-                idx = lay.indexOf(w)
-                if idx >= 0:
-                    lay.setStretch(idx, 0)
-            if self._bottom_stretch_idx is not None:
-                lay.setStretch(self._bottom_stretch_idx, 0)
+            bind_card_stack(lay, (self.command_preview, self.log_output), fill=False)
             lay.activate()
             if self.centralWidget() is not None:
                 self.centralWidget().updateGeometry()
@@ -1229,28 +1222,7 @@ class MainWindow(QMainWindow):
         # Sai do Expanding de tela cheia e limita altura ao conteúdo da aba
         # (evita o vão vazio entre o formulário e a Pré-visualização).
         self.tabs.set_fill_available(False)
-
-        expandables = [self.command_preview, self.log_output]
-        open_cards = [w for w in expandables if not w.is_collapsed]
-
-        for w in expandables:
-            idx = lay.indexOf(w)
-            if idx < 0:
-                continue
-            stretch = 1 if (w in open_cards) else 0
-            w.set_layout_stretch(1)
-            lay.setStretch(idx, stretch)
-
-        # Stretch final: só quando nenhum expansível está aberto
-        need_tail = len(open_cards) == 0
-        if need_tail:
-            if self._bottom_stretch_idx is None:
-                lay.addStretch(1)
-                self._bottom_stretch_idx = lay.count() - 1
-            else:
-                lay.setStretch(self._bottom_stretch_idx, 1)
-        elif self._bottom_stretch_idx is not None:
-            lay.setStretch(self._bottom_stretch_idx, 0)
+        bind_card_stack(lay, (self.command_preview, self.log_output), fill=True)
 
         # Recalcular teto após Preview/Log voltarem a participar do layout
         self.tabs.sync_content_height()

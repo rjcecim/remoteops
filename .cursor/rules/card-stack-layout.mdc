@@ -1,0 +1,38 @@
+---
+description: Padrão obrigatório de empilhamento e stretch de CardWidget no RemoteOps.
+globs: remoteops/ui/**/*.py
+alwaysApply: false
+---
+
+# Empilhamento de CardWidget
+
+Todo stack de `CardWidget` usa o comportamento central em `remoteops/ui/widgets/card.py`.
+
+## Obrigatório
+
+1. Criar o layout com `make_card_stack(parent)`.
+2. Definir pesos com `card.set_layout_stretch(...)` **antes** do bind.
+3. Registrar os cards com `bind_card_stack(layout, cards)`.
+4. A altura natural de cada card aberto vem do conteúdo (`sizeHint` / `minimumSizeHint` / `heightForWidth()`). Não usar alturas fixas artificiais para empilhar.
+5. Cards **abertos** absorvem a sobra vertical: `effective_stretch = max(1, card.layout_stretch)`.
+6. Card **recolhido**: só o cabeçalho, stretch 0, não absorve sobra.
+7. **Todos recolhidos**: stretch 0 em todos e spacer final ativo (`addStretch(1)`). Cabeçalhos colados no topo; a sobra fica abaixo do último cabeçalho. Ao reabrir qualquer card, o spacer deixa de absorver.
+8. `layout_stretch` é o peso relativo. Não sobrescrever esse valor ao recolher/reabrir.
+9. `set_expanding(True)` somente quando o conteúdo interno deve crescer (tabela, log, console, editor de resultado). Formulários podem receber altura extra do stack sem esticar `QLineEdit`, `QComboBox`, checkboxes, labels ou grids — o espaço extra fica abaixo do conteúdo, dentro do card.
+10. Não definir `Qt.AlignmentFlag.AlignTop` no `QVBoxLayout` raiz do stack.
+11. Não usar spacer final permanente. Não usar `finish_card_stack()`.
+12. Não duplicar `_redistribute_card_space` / `_redistribute_expandable_space` / `_update_card_stretches` para o algoritmo genérico.
+13. Não conectar `collapsedChanged` só para atualizar stretch do stack — isso é responsabilidade de `bind_card_stack`. Conexões funcionais (ex.: `formLayoutChanged`) podem permanecer.
+14. `bind_card_stack` é idempotente: chamadas repetidas não duplicam conexões, spacers ou callbacks, nem alteram os pesos originais.
+15. PyQt6: limpar alinhamento com `Qt.AlignmentFlag(0)`. Nunca `Qt.Alignment()`.
+
+## Compacto vs preenchimento
+
+- `ContentSizedTabWidget.set_fill_available(False)`: a aba usa só a altura natural. Não inventar espaço.
+- Quando a altura disponível for maior que o conteúdo (ou `set_fill_available(True)`), distribuir **somente a sobra** entre os cards abertos.
+
+## Exceções
+
+- **WinGet**: pode manter lógica de `QTabWidget` interno, subaba e tabelas. Stacks puros de `CardWidget` (páginas internas) usam `bind_card_stack`.
+- **PsInfo**: cards dinâmicos devem reaplicar `bind_card_stack` de forma idempotente ao adicionar/remover. Não copiar o algoritmo genérico.
+- **MainWindow**: stack misto (abas + Preview + Console). A política `set_fill_available` e o modo de workspace ficam locais; o stretch de Preview/Console usa `bind_card_stack`.

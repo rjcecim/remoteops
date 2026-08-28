@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 from remoteops.ui.widgets.card import (
     CardWidget,
     add_row,
+    bind_card_stack,
     grid_in_card,
     make_card_stack,
 )
@@ -117,6 +118,7 @@ class ConnectivityTab(QWidget):
         self.results_card = self._build_results_card()
         root.addWidget(dest, 0)
         root.addWidget(self.results_card, 1)
+        bind_card_stack(root, (dest, self.results_card))
 
         if self._host_source is not None:
             self._host_source.textChanged.connect(self.sync_from_host)

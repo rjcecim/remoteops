@@ -36,7 +36,7 @@ from remoteops.core.console_codec import decode_best_effort
 from remoteops.core.win_cmd import run_captured
 from remoteops.services.ops import CredentialContext
 from remoteops.ui.style import make_icon_button
-from remoteops.ui.widgets.card import CardWidget, make_card_stack
+from remoteops.ui.widgets.card import CardWidget, bind_card_stack, make_card_stack
 from remoteops.ui.widgets.combobox import FluentComboBox
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.spinner import DotsSpinner
@@ -1257,7 +1257,6 @@ class ServicosTab(QWidget):
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         root = make_card_stack(self)
-        self._bottom_stretch_idx = None
 
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
@@ -1351,12 +1350,9 @@ class ServicosTab(QWidget):
         self.log_output = LogOutputWidget()
         self.log_output.set_layout_stretch(1)
         root.addWidget(self.log_output, 1)
-
-        self.svc_card.collapsedChanged.connect(self._redistribute_expandable_space)
-        self.log_output.collapsedChanged.connect(self._redistribute_expandable_space)
+        bind_card_stack(root, (self.svc_card, self.log_output))
         self.filter_edit.textChanged.connect(self._apply_filter)
         self.status_filter.currentIndexChanged.connect(self._apply_filter)
-        self._redistribute_expandable_space()
 
         self._auto_timer = QTimer(self)
         self._auto_timer.setSingleShot(False)
@@ -1414,33 +1410,6 @@ class ServicosTab(QWidget):
             self.table.setRowCount(0)
         self._apply_filter()
         self._refresh_action_buttons()
-
-    def _redistribute_expandable_space(self, _collapsed: bool = False) -> None:
-        lay = self.layout()
-        if lay is None:
-            return
-        open_cards = []
-        for w, stretch in ((self.svc_card, 2), (self.log_output, 1)):
-            idx = lay.indexOf(w)
-            if idx < 0:
-                continue
-            if w.is_collapsed:
-                lay.setStretch(idx, 0)
-            else:
-                open_cards.append(w)
-                w.set_layout_stretch(stretch)
-                lay.setStretch(idx, stretch)
-        need_tail = len(open_cards) == 0
-        if need_tail:
-            if getattr(self, "_bottom_stretch_idx", None) is None:
-                lay.addStretch(1)
-                self._bottom_stretch_idx = lay.count() - 1
-            else:
-                lay.setStretch(self._bottom_stretch_idx, 1)
-        elif getattr(self, "_bottom_stretch_idx", None) is not None:
-            lay.setStretch(self._bottom_stretch_idx, 0)
-        lay.activate()
-        self.updateGeometry()
 
     def _on_destroyed(self, _destroyed: object = None) -> None:
         self._closing = True

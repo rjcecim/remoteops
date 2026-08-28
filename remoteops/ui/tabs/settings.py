@@ -21,7 +21,7 @@ from remoteops.ui.widgets.card import (
     CardWidget,
     add_row,
     add_row_full_width,
-    finish_card_stack,
+    bind_card_stack,
     grid_in_card,
     make_card_stack,
 )
@@ -120,6 +120,9 @@ def _wrap_page(*widgets: QWidget) -> QWidget:
     for widget in widgets:
         widget.setMinimumWidth(0)
         lay.addWidget(widget, 0)
+    cards = [w for w in widgets if isinstance(w, CardWidget)]
+    if cards:
+        bind_card_stack(lay, cards)
     return page
 
 
@@ -147,7 +150,6 @@ class SettingsTab(QWidget):
         self._root_layout.addWidget(self.network_range, 0)
         self._search_card = self._build_search_card()
         self._root_layout.addWidget(self._search_card, 0)
-        finish_card_stack(self._root_layout)
 
         for card in (
             self._pstools_card,
@@ -158,6 +160,10 @@ class SettingsTab(QWidget):
             self._search_card,
         ):
             card.collapsedChanged.connect(self._on_settings_card_collapsed)
+        bind_card_stack(
+            self._root_layout,
+            (self._printers_card, self.network_range, self._search_card),
+        )
 
         self.refresh_pstools_status()
         self.refresh_rustdesk_status()

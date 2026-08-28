@@ -1,9 +1,11 @@
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import (
-    QWidget, QCheckBox, QLineEdit, QHBoxLayout, QSizePolicy
-)
+from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QLineEdit, QSizePolicy, QWidget
 from remoteops.ui.widgets.card import (
-    CardWidget, grid_in_card, add_row, make_card_stack, finish_card_stack,
+    CardWidget,
+    add_row,
+    bind_card_stack,
+    grid_in_card,
+    make_card_stack,
 )
 from remoteops.ui.widgets.combobox import FluentComboBox
 
@@ -115,7 +117,6 @@ class MsiTab(QWidget):
         add_row(g3, 1, self.tr("Lista:"), self.update_edit)
 
         vbox.addWidget(card_opt)
-        finish_card_stack(vbox)
 
         self._form_cards = (card_cmd, card_log, card_opt)
         for card, on_reset in zip(
@@ -126,6 +127,7 @@ class MsiTab(QWidget):
             card.set_resettable(True, self.tr("Restaurar padrões deste card"))
             card.resetRequested.connect(on_reset)
             card.collapsedChanged.connect(self._on_form_card_collapsed)
+        bind_card_stack(vbox, self._form_cards)
 
         self.update_action_tooltip()
         self.update_interface_tooltip()

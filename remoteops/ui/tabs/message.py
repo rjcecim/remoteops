@@ -67,6 +67,7 @@ from remoteops.ui.style import (
 from remoteops.ui.widgets.card import (
     CardWidget,
     add_row,
+    bind_card_stack,
     grid_in_card,
     make_card_stack,
 )
@@ -144,9 +145,7 @@ class MessageTab(QWidget):
         self.log_output.set_layout_stretch(3)
         self.log_output.set_interactive(False)
         root.addWidget(self.log_output, 3)
-        self.message_card.collapsedChanged.connect(self._redistribute_expandable_space)
-        self.log_output.collapsedChanged.connect(self._redistribute_expandable_space)
-        self._redistribute_expandable_space()
+        bind_card_stack(root, (dest, recip, self.message_card, self.log_output))
 
         if self._host_source is not None:
             self._host_source.textChanged.connect(self.sync_from_host)
@@ -383,33 +382,6 @@ class MessageTab(QWidget):
         card.set_expanding(True)
         card.set_layout_stretch(5)
         return card
-
-    def _redistribute_expandable_space(self, _collapsed: bool = False) -> None:
-        lay = self.layout()
-        if lay is None:
-            return
-        open_cards = []
-        for w, stretch in ((self.message_card, 5), (self.log_output, 3)):
-            idx = lay.indexOf(w)
-            if idx < 0:
-                continue
-            if w.is_collapsed:
-                lay.setStretch(idx, 0)
-            else:
-                open_cards.append(w)
-                w.set_layout_stretch(stretch)
-                lay.setStretch(idx, stretch)
-        need_tail = len(open_cards) == 0
-        if need_tail:
-            if getattr(self, "_bottom_stretch_idx", None) is None:
-                lay.addStretch(1)
-                self._bottom_stretch_idx = lay.count() - 1
-            else:
-                lay.setStretch(self._bottom_stretch_idx, 1)
-        elif getattr(self, "_bottom_stretch_idx", None) is not None:
-            lay.setStretch(self._bottom_stretch_idx, 0)
-        lay.activate()
-        self.updateGeometry()
 
     # ── host / estado ────────────────────────────────────────────────────────
 

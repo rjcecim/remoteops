@@ -1,9 +1,11 @@
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import (
-    QWidget, QLineEdit, QCheckBox, QHBoxLayout, QSizePolicy
-)
+from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QLineEdit, QSizePolicy, QWidget
 from remoteops.ui.widgets.card import (
-    CardWidget, grid_in_card, add_row, make_card_stack, finish_card_stack,
+    CardWidget,
+    add_row,
+    bind_card_stack,
+    grid_in_card,
+    make_card_stack,
 )
 
 
@@ -63,7 +65,6 @@ class RobocopyTab(QWidget):
         add_row(g2, 0, self.tr("Parâmetros:"), switches_container)
 
         vbox.addWidget(card_params)
-        finish_card_stack(vbox)
 
         self._form_cards = (card_dest, card_params)
         for card, on_reset in zip(
@@ -74,6 +75,7 @@ class RobocopyTab(QWidget):
             card.set_resettable(True, self.tr("Restaurar padrões deste card"))
             card.resetRequested.connect(on_reset)
             card.collapsedChanged.connect(self._on_form_card_collapsed)
+        bind_card_stack(vbox, self._form_cards)
 
     def _on_form_card_collapsed(self, _collapsed: bool = False) -> None:
         lay = self.layout()

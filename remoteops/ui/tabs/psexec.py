@@ -35,7 +35,7 @@ from remoteops.ui.style import (
     accent_button_qss,
     composite_field_qss,
 )
-from remoteops.ui.widgets.card import CardWidget, make_card_stack
+from remoteops.ui.widgets.card import CardWidget, bind_card_stack, make_card_stack
 from remoteops.ui.widgets.combobox import FluentComboBox
 from remoteops.ui.widgets.flow import FlowLayout
 from remoteops.ui.widgets.spinbox import StepSpinBox
@@ -621,6 +621,7 @@ class PsExecTab(QWidget):
             card.set_resettable(True, self.tr("Restaurar padrões deste card"))
             card.resetRequested.connect(on_reset)
             card.collapsedChanged.connect(self._on_form_card_collapsed)
+        bind_card_stack(vbox, self._form_cards)
 
     def _reset_card_conexao(self) -> None:
         self.host_edit.clear()

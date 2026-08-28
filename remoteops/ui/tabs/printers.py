@@ -54,6 +54,7 @@ from remoteops.ui.style import (
 )
 from remoteops.ui.widgets.card import (
     CardWidget,
+    bind_card_stack,
     make_card_stack,
 )
 from remoteops.ui.widgets.combobox import FluentComboBox
@@ -385,7 +386,6 @@ class PrintersTab(QWidget):
         self._installed_query_key = ""
         self._closing = False
         self._host_online = bool(online_provider() if online_provider else False)
-        self._bottom_stretch_idx = None
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         root = make_card_stack(self)
@@ -401,10 +401,10 @@ class PrintersTab(QWidget):
         root.addWidget(self.install_card, 0)
         root.addWidget(self.params_card, 0)
         root.addWidget(self.log_output, 2)
-
-        for card in (self.catalog_card, self.install_card, self.params_card, self.log_output):
-            card.collapsedChanged.connect(self._redistribute_expandable_space)
-        self._redistribute_expandable_space()
+        bind_card_stack(
+            root,
+            (self.catalog_card, self.install_card, self.params_card, self.log_output),
+        )
 
         if self._host_source is not None:
             self._host_source.textChanged.connect(self._on_host_text_changed)
@@ -844,40 +844,6 @@ class PrintersTab(QWidget):
         self.command_preview.setStyleSheet(_COMMAND_QSS)
         card.content_layout.addWidget(self.command_preview, 0)
         return card
-
-    def _redistribute_expandable_space(self, _collapsed: bool = False) -> None:
-        lay = self.layout()
-        if lay is None:
-            return
-        open_cards = []
-        for w, stretch in (
-            (self.catalog_card, 3),
-            (self.install_card, 0),
-            (self.params_card, 0),
-            (self.log_output, 2),
-        ):
-            idx = lay.indexOf(w)
-            if idx < 0:
-                continue
-            if w.is_collapsed:
-                lay.setStretch(idx, 0)
-            else:
-                used = stretch if stretch > 0 else 0
-                if used:
-                    open_cards.append(w)
-                    w.set_layout_stretch(used)
-                lay.setStretch(idx, used)
-        need_tail = len(open_cards) == 0
-        if need_tail:
-            if self._bottom_stretch_idx is None:
-                lay.addStretch(1)
-                self._bottom_stretch_idx = lay.count() - 1
-            else:
-                lay.setStretch(self._bottom_stretch_idx, 1)
-        elif self._bottom_stretch_idx is not None:
-            lay.setStretch(self._bottom_stretch_idx, 0)
-        lay.activate()
-        self.updateGeometry()
 
     def _abort_workers(self, _destroyed: object = None) -> None:
         if sip.isdeleted(self):
