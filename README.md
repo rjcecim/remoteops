@@ -43,7 +43,7 @@ Versão: **`2.0.0`** (`remoteops.core.version.__version__`).
 | **Arquivos** | `.exe`, `.msi`, `.ps1`, `.bat` — arquivo ou pasta no seletor do cabeçalho |
 | **Abas dinâmicas** | MSI, PowerShell, CMD, Robocopy e Instalação em Lote só aparecem quando o tipo de arquivo pede |
 | **PsExec** | Fonte de verdade das flags (`-s`, `-c`, `-f`, `-accepteula`…). O preview e a execução leem a UI |
-| **Host** | Status Online/Offline; **Executar** só fica disponível com o host online |
+| **Host** | Status ICMP + TCP 445; **Executar** só fica disponível com a porta 445 acessível |
 | **Cópia** | Robocopy para `.msi`/`.ps1`/`.bat`/pasta; `.exe` usa a cópia do próprio PsExec (`-c`) |
 | **Lote** | Instala o EXE selecionado em vários hosts (faixa de IP ou `hosts.json`) |
 | **WinGet** | Listar, buscar, instalar, atualizar e desinstalar pacotes no host remoto |
@@ -76,6 +76,7 @@ Aba **PsExec** está sempre visível. As demais abrem sob demanda.
 | **Impressoras** | Botão na aba PsExec | Lista o servidor de impressão e instala/conecta impressoras no host |
 | **Pesquisa de Aplicativos** | Ícone de busca no cabeçalho | Multi-host (faixa de IP ou `hosts.json`) |
 | **Configurações** | Ícone de engrenagem no cabeçalho | PSTools, RustDesk, logs, Remote Registry, faixa de IP, servidor de impressão |
+| **Conectividade** | Botão Diagnosticar na linha de Status do PsExec | ICMP Ping e TCP Ping (PsPing); não duplica o console compartilhado |
 
 ---
 
@@ -86,7 +87,7 @@ Aba **PsExec** está sempre visível. As demais abrem sob demanda.
 | **Sistema** | Windows 10 ou 11 |
 | **Python** | 3.10+ (desenvolvimento) |
 | **PyQt6** | Interface |
-| **PSTools** | Pasta com PsExec e PsInfo — padrão `C:\PSTools\` (ajustável em Configurações) |
+| **PSTools** | Pasta com PsExec e PsInfo (obrigatórios) e, opcionalmente, PsPing, PsList, PsService — padrão `C:\PSTools\` (ajustável em Configurações) |
 | **WinGet** | No host remoto, para a aba WinGet |
 | **RustDesk** | Opcional, no host e na máquina local |
 | **Rede** | Ping, SMB (`C$`) e Remote Registry conforme o fluxo |
@@ -120,7 +121,7 @@ python main.py
 python -m remoteops
 ```
 
-1. Informe o **host remoto** na aba PsExec e aguarde o status **Online**.
+1. Informe o **host remoto** na aba PsExec e aguarde o status de conectividade (TCP 445).
 2. Autenticação só se a sessão atual não bastar (`-u` / `-p`).
 3. Selecione um arquivo no cabeçalho, **ou** digite o comando remoto (ex.: `cmd`, `powershell`).
 4. Ajuste as abas que surgirem e as flags do PsExec.
@@ -188,7 +189,7 @@ Preferência **Salvar log em arquivo** em Configurações:
 python -m unittest discover -s tests -v
 ```
 
-A pasta `tests/` é versionada; o `RemoteOps.spec` continua a excluí-la do EXE.
+A pasta `tests/` é versionada; o `RemoteOps.spec` continua a excluí-la do EXE. Os testes de PsPing e conectividade não exigem rede real nem o executável do PsPing.
 
 ---
 

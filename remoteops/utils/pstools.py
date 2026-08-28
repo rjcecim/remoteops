@@ -82,6 +82,7 @@ def probe_pstools(pstools_dir: Optional[str] = None) -> Dict[str, object]:
     tools: List[Tuple[str, Sequence[str]]] = [
         ("PsExec", ("PsExec64.exe", "PsExec.exe")),
         ("PsInfo", ("PsInfo64.exe", "PsInfo.exe")),
+        ("PsPing", ("PsPing64.exe", "PsPing.exe")),
         ("PsList", ("PsList64.exe", "PsList.exe")),
         ("PsKill", ("PsKill64.exe", "PsKill.exe")),
         ("PsSuspend", ("PsSuspend64.exe", "PsSuspend.exe")),

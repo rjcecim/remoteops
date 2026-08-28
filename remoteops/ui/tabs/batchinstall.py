@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
 from typing import Dict, List, Optional
 
@@ -56,13 +57,16 @@ from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
 from remoteops.ui.widgets.status_dot import StatusDot as _StatusDot
 from remoteops.ui.widgets.table import configure_standard_table, pause_table_sorting
+from remoteops.utils.host_reachability import (
+    decide_batch_connectivity,
+    probe_host_reachability,
+)
 from remoteops.utils.hosts import load_hosts_file
 from remoteops.utils.network_range import (
     get_network_range_config,
     ips_for_config,
     network_range_search_mode,
 )
-from remoteops.utils.ping import ping_host
 from remoteops.utils.product_identity import (
     identify_product,
     parse_version_key,
@@ -304,18 +308,24 @@ class _BatchInstallWorker(QThread):
         self.rowUpsert.emit(self.generation, row)
 
     def _start_ping_filter(self, ping_q: Queue) -> threading.Thread:
-        """Ping antes do inventário; offline não entra no Remote Registry."""
+        """ICMP + TCP 445 antes do inventário; ICMP bloqueado não exclui o host."""
 
         def _feed() -> None:
             remaining = list(self.hosts)
             intake = self._inbox
+            workers = min(4, max(1, len(remaining) or 1))
 
             def _handle(raw: str) -> None:
                 host = (raw or "").strip().strip("\\")
                 if not host or self._abort:
                     return
-                online, _ = ping_host(host)
-                if not online:
+                reach = probe_host_reachability(
+                    host,
+                    should_cancel=lambda: self._abort,
+                    log=False,
+                )
+                decision = decide_batch_connectivity(reach)
+                if not decision.continue_inventory:
                     row = decide_host_action(
                         host=host,
                         desired_version=self.desired_version,
@@ -325,14 +335,26 @@ class _BatchInstallWorker(QThread):
                     )
                     self._upsert_row(row)
                     self._bump_progress(host, failed=False)
-                    self.logLine.emit(f"[LOTE] {host}: computador offline")
+                    if decision.log_message:
+                        self.logLine.emit(f"[LOTE] {decision.log_message}")
                     return
+                if decision.icmp_blocked and decision.log_message:
+                    self.logLine.emit(f"[LOTE] {decision.log_message}")
                 ping_q.put(host)
 
-            for host in remaining:
-                if self._abort:
-                    break
-                _handle(host)
+            if remaining:
+                executor = ThreadPoolExecutor(max_workers=workers)
+                try:
+                    futures = [executor.submit(_handle, host) for host in remaining]
+                    for fut in as_completed(futures):
+                        if self._abort:
+                            break
+                        try:
+                            fut.result()
+                        except Exception:
+                            pass
+                finally:
+                    executor.shutdown(wait=False, cancel_futures=True)
             if intake is None:
                 ping_q.put(None)
                 return

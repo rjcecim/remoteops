@@ -1,6 +1,7 @@
 """Varredura de hosts Windows na faixa de IP (mesma lógica do WinSeeker).
 
-Por IP: ping ICMP → portas 445/135/139 → nome NetBIOS (nbtstat) ou DNS.
+Por IP: portas TCP 445/135/139 (sockets) → nome NetBIOS (nbtstat) ou DNS.
+ICMP não exclui o alvo. Não usa PsPing na faixa (eficiência).
 Não depende de Qt.
 """
 
@@ -18,10 +19,9 @@ from remoteops.utils.network_range import (
     MIN_SCAN_THREADS,
     snap_scan_threads,
 )
-from remoteops.utils.ping import is_valid_host, ping_host
+from remoteops.utils.ping import is_valid_host
 
 WINDOWS_PORTS = (445, 135, 139)
-PING_TIMEOUT_MS = 1000
 PORT_TIMEOUT_SEC = 0.5
 NBTSTAT_TIMEOUT_SEC = 3.0
 
@@ -68,19 +68,43 @@ def netbios_name(ip: str) -> Optional[str]:
     return parse_nbtstat_name(decode_console_bytes(result.stdout or b""))
 
 
-def _tcp_port_open(ip: str, port: int, timeout: float = PORT_TIMEOUT_SEC) -> bool:
+def probe_tcp_port(ip: str, port: int, timeout: float = PORT_TIMEOUT_SEC) -> str:
+    """Teste TCP por socket. Devolve open|refused|timeout|unresolved|error."""
     try:
-        with socket.create_connection((ip, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
+        with socket.create_connection((ip, int(port)), timeout=timeout):
+            return "open"
+    except socket.timeout:
+        return "timeout"
+    except ConnectionRefusedError:
+        return "refused"
+    except (socket.gaierror, socket.herror):
+        return "unresolved"
+    except OSError as exc:
+        err = str(exc).casefold()
+        if "refused" in err or "10061" in err:
+            return "refused"
+        if "timed out" in err or "timedout" in err or "10060" in err:
+            return "timeout"
+        if "getaddrinfo" in err or "name or service" in err or "11001" in err:
+            return "unresolved"
+        return "error"
+    except Exception:
+        return "error"
+
+
+def tcp_port_open(ip: str, port: int, timeout: float = PORT_TIMEOUT_SEC) -> bool:
+    return probe_tcp_port(ip, port, timeout=timeout) == "open"
+
+
+def _tcp_port_open(ip: str, port: int, timeout: float = PORT_TIMEOUT_SEC) -> bool:
+    return tcp_port_open(ip, port, timeout=timeout)
 
 
 def has_windows_port(ip: str, should_cancel: Optional[CancelCallback] = None) -> bool:
     for port in WINDOWS_PORTS:
         if should_cancel and should_cancel():
             return False
-        if _tcp_port_open(ip, port):
+        if tcp_port_open(ip, port):
             return True
     return False
 
@@ -109,15 +133,14 @@ def probe_windows_host(
     ip: str,
     should_cancel: Optional[CancelCallback] = None,
 ) -> Optional[str]:
-    """Retorna hostname (ou IP) se o alvo responder ping e tiver porta Windows."""
+    """Retorna hostname (ou IP) se alguma porta Windows (445/135/139) estiver aberta.
+
+    ICMP não é condição de exclusão: um host com firewall bloqueando Echo
+    Request continua visível se o TCP Windows responder.
+    """
     if should_cancel and should_cancel():
         return None
     if not is_valid_host(ip):
-        return None
-    online, _err = ping_host(ip, timeout_ms=PING_TIMEOUT_MS)
-    if not online:
-        return None
-    if should_cancel and should_cancel():
         return None
     if not has_windows_port(ip, should_cancel=should_cancel):
         return None

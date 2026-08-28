@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import List
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -134,7 +133,7 @@ class SettingsTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._tool_rows: List[tuple[_StatusDot, QLabel, QLabel]] = []
+        self._tools_flow: FlowLayout | None = None
 
         self._root_layout = make_card_stack(self)
         self._tabs = self._build_tabs()
@@ -176,7 +175,7 @@ class SettingsTab(QWidget):
         idx_ps = tabs.addTab(_wrap_page(self._pstools_card), self.tr("PSTools"))
         inner_bar.set_tab_meta(idx_ps, "\uE8B7")
         tabs.setTabToolTip(
-            idx_ps, self.tr("Pasta do PsExec, PsInfo, PsList, PsService e utilitários")
+            idx_ps, self.tr("Pasta do PsExec, PsInfo, PsPing, PsList, PsService e utilitários")
         )
 
         self._rustdesk_card = self._build_rustdesk_card()
@@ -217,7 +216,7 @@ class SettingsTab(QWidget):
         self.pstools_edit.setReadOnly(True)
         self.pstools_edit.setText(get_pstools_dir())
         self.pstools_edit.setToolTip(
-            self.tr("Pasta onde estão PsExec, PsInfo, PsList e utilitários")
+            self.tr("Pasta onde estão PsExec, PsInfo, PsPing, PsList e utilitários")
         )
         self.pstools_browse_btn = make_icon_button(
             "\uED25", self.tr("Alterar pasta PSTools")
@@ -238,31 +237,7 @@ class SettingsTab(QWidget):
 
         status_wrap = QWidget()
         status_wrap.setMinimumWidth(0)
-        status_flow = FlowLayout(status_wrap, margin=0, h_spacing=16, v_spacing=4)
-        for _ in range(6):
-            chip = QHBoxLayout()
-            chip.setSpacing(6)
-            chip.setContentsMargins(0, 0, 0, 0)
-            dot = _StatusDot(diameter=8)
-            name = QLabel()
-            name.setObjectName("pstoolsToolName")
-            name.setStyleSheet(
-                f"QLabel#pstoolsToolName {{ font-size: {SIZE_UI_SMALL}pt; }}"
-            )
-            detail = QLabel()
-            detail.setObjectName("toolDetail")
-            detail.setStyleSheet(
-                f"QLabel#toolDetail {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
-            )
-            detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            chip.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
-            chip.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
-            chip.addWidget(detail, 0, Qt.AlignmentFlag.AlignVCenter)
-            wrap = QWidget()
-            wrap.setLayout(chip)
-            wrap.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-            status_flow.addWidget(wrap)
-            self._tool_rows.append((dot, name, detail))
+        self._tools_flow = FlowLayout(status_wrap, margin=0, h_spacing=16, v_spacing=4)
         add_row(g1, row, self.tr("Status"), status_wrap)
         return card_ps
 
@@ -703,35 +678,65 @@ class SettingsTab(QWidget):
                 self.tr("Não encontrado em C:\\Program Files\\RustDesk\\")
             )
 
+    def _clear_tools_flow(self) -> None:
+        flow = self._tools_flow
+        if flow is None:
+            return
+        while flow.count():
+            item = flow.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _add_pstools_chip(self, tool: dict, dir_ok: bool) -> None:
+        flow = self._tools_flow
+        if flow is None:
+            return
+        chip = QHBoxLayout()
+        chip.setSpacing(6)
+        chip.setContentsMargins(0, 0, 0, 0)
+        dot = _StatusDot(diameter=8)
+        name = QLabel(str(tool.get("label") or ""))
+        name.setObjectName("pstoolsToolName")
+        name.setStyleSheet(
+            f"QLabel#pstoolsToolName {{ font-size: {SIZE_UI_SMALL}pt; }}"
+        )
+        detail = QLabel()
+        detail.setObjectName("toolDetail")
+        detail.setStyleSheet(
+            f"QLabel#toolDetail {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
+        )
+        detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        if tool.get("found"):
+            dot.set_color(_STATUS_COLORS["ok"])
+            path = str(tool.get("path") or "")
+            detail.setText(os.path.basename(path))
+            name.setToolTip(path)
+            detail.setToolTip(path)
+        else:
+            dot.set_color(_STATUS_COLORS["err"])
+            expected = " / ".join(tool.get("names") or [])
+            if not dir_ok:
+                detail.setText(self.tr("pasta ausente"))
+                tip = self.tr("Pasta PSTools não encontrada")
+            else:
+                detail.setText(self.tr("ausente"))
+                tip = self.tr(f"Ausente ({expected})")
+            name.setToolTip(tip)
+            detail.setToolTip(str(tool.get("path") or "") or tip)
+        chip.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        chip.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
+        chip.addWidget(detail, 0, Qt.AlignmentFlag.AlignVCenter)
+        wrap = QWidget()
+        wrap.setLayout(chip)
+        wrap.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        flow.addWidget(wrap)
+
     def refresh_pstools_status(self) -> None:
         info = probe_pstools(get_pstools_dir())
         self.pstools_edit.setText(str(info["dir"]))
         dir_ok = bool(info["dir_ok"])
-        tools = list(info["tools"])
-        for idx, (dot, name_lbl, detail_lbl) in enumerate(self._tool_rows):
-            if idx >= len(tools):
-                name_lbl.setText("")
-                detail_lbl.setText("")
-                name_lbl.setToolTip("")
-                detail_lbl.setToolTip("")
-                dot.set_color(_STATUS_COLORS["idle"])
-                continue
-            tool = tools[idx]
-            name_lbl.setText(str(tool["label"]))
-            if tool["found"]:
-                dot.set_color(_STATUS_COLORS["ok"])
-                path = str(tool["path"])
-                detail_lbl.setText(os.path.basename(path))
-                name_lbl.setToolTip(path)
-                detail_lbl.setToolTip(path)
-            else:
-                dot.set_color(_STATUS_COLORS["err"])
-                expected = " / ".join(tool["names"])
-                if not dir_ok:
-                    detail_lbl.setText(self.tr("pasta ausente"))
-                    tip = self.tr("Pasta PSTools não encontrada")
-                else:
-                    detail_lbl.setText(self.tr("ausente"))
-                    tip = self.tr(f"Ausente ({expected})")
-                name_lbl.setToolTip(tip)
-                detail_lbl.setToolTip(str(tool["path"]) or tip)
+        self._clear_tools_flow()
+        for tool in list(info["tools"]):
+            self._add_pstools_chip(tool, dir_ok)

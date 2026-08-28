@@ -24,6 +24,7 @@ from remoteops.ui.style import SPACE_SM
 from remoteops.ui.tabs.appsearch import AppSearchTab
 from remoteops.ui.tabs.batchinstall import BatchInstallTab
 from remoteops.ui.tabs.cmd import CmdTab
+from remoteops.ui.tabs.connectivity import ConnectivityTab
 from remoteops.ui.tabs.hostapps import HostAppsTab
 from remoteops.ui.tabs.message import MessageTab
 from remoteops.ui.tabs.msi import MsiTab
@@ -102,6 +103,8 @@ class MainWindow(QMainWindow):
         self.servicos_tab = None
         self.appsearch_tab = None
         self.settings_tab = None
+        self.connectivity_tab = None
+        self._run_after_precheck = False
         self.msi_tab = MsiTab()
         self.robocopy_tab = RobocopyTab()
         self.powershell_tab = PowerShellTab()
@@ -141,7 +144,7 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(central)
         self._apply_initial_geometry()
-        
+
         # Instâncias auxiliares
         configure_logging()
         self.command_builder = CommandBuilder()
@@ -159,7 +162,7 @@ class MainWindow(QMainWindow):
         self._rustdesk_out_lines = []
         self._rustdesk_err_lines = []
         self._rustdesk_creds = None
-        
+
         # Conexões
         self.file_selector.fileSelected.connect(self.on_file_selected)
         self.file_selector.fileCleared.connect(self.on_file_cleared)
@@ -174,7 +177,9 @@ class MainWindow(QMainWindow):
         self.psexec_tab.openRustDeskRequested.connect(self.on_rustdesk_clicked)
         self.psexec_tab.openMessageRequested.connect(self.open_message_tab)
         self.psexec_tab.openPrintersRequested.connect(self.open_printers_tab)
+        self.psexec_tab.openConnectivityRequested.connect(self.open_connectivity_tab)
         self.psexec_tab.hostOnlineChanged.connect(self._on_host_online_changed)
+        self.psexec_tab.tcpPrecheckFinished.connect(self._on_tcp_precheck_finished)
         self.psexec_tab.formLayoutChanged.connect(self._on_form_layout_changed)
         self.powershell_tab.formLayoutChanged.connect(self._on_form_layout_changed)
         self.cmd_tab.formLayoutChanged.connect(self._on_form_layout_changed)
@@ -234,7 +239,7 @@ class MainWindow(QMainWindow):
         self.log_output.consoleResized.connect(self.executor.resize_conpty)
         self.executor.finished.connect(self.on_process_finished)
         self.tabs.currentChanged.connect(self._on_tab_changed)
-        
+
         # Estado inicial: não adiciona a aba MSI nem Robocopy
         self.msi_tab_index = None
         self.robocopy_tab_index = None
@@ -860,7 +865,7 @@ class MainWindow(QMainWindow):
         self._refresh_tab_bar_layout()
 
     def _on_tab_close_requested(self, index: int) -> None:
-        """Fecha abas com X no título (Aplicativos / WinGet / Mensagem / Impressoras / Pesquisa / Configurações)."""
+        """Fecha abas com X no título (Aplicativos / WinGet / Mensagem / Impressoras / Pesquisa / Configurações / Conectividade)."""
         widget = self.tabs.widget(index)
         if widget is None:
             return
@@ -880,6 +885,8 @@ class MainWindow(QMainWindow):
             self._close_appsearch_tab()
         elif widget is self.settings_tab:
             self._close_settings_tab()
+        elif widget is self.connectivity_tab:
+            self._close_connectivity_tab()
 
     def _close_hostapps_tab(self) -> None:
         if self.hostapps_tab is None:
@@ -1027,6 +1034,49 @@ class MainWindow(QMainWindow):
         self._last_tab_widget = self.tabs.currentWidget()
         self._refresh_tab_bar_layout()
 
+    def _close_connectivity_tab(self) -> None:
+        if self.connectivity_tab is None:
+            return
+        idx = self.tabs.indexOf(self.connectivity_tab)
+        if idx != -1:
+            self.tabs.removeTab(idx)
+        try:
+            self.connectivity_tab.shutdown()
+        except Exception:
+            pass
+        self.connectivity_tab.deleteLater()
+        self.connectivity_tab = None
+        self._update_psinfo_mode_ui()
+        self._last_tab_widget = self.tabs.currentWidget()
+        self._refresh_tab_bar_layout()
+
+    def open_connectivity_tab(self) -> None:
+        """Abre a aba Conectividade sob demanda (diagnóstico ICMP/TCP)."""
+        self._remember_window_size()
+        if self.connectivity_tab is not None:
+            idx = self.tabs.indexOf(self.connectivity_tab)
+            if idx != -1:
+                self.connectivity_tab.sync_from_host()
+                self.tabs.setCurrentIndex(idx)
+                self._update_psinfo_mode_ui()
+                return
+
+        host = self.psexec_tab.current_host()
+        self.connectivity_tab = ConnectivityTab(
+            host_source=self.psexec_tab.host_edit,
+            initial_host=host,
+        )
+        self.tabs.addTab(self.connectivity_tab, self.tr("Conectividade"))
+        idx = self.tabs.indexOf(self.connectivity_tab)
+        bar = self.tabs.tabBar()
+        if isinstance(bar, Mdl2TabBar):
+            bar.set_tab_meta(idx, "\uE968", closable=True)
+        else:
+            bar.setTabData(idx, "\uE968")
+        self._refresh_tab_bar_layout()
+        self.tabs.setCurrentIndex(idx)
+        self._update_psinfo_mode_ui()
+
     def _on_hostapps_uninstall(self, host: str, remote_cmd: str, app_label: str) -> None:
         """Desinstalação a partir da aba Aplicativos: terminal externo + console da aba."""
         log_fn = None
@@ -1094,9 +1144,13 @@ class MainWindow(QMainWindow):
         self._update_psinfo_mode_ui()
 
     def _on_pstools_path_changed(self, _path: str) -> None:
+        from remoteops.utils.psping import invalidate_psping_cache
+
+        invalidate_psping_cache()
         self.update_command()
         self.psexec_tab.refresh_processos_button_state()
         self.psexec_tab.refresh_servicos_button_state()
+        self.psexec_tab.refresh_host_status()
         if self.processos_tab is not None:
             self.processos_tab.refresh_tool_capabilities()
         if self.servicos_tab is not None:
@@ -1229,7 +1283,7 @@ class MainWindow(QMainWindow):
         * ``psexec`` — conjunto visível (mesmas instâncias).
         * ``form_only`` — MSI/PowerShell/CMD/Robocopy: só o formulário;
           widgets compartilhados ocultos; a aba preenche o espaço restante.
-        * ``fullscreen`` — WinGet/Aplicativos/Mensagem/Impressoras/Pesquisa/Lote/PsInfo/Configurações
+        * ``fullscreen`` — WinGet/Aplicativos/Mensagem/Impressoras/Pesquisa/Lote/PsInfo/Configurações/Conectividade
           (e demais páginas em tela cheia): comportamento já existente.
         """
         current = self.tabs.currentWidget()
@@ -1577,13 +1631,14 @@ class MainWindow(QMainWindow):
     def on_run(self):
         if not self.psexec_tab.is_host_online:
             self.log_output.append_log(
-                self.tr("[HOST] Host remoto precisa estar Online para executar.")
+                self.tr("[HOST] Host remoto precisa estar acessível na porta TCP 445 para executar.")
             )
             return
         if (
             self.stop_button.isEnabled()
             or self.executor.is_busy
             or self._execution_service.awaiting_followup
+            or self._run_after_precheck
         ):
             self.log_output.append_log(
                 self.tr(
@@ -1610,6 +1665,31 @@ class MainWindow(QMainWindow):
                 for err in ps_errors:
                     self.log_output.append_log(self.tr(f"[POWERSHELL] {err}"))
                 return
+        if self.psexec_tab.has_fresh_tcp445():
+            self._execute_validated_run()
+            return
+        self._run_after_precheck = True
+        self._set_run_button_enabled(False)
+        self.stop_button.setEnabled(True)
+        self.log_output.append_log(self.tr("[PSPING] Verificando TCP 445..."))
+        self.psexec_tab.start_tcp_precheck()
+
+    def _on_tcp_precheck_finished(self, ok: bool, message: str) -> None:
+        if not self._run_after_precheck:
+            return
+        self._run_after_precheck = False
+        if not ok:
+            if message:
+                for line in str(message).splitlines():
+                    if line:
+                        self.log_output.append_log(line)
+                self.log_output.set_session_status("error")
+            self._set_run_button_enabled(True)
+            self.stop_button.setEnabled(False)
+            return
+        self._execute_validated_run()
+
+    def _execute_validated_run(self) -> None:
         # Credencial efêmera: coletada só na execução; limpa após o lançamento.
         creds = self._current_creds()
         self._session_exit_requested = False
@@ -1689,6 +1769,14 @@ class MainWindow(QMainWindow):
         self._end_execution(prefer_exit=True)
 
     def on_stop(self):
+        if self._run_after_precheck:
+            self._run_after_precheck = False
+            self.psexec_tab.cancel_tcp_precheck()
+            self.log_output.append_log(self.tr("[PSPING] Teste cancelado"))
+            self._set_run_button_enabled(True)
+            self.stop_button.setEnabled(False)
+            self.log_output.set_session_status("idle")
+            return
         self._end_execution(prefer_exit=True)
 
     def _end_execution(self, *, prefer_exit: bool) -> None:
@@ -1748,6 +1836,7 @@ class MainWindow(QMainWindow):
             getattr(self, "printers_tab", None),
             getattr(self, "psinfo_tab", None),
             getattr(self, "batchinstall_tab", None),
+            getattr(self, "connectivity_tab", None),
         ):
             if tab is not None:
                 try:
@@ -1755,9 +1844,23 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
         if hasattr(self, "psexec_tab") and self.psexec_tab is not None:
-            for attr in ("_host_status_worker", "_session_worker", "_domain_worker"):
+            try:
+                self.psexec_tab.cancel_tcp_precheck()
+            except Exception:
+                pass
+            for attr in (
+                "_host_status_worker",
+                "_session_worker",
+                "_domain_worker",
+                "_tcp_precheck_worker",
+            ):
                 worker = getattr(self.psexec_tab, attr, None)
                 if worker is not None and worker.isRunning():
+                    try:
+                        if hasattr(worker, "cancel"):
+                            worker.cancel()
+                    except Exception:
+                        pass
                     try:
                         worker.wait(2000)
                     except Exception:
