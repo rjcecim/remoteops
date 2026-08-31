@@ -222,13 +222,22 @@ class TestPowerArgv(unittest.TestCase):
 
     def test_immediate_has_no_user_abort(self) -> None:
         req = apply_action_defaults(
-            _request(timing=TimingMode.IMMEDIATE, allow_user_abort=True, message="")
+            _request(
+                timing=TimingMode.IMMEDIATE,
+                allow_user_abort=True,
+                message="Não deve ir",
+                notice_seconds=30,
+            )
         )
         self.assertFalse(req.allow_user_abort)
+        self.assertEqual(req.message, "")
+        self.assertIsNone(req.notice_seconds)
         self.assertEqual(effective_countdown_seconds(req), 0)
         argv = build_psshutdown_argv(r"C:\PSTools\PsShutdown64.exe", req)
         self.assertEqual(argv[argv.index("-t") + 1], "0")
         self.assertNotIn("-c", argv)
+        self.assertNotIn("-m", argv)
+        self.assertNotIn("-v", argv)
 
     def test_advanced_actions(self) -> None:
         self.assertIn(PowerAction.SHUTDOWN_NO_POWEROFF, ADVANCED_ACTIONS)

@@ -807,6 +807,8 @@ def apply_action_defaults(request: PowerRequest) -> PowerRequest:
     if timing == TimingMode.IMMEDIATE:
         allow_abort = False
         countdown = 0
+        message = ""
+        notice = None
     major = int(request.reason_major) if reason != ShutdownReasonKind.NONE else 0
     minor = int(request.reason_minor) if reason != ShutdownReasonKind.NONE else 0
     return replace(
@@ -906,7 +908,8 @@ def confirmation_summary(
     else:
         lines.append(f"Contagem: {token} s")
     message = normalize_power_message(request.message)
-    lines.append(f"Mensagem: {message or '—'}")
+    if message:
+        lines.append(f"Mensagem: {message}")
     if profile.supports_reason and request.reason != ShutdownReasonKind.NONE:
         lines.append(f"Motivo: {reason_display(request)}")
     lines.append(f"Forçar aplicativos (-f): {'sim' if request.force else 'não'}")

@@ -539,6 +539,7 @@ class EnergiaTab(QWidget):
             self.tr("Obrigatória quando houver contagem. Ex.: manutenção planejada.")
         )
         self.message_edit.textChanged.connect(self._refresh_preview)
+        self._message_cell = _control_column(self.tr("Mensagem"), self.message_edit)
 
         self.notice_spin = StepSpinBox()
         self.notice_spin.setRange(0, MAX_COUNTDOWN_SECONDS)
@@ -547,6 +548,7 @@ class EnergiaTab(QWidget):
         self.notice_spin.setSuffix(" s")
         self.notice_spin.setMinimumWidth(120)
         self.notice_spin.valueChanged.connect(self._refresh_preview)
+        self._notice_cell = _control_column(self.tr("Aviso (-v)"), self.notice_spin)
 
         self.connect_spin = StepSpinBox()
         self.connect_spin.setRange(1, MAX_CONNECT_TIMEOUT_SECONDS)
@@ -629,12 +631,10 @@ class EnergiaTab(QWidget):
         card.content_layout.addWidget(
             _control_column(self.tr("Quando"), timing_wrap), 0
         )
-        card.content_layout.addWidget(
-            _control_column(self.tr("Mensagem"), self.message_edit), 0
-        )
+        card.content_layout.addWidget(self._message_cell, 0)
         card.content_layout.addWidget(
             _pair_row(
-                _control_column(self.tr("Aviso (-v)"), self.notice_spin),
+                self._notice_cell,
                 _control_column(self.tr("Timeout (-n)"), self.connect_spin),
             ),
             0,
@@ -659,6 +659,7 @@ class EnergiaTab(QWidget):
         )
         self._fill_reason_detail(ShutdownReasonKind.PLANNED)
         self._sync_timing_value_widgets()
+        self._sync_warning_controls()
         self._apply_suggested_message(force=True)
         return card
 
@@ -676,6 +677,41 @@ class EnergiaTab(QWidget):
         self.time_edit.setVisible(show_schedule)
         self.countdown_spin.setEnabled(show_countdown and not busy)
         self.time_edit.setEnabled(show_schedule and not busy)
+
+    def _sync_warning_controls(self) -> None:
+        """Aviso, mensagem e cancelamento só existem com contagem ou horário."""
+        if not hasattr(self, "message_edit"):
+            return
+        profile = action_profile(self._selected)
+        busy = self._busy_now()
+        immediate = self._timing_mode() == TimingMode.IMMEDIATE
+        warn_ok = profile.supports_message and not immediate and not busy
+        abort_ok = profile.supports_user_abort and not immediate and not busy
+        self._message_cell.setEnabled(warn_ok)
+        self._notice_cell.setEnabled(warn_ok)
+        self.allow_abort_check.setEnabled(abort_ok)
+        if immediate:
+            self.allow_abort_check.blockSignals(True)
+            self.allow_abort_check.setChecked(False)
+            self.allow_abort_check.blockSignals(False)
+            why = self.tr(
+                "A ação imediata não mostra aviso nem mensagem no host: "
+                "não há contagem."
+            )
+            self.message_edit.setToolTip(why)
+            self.notice_spin.setToolTip(why)
+            self.allow_abort_check.setToolTip(why)
+        elif not profile.supports_message:
+            why = self.tr("Esta ação não envia mensagem nem aviso na tela.")
+            self.message_edit.setToolTip(why)
+            self.notice_spin.setToolTip(why)
+            self.allow_abort_check.setToolTip("")
+        else:
+            self.message_edit.setToolTip("")
+            self.notice_spin.setToolTip(
+                self.tr("Segundos em que o aviso fica visível no host (-v).")
+            )
+            self.allow_abort_check.setToolTip("")
 
     def _reason_kind(self) -> ShutdownReasonKind:
         raw = self.reason_combo.currentData()
@@ -942,15 +978,8 @@ class EnergiaTab(QWidget):
             self.radio_immediate.blockSignals(True)
             self.radio_immediate.setChecked(True)
             self.radio_immediate.blockSignals(False)
-        mode = self._timing_mode()
         self._sync_timing_value_widgets()
-        self.allow_abort_check.setEnabled(
-            profile.supports_user_abort and mode != TimingMode.IMMEDIATE and not busy
-        )
-        if mode == TimingMode.IMMEDIATE:
-            self.allow_abort_check.blockSignals(True)
-            self.allow_abort_check.setChecked(False)
-            self.allow_abort_check.blockSignals(False)
+        self._sync_warning_controls()
         self._refresh_preview()
 
     def _busy_now(self) -> bool:
@@ -1034,8 +1063,6 @@ class EnergiaTab(QWidget):
         self.refresh_sessions_btn.setEnabled(not busy and online and bool(host))
         for btn in self._action_buttons.values():
             btn.setEnabled(not busy)
-        self.message_edit.setEnabled(not busy)
-        self.notice_spin.setEnabled(not busy)
         self.connect_spin.setEnabled(not busy)
         profile = action_profile(self._selected)
         supports_reason = not busy and profile.supports_reason
@@ -1052,11 +1079,7 @@ class EnergiaTab(QWidget):
         self.radio_countdown.setEnabled(supports and not busy)
         self.radio_scheduled.setEnabled(supports and not busy)
         self._sync_timing_value_widgets()
-        self.allow_abort_check.setEnabled(
-            profile.supports_user_abort
-            and self._timing_mode() != TimingMode.IMMEDIATE
-            and not busy
-        )
+        self._sync_warning_controls()
         if not tool_ok:
             self.run_btn.setToolTip(
                 self.tr("PsShutdown não encontrado na pasta PSTools configurada.")
