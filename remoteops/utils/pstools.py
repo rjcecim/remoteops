@@ -87,6 +87,7 @@ def probe_pstools(pstools_dir: Optional[str] = None) -> Dict[str, object]:
         ("PsKill", ("PsKill64.exe", "PsKill.exe")),
         ("PsSuspend", ("PsSuspend64.exe", "PsSuspend.exe")),
         ("PsService", ("PsService64.exe", "PsService.exe")),
+        ("PsShutdown", ("PsShutdown64.exe", "PsShutdown.exe")),
     ]
     items = []
     found_count = 0

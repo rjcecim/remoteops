@@ -25,6 +25,7 @@ from remoteops.ui.tabs.appsearch import AppSearchTab
 from remoteops.ui.tabs.batchinstall import BatchInstallTab
 from remoteops.ui.tabs.cmd import CmdTab
 from remoteops.ui.tabs.connectivity import ConnectivityTab
+from remoteops.ui.tabs.energia import EnergiaTab
 from remoteops.ui.tabs.hostapps import HostAppsTab
 from remoteops.ui.tabs.message import MessageTab
 from remoteops.ui.tabs.msi import MsiTab
@@ -102,6 +103,7 @@ class MainWindow(QMainWindow):
         self.printers_tab = None
         self.processos_tab = None
         self.servicos_tab = None
+        self.energia_tab = None
         self.appsearch_tab = None
         self.settings_tab = None
         self.connectivity_tab = None
@@ -172,6 +174,7 @@ class MainWindow(QMainWindow):
         self.psexec_tab.openPsInfoRequested.connect(self.open_psinfo_tab)
         self.psexec_tab.openProcessosRequested.connect(self.open_processos_tab)
         self.psexec_tab.openServicosRequested.connect(self.open_servicos_tab)
+        self.psexec_tab.openEnergiaRequested.connect(self.open_energia_tab)
         self.psexec_tab.openRustDeskRequested.connect(self.on_rustdesk_clicked)
         self.psexec_tab.openMessageRequested.connect(self.open_message_tab)
         self.psexec_tab.openPrintersRequested.connect(self.open_printers_tab)
@@ -718,6 +721,45 @@ class MainWindow(QMainWindow):
         self.servicos_tab.refresh_services()
         self._update_psinfo_mode_ui()
 
+    def open_energia_tab(self) -> None:
+        """Abre a aba Energia sob demanda (PsShutdown)."""
+        host = self.psexec_tab.host_edit.text().strip()
+        if not host:
+            self.log_output.append_log(
+                self.tr("[ENERGIA] Preencha o Host remoto antes de abrir Energia.")
+            )
+            return
+
+        self._remember_window_size()
+
+        if self.energia_tab is not None:
+            idx = self.tabs.indexOf(self.energia_tab)
+            if idx != -1:
+                self.tabs.setCurrentIndex(idx)
+                self.energia_tab.sync_from_host()
+                self._update_psinfo_mode_ui()
+                return
+
+        self.energia_tab = EnergiaTab(
+            host_source=self.psexec_tab.host_edit,
+            creds_provider=lambda: (
+                self.psexec_tab.auth_username(),
+                self.psexec_tab.pass_edit.text() or "",
+            ),
+            online_provider=lambda: bool(self.psexec_tab.is_host_online),
+        )
+        self.psexec_tab.hostOnlineChanged.connect(self.energia_tab.set_host_online)
+        self.tabs.addTab(self.energia_tab, self.tr("Energia"))
+        idx = self.tabs.indexOf(self.energia_tab)
+        bar = self.tabs.tabBar()
+        if isinstance(bar, Mdl2TabBar):
+            bar.set_tab_meta(idx, "\uE7E8", closable=True)
+        else:
+            bar.setTabData(idx, "\uE7E8")
+        self._refresh_tab_bar_layout()
+        self.tabs.setCurrentIndex(idx)
+        self._update_psinfo_mode_ui()
+
     def open_appsearch_tab(self) -> None:
         """Cria a aba Pesquisa de Aplicativos sob demanda e foca nela."""
         self._remember_window_size()
@@ -822,6 +864,7 @@ class MainWindow(QMainWindow):
         self._close_printers_tab()
         self._close_processos_tab()
         self._close_servicos_tab()
+        self._close_energia_tab()
         self._close_appsearch_tab()
         self._close_settings_tab()
 
@@ -879,6 +922,8 @@ class MainWindow(QMainWindow):
             self._close_processos_tab()
         elif widget is self.servicos_tab:
             self._close_servicos_tab()
+        elif widget is self.energia_tab:
+            self._close_energia_tab()
         elif widget is self.appsearch_tab:
             self._close_appsearch_tab()
         elif widget is self.settings_tab:
@@ -998,6 +1043,28 @@ class MainWindow(QMainWindow):
             pass
         self.servicos_tab.deleteLater()
         self.servicos_tab = None
+        self._update_psinfo_mode_ui()
+        self._last_tab_widget = self.tabs.currentWidget()
+        self._refresh_tab_bar_layout()
+
+    def _close_energia_tab(self) -> None:
+        if self.energia_tab is None:
+            return
+        idx = self.tabs.indexOf(self.energia_tab)
+        if idx != -1:
+            self.tabs.removeTab(idx)
+        try:
+            self.psexec_tab.hostOnlineChanged.disconnect(
+                self.energia_tab.set_host_online
+            )
+        except TypeError:
+            pass
+        try:
+            self.energia_tab.shutdown()
+        except Exception:
+            pass
+        self.energia_tab.deleteLater()
+        self.energia_tab = None
         self._update_psinfo_mode_ui()
         self._last_tab_widget = self.tabs.currentWidget()
         self._refresh_tab_bar_layout()
@@ -1148,11 +1215,14 @@ class MainWindow(QMainWindow):
         self.update_command()
         self.psexec_tab.refresh_processos_button_state()
         self.psexec_tab.refresh_servicos_button_state()
+        self.psexec_tab.refresh_energia_button_state()
         self.psexec_tab.refresh_host_status()
         if self.processos_tab is not None:
             self.processos_tab.refresh_tool_capabilities()
         if self.servicos_tab is not None:
             self.servicos_tab.refresh_tool_capabilities()
+        if self.energia_tab is not None:
+            self.energia_tab.refresh_tool_capabilities()
 
     def _on_tab_changed(self, _index: int) -> None:
         # PsInfo: fecha ao sair da aba.
@@ -1390,8 +1460,12 @@ class MainWindow(QMainWindow):
         winget_widget = self.winget_tab
         message_widget = self.message_tab
         printers_widget = self.printers_tab
+        processos_widget = self.processos_tab
+        servicos_widget = self.servicos_tab
+        energia_widget = self.energia_tab
         appsearch_widget = self.appsearch_tab
         settings_widget = self.settings_tab
+        connectivity_widget = self.connectivity_tab
         for i in range(self.tabs.count() - 1, -1, -1):
             w = self.tabs.widget(i)
             if w is self.psexec_tab:
@@ -1408,9 +1482,17 @@ class MainWindow(QMainWindow):
                 continue
             if printers_widget is not None and w is printers_widget:
                 continue
+            if processos_widget is not None and w is processos_widget:
+                continue
+            if servicos_widget is not None and w is servicos_widget:
+                continue
+            if energia_widget is not None and w is energia_widget:
+                continue
             if appsearch_widget is not None and w is appsearch_widget:
                 continue
             if settings_widget is not None and w is settings_widget:
+                continue
+            if connectivity_widget is not None and w is connectivity_widget:
                 continue
             self.tabs.removeTab(i)
 
@@ -1422,8 +1504,12 @@ class MainWindow(QMainWindow):
             winget_widget,
             message_widget,
             printers_widget,
+            processos_widget,
+            servicos_widget,
+            energia_widget,
             appsearch_widget,
             settings_widget,
+            connectivity_widget,
         ):
             if special is None:
                 continue
@@ -1806,6 +1892,9 @@ class MainWindow(QMainWindow):
             getattr(self, "winget_tab", None),
             getattr(self, "message_tab", None),
             getattr(self, "printers_tab", None),
+            getattr(self, "processos_tab", None),
+            getattr(self, "servicos_tab", None),
+            getattr(self, "energia_tab", None),
             getattr(self, "psinfo_tab", None),
             getattr(self, "batchinstall_tab", None),
             getattr(self, "connectivity_tab", None),

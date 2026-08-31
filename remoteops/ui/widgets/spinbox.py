@@ -1,10 +1,10 @@
-"""QSpinBox com setas MDL2 compactas, alinhadas ao valor."""
+"""QSpinBox / QTimeEdit com setas MDL2 compactas, alinhadas ao valor."""
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QSize, Qt, QTime
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QAbstractSpinBox, QSizePolicy, QSpinBox, QToolButton
+from PyQt6.QtWidgets import QAbstractSpinBox, QSizePolicy, QSpinBox, QTimeEdit, QToolButton
 
 from remoteops.ui.style import (
     COLOR_ACCENT,
@@ -62,42 +62,27 @@ def _step_button(icon_char: str, tooltip: str, parent) -> QToolButton:
     return btn
 
 
-class StepSpinBox(QSpinBox):
-    """Spin compacto: valor colado nos chevrons empilhados à direita."""
+class _StepButtonsMixin:
+    """Setas MDL2 empilhadas à direita (compartilhado por spin e horário)."""
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def _init_step_buttons(self) -> None:
         self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.setStyleSheet(
-            "QSpinBox::up-button, QSpinBox::down-button { width: 0; height: 0; border: none; }"
+            "QSpinBox::up-button, QSpinBox::down-button,"
+            " QTimeEdit::up-button, QTimeEdit::down-button"
+            " { width: 0; height: 0; border: none; }"
         )
         self._up = _step_button("\uE70E", "Aumentar", self)
         self._down = _step_button("\uE70D", "Diminuir", self)
         self._up.clicked.connect(self.stepUp)
         self._down.clicked.connect(self.stepDown)
-        self.valueChanged.connect(self._sync_step_buttons)
         self._apply_text_margin()
         self._sync_step_buttons()
 
     def _buttons_span(self) -> int:
         return _BTN_W + _MARGIN * 2
-
-    def _content_width(self) -> int:
-        fm = self.fontMetrics()
-        samples = (
-            f"{self.prefix()}{self.minimum()}{self.suffix()}",
-            f"{self.prefix()}{self.maximum()}{self.suffix()}",
-        )
-        text_w = max(fm.horizontalAdvance(s) for s in samples)
-        return 10 + text_w + self._buttons_span()
-
-    def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(self._content_width(), super().sizeHint().height())
-
-    def minimumSizeHint(self) -> QSize:  # noqa: N802
-        return self.sizeHint()
 
     def _apply_text_margin(self) -> None:
         edit = self.lineEdit()
@@ -118,7 +103,43 @@ class StepSpinBox(QSpinBox):
     def _sync_step_buttons(self, *_args) -> None:
         flags = self.stepEnabled()
         self._up.setEnabled(bool(flags & QAbstractSpinBox.StepEnabledFlag.StepUpEnabled))
-        self._down.setEnabled(bool(flags & QAbstractSpinBox.StepEnabledFlag.StepDownEnabled))
+        self._down.setEnabled(
+            bool(flags & QAbstractSpinBox.StepEnabledFlag.StepDownEnabled)
+        )
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._layout_step_buttons()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._apply_text_margin()
+        self._layout_step_buttons()
+        self._sync_step_buttons()
+
+
+class StepSpinBox(_StepButtonsMixin, QSpinBox):
+    """Spin compacto: valor colado nos chevrons empilhados à direita."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._init_step_buttons()
+        self.valueChanged.connect(self._sync_step_buttons)
+
+    def _content_width(self) -> int:
+        fm = self.fontMetrics()
+        samples = (
+            f"{self.prefix()}{self.minimum()}{self.suffix()}",
+            f"{self.prefix()}{self.maximum()}{self.suffix()}",
+        )
+        text_w = max(fm.horizontalAdvance(s) for s in samples)
+        return 10 + text_w + self._buttons_span()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self._content_width(), super().sizeHint().height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return self.sizeHint()
 
     def setRange(self, min_val: int, max_val: int) -> None:  # noqa: N802
         super().setRange(min_val, max_val)
@@ -139,12 +160,25 @@ class StepSpinBox(QSpinBox):
         super().setSuffix(suffix)
         self.updateGeometry()
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self._layout_step_buttons()
 
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        self._apply_text_margin()
-        self._layout_step_buttons()
-        self._sync_step_buttons()
+class StepTimeEdit(_StepButtonsMixin, QTimeEdit):
+    """Horário HH:mm com o mesmo visual compacto do ``StepSpinBox``."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDisplayFormat("HH:mm")
+        self.setTime(QTime(18, 0))
+        self.setWrapping(True)
+        self._init_step_buttons()
+        self.timeChanged.connect(self._sync_step_buttons)
+
+    def _content_width(self) -> int:
+        fm = self.fontMetrics()
+        text_w = fm.horizontalAdvance("23:59")
+        return 10 + text_w + self._buttons_span()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self._content_width(), super().sizeHint().height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return self.sizeHint()

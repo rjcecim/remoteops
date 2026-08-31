@@ -243,6 +243,7 @@ class PsExecTab(QWidget):
     openPsInfoRequested = pyqtSignal()
     openProcessosRequested = pyqtSignal()
     openServicosRequested = pyqtSignal()
+    openEnergiaRequested = pyqtSignal()
     openRustDeskRequested = pyqtSignal()
     openMessageRequested = pyqtSignal()
     openPrintersRequested = pyqtSignal()
@@ -321,6 +322,12 @@ class PsExecTab(QWidget):
         )
         self.servicos_button.clicked.connect(self.openServicosRequested.emit)
         card1.add_header_button(self.servicos_button)
+
+        self.energia_button = card1.make_header_button(
+            "\uE7E8", self.tr("Gerenciamento de energia remoto (PsShutdown)")
+        )
+        self.energia_button.clicked.connect(self.openEnergiaRequested.emit)
+        card1.add_header_button(self.energia_button)
 
         self.rustdesk_button = card1.make_header_button(
             "\uE774", self.tr("Conectar via RustDesk")
@@ -1054,6 +1061,7 @@ class PsExecTab(QWidget):
             self.psinfo_button,
             self.processos_button,
             self.servicos_button,
+            self.energia_button,
             self.rustdesk_button,
             self.message_button,
             self.printers_button,
@@ -1064,6 +1072,7 @@ class PsExecTab(QWidget):
             btn.setEnabled(online)
         self.refresh_processos_button_state(online=online)
         self.refresh_servicos_button_state(online=online)
+        self.refresh_energia_button_state(online=online)
 
     def refresh_processos_button_state(self, online: bool | None = None) -> None:
         """Habilita Processos só com host Online e PsList disponível."""
@@ -1097,6 +1106,23 @@ class PsExecTab(QWidget):
         else:
             self.servicos_button.setToolTip(
                 self.tr("Serviços remotos (PsService)")
+            )
+
+    def refresh_energia_button_state(self, online: bool | None = None) -> None:
+        """Habilita Energia só com host Online e PsShutdown disponível."""
+        from remoteops.utils.psshutdown import psshutdown_available
+
+        is_online = self._host_online if online is None else bool(online)
+        has_tool = psshutdown_available()
+        enabled = is_online and has_tool
+        self.energia_button.setEnabled(enabled)
+        if is_online and not has_tool:
+            self.energia_button.setToolTip(
+                self.tr("PsShutdown não encontrado na pasta PSTools configurada.")
+            )
+        else:
+            self.energia_button.setToolTip(
+                self.tr("Gerenciamento de energia remoto (PsShutdown)")
             )
 
     def _set_host_status(
