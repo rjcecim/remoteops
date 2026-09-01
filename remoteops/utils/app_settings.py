@@ -16,6 +16,7 @@ SETTINGS_SAVE_ERROR_MSG = (
 
 # Chaves conhecidas (somente preferências não sensíveis)
 KEY_PSTOOLS_DIR = "tools/pstools_dir"
+KEY_HANDLE_DIR = "tools/handle_dir"
 KEY_SEARCH_MAX_WORKERS = "search/max_workers"
 KEY_SEARCH_HOSTS_PATH = "search/hosts_path"
 KEY_LOGS_FILE_ENABLED = "logs/file_logging_enabled"
@@ -76,6 +77,7 @@ def save_setting(key: str, value: Any) -> None:
 def _collect_current_settings() -> Dict[str, Any]:
     """Monta o snapshot das preferências atuais (imports locais evitam ciclos)."""
     from remoteops.utils.app_logging import is_file_logging_enabled
+    from remoteops.utils.handle import get_handle_dir
     from remoteops.utils.network_range import (
         KEY_NET_ENABLED,
         KEY_NET_END_IP,
@@ -92,6 +94,7 @@ def _collect_current_settings() -> Dict[str, Any]:
     net = get_network_range_config()
     return {
         KEY_PSTOOLS_DIR: get_pstools_dir(),
+        KEY_HANDLE_DIR: get_handle_dir(),
         KEY_SEARCH_MAX_WORKERS: int(get_search_max_workers()),
         KEY_SEARCH_HOSTS_PATH: get_search_hosts_path(),
         KEY_LOGS_FILE_ENABLED: bool(is_file_logging_enabled()),

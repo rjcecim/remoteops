@@ -52,6 +52,7 @@ Versão: **`2.0.0`** (`remoteops.core.version.__version__`).
 | **Impressoras** | Catálogo do servidor de impressão e instalação/conexão no host |
 | **Pesquisa** | Aplicativos em vários hosts, com desinstalação quando houver `UninstallString` |
 | **RustDesk** | Coleta o ID no remoto e abre `rustdesk.exe --connect <ID>` localmente |
+| **Sessões e Arquivos** | Usuários conectados via PsLoggedOn, arquivos SMB via PsFile e pesquisa de handles locais via Handle executado pelo PsExec |
 | **UI** | Fluent / PyQt6, tooltips em card, tabelas em uma linha com elipse |
 | **Portátil** | `settings.ini`, `hosts.json` e `logs/` ao lado do exe (ou na raiz do repo em dev) |
 
@@ -74,8 +75,12 @@ Aba **PsExec** está sempre visível. As demais abrem sob demanda.
 | **WinGet** | Botão na aba PsExec | `winget` remoto (host preenchido) |
 | **Mensagem** | Botão na aba PsExec | Envia mensagem interativa ao usuário da sessão remota |
 | **Impressoras** | Botão na aba PsExec | Lista o servidor de impressão e instala/conecta impressoras no host |
+| **Processos** | Botão na aba PsExec | PsList / PsKill / PsSuspend no host remoto |
+| **Serviços** | Botão na aba PsExec | PsService — consulta e controle de serviços |
+| **Energia** | Botão na aba PsExec | PsShutdown — desligar, reiniciar, hibernar |
+| **Sessões e Arquivos** | Botão na aba PsExec | PsLoggedOn + PsFile + Handle (via PsExec) |
 | **Pesquisa de Aplicativos** | Ícone de busca no cabeçalho | Multi-host (faixa de IP ou `hosts.json`) |
-| **Configurações** | Ícone de engrenagem no cabeçalho | PSTools, RustDesk, logs, Remote Registry, faixa de IP, servidor de impressão |
+| **Configurações** | Ícone de engrenagem no cabeçalho | PSTools, Handle, RustDesk, logs, Remote Registry, faixa de IP, servidor de impressão |
 | **Conectividade** | Botão Diagnosticar na linha de Status do PsExec | ICMP Ping e TCP Ping (PsPing); não duplica o console compartilhado |
 
 ---
@@ -87,7 +92,8 @@ Aba **PsExec** está sempre visível. As demais abrem sob demanda.
 | **Sistema** | Windows 10 ou 11 |
 | **Python** | 3.10+ (desenvolvimento) |
 | **PyQt6** | Interface |
-| **PSTools** | Pasta com PsExec e PsInfo (obrigatórios) e, opcionalmente, PsPing, PsList, PsService — padrão `C:\PSTools\` (ajustável em Configurações) |
+| **PSTools** | Pasta com PsExec e PsInfo (obrigatórios) e, opcionalmente, PsPing, PsList, PsService, PsShutdown, PsLoggedOn, PsFile — padrão `C:\PSTools\` (ajustável em Configurações) |
+| **Handle** | Opcional — pasta própria com `Handle64.exe` / `Handle.exe` (padrão `C:\Handle\`, ajustável em Configurações → Handle; download Sysinternals separado do PsTools) |
 | **WinGet** | No host remoto, para a aba WinGet |
 | **RustDesk** | Opcional, no host e na máquina local |
 | **Rede** | Ping, SMB (`C$`) e Remote Registry conforme o fluxo |
@@ -179,7 +185,7 @@ Preferência **Salvar log em arquivo** em Configurações:
 
 - Pasta `logs\` na raiz do repo (dev) ou ao lado do `RemoteOps.exe`
 - Arquivo: `logs\app.log` (via `logging.FileHandler`; uma única rota de escrita)
-- Demais preferências em `settings.ini` (local, não versionado): pasta PSTools, workers, timeout do Remote Registry, faixa de IP, servidor de impressão
+- Demais preferências em `settings.ini` (local, não versionado): pasta PSTools, pasta Handle, workers, timeout do Remote Registry, faixa de IP, servidor de impressão
 
 ---
 

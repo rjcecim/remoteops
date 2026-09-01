@@ -457,6 +457,21 @@ class TestProbeOptional(unittest.TestCase):
             )
             self.assertFalse(shutdown["found"])
 
+    def test_resolve_prefers_64_then_falls_back_to_32(self) -> None:
+        from remoteops.utils.pstools import resolve_pstools_tool
+
+        with tempfile.TemporaryDirectory() as folder:
+            open(os.path.join(folder, "PsExec.exe"), "wb").close()
+            open(os.path.join(folder, "PsExec64.exe"), "wb").close()
+            # 32 listado primeiro: mesmo assim executa o 64.
+            both = resolve_pstools_tool(folder, ("PsExec.exe", "PsExec64.exe"))
+            self.assertEqual(os.path.basename(both), "PsExec64.exe")
+
+        with tempfile.TemporaryDirectory() as folder:
+            open(os.path.join(folder, "PsExec.exe"), "wb").close()
+            only_32 = resolve_pstools_tool(folder, ("PsExec64.exe", "PsExec.exe"))
+            self.assertEqual(os.path.basename(only_32), "PsExec.exe")
+
 
 if __name__ == "__main__":
     unittest.main()

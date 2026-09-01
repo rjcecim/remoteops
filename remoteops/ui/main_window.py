@@ -36,6 +36,7 @@ from remoteops.ui.tabs.psexec import PsExecTab
 from remoteops.ui.tabs.psinfo import PsInfoTab
 from remoteops.ui.tabs.robocopy import RobocopyTab
 from remoteops.ui.tabs.servicos import ServicosTab
+from remoteops.ui.tabs.sessoes_arquivos import SessoesArquivosTab
 from remoteops.ui.tabs.settings import SettingsTab
 from remoteops.ui.tabs.winget import WinGetTab
 from remoteops.ui.widgets.card import bind_card_stack
@@ -104,6 +105,7 @@ class MainWindow(QMainWindow):
         self.processos_tab = None
         self.servicos_tab = None
         self.energia_tab = None
+        self.sessoes_arquivos_tab = None
         self.appsearch_tab = None
         self.settings_tab = None
         self.connectivity_tab = None
@@ -175,6 +177,9 @@ class MainWindow(QMainWindow):
         self.psexec_tab.openProcessosRequested.connect(self.open_processos_tab)
         self.psexec_tab.openServicosRequested.connect(self.open_servicos_tab)
         self.psexec_tab.openEnergiaRequested.connect(self.open_energia_tab)
+        self.psexec_tab.openSessoesArquivosRequested.connect(
+            self.open_sessoes_arquivos_tab
+        )
         self.psexec_tab.openRustDeskRequested.connect(self.on_rustdesk_clicked)
         self.psexec_tab.openMessageRequested.connect(self.open_message_tab)
         self.psexec_tab.openPrintersRequested.connect(self.open_printers_tab)
@@ -760,6 +765,64 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(idx)
         self._update_psinfo_mode_ui()
 
+    def open_sessoes_arquivos_tab(self) -> None:
+        """Abre a aba Sessões e Arquivos (PsLoggedOn / PsFile / Handle)."""
+        host = self.psexec_tab.host_edit.text().strip()
+        if not host:
+            self.log_output.append_log(
+                self.tr(
+                    "[SESSÕES] Preencha o Host remoto antes de abrir "
+                    "Sessões e Arquivos."
+                )
+            )
+            return
+
+        self._remember_window_size()
+
+        if self.sessoes_arquivos_tab is not None:
+            idx = self.tabs.indexOf(self.sessoes_arquivos_tab)
+            if idx != -1:
+                self.tabs.setCurrentIndex(idx)
+                self.sessoes_arquivos_tab.sync_from_host()
+                self._update_psinfo_mode_ui()
+                return
+
+        self.sessoes_arquivos_tab = SessoesArquivosTab(
+            host_source=self.psexec_tab.host_edit,
+            creds_provider=lambda: (
+                self.psexec_tab.auth_username(),
+                self.psexec_tab.pass_edit.text() or "",
+            ),
+            online_provider=lambda: bool(self.psexec_tab.is_host_online),
+        )
+        self.psexec_tab.hostOnlineChanged.connect(
+            self.sessoes_arquivos_tab.set_host_online
+        )
+        self.sessoes_arquivos_tab.openProcessPidRequested.connect(
+            self._open_processos_at_pid
+        )
+        self.tabs.addTab(self.sessoes_arquivos_tab, self.tr("Sessões e Arquivos"))
+        idx = self.tabs.indexOf(self.sessoes_arquivos_tab)
+        bar = self.tabs.tabBar()
+        if isinstance(bar, Mdl2TabBar):
+            bar.set_tab_meta(idx, "\uE8F1", closable=True)
+        else:
+            bar.setTabData(idx, "\uE8F1")
+        self._refresh_tab_bar_layout()
+        self.tabs.setCurrentIndex(idx)
+        self.sessoes_arquivos_tab.refresh_all()
+        self._update_psinfo_mode_ui()
+
+    def _open_processos_at_pid(self, pid: int) -> None:
+        """Abre Processos e tenta selecionar o PID informado pelo Handle."""
+        self.open_processos_tab()
+        if self.processos_tab is None:
+            return
+        try:
+            self.processos_tab.focus_pid(int(pid))
+        except Exception:
+            pass
+
     def open_appsearch_tab(self) -> None:
         """Cria a aba Pesquisa de Aplicativos sob demanda e foca nela."""
         self._remember_window_size()
@@ -865,6 +928,7 @@ class MainWindow(QMainWindow):
         self._close_processos_tab()
         self._close_servicos_tab()
         self._close_energia_tab()
+        self._close_sessoes_arquivos_tab()
         self._close_appsearch_tab()
         self._close_settings_tab()
 
@@ -924,6 +988,8 @@ class MainWindow(QMainWindow):
             self._close_servicos_tab()
         elif widget is self.energia_tab:
             self._close_energia_tab()
+        elif widget is self.sessoes_arquivos_tab:
+            self._close_sessoes_arquivos_tab()
         elif widget is self.appsearch_tab:
             self._close_appsearch_tab()
         elif widget is self.settings_tab:
@@ -1069,6 +1135,34 @@ class MainWindow(QMainWindow):
         self._last_tab_widget = self.tabs.currentWidget()
         self._refresh_tab_bar_layout()
 
+    def _close_sessoes_arquivos_tab(self) -> None:
+        if self.sessoes_arquivos_tab is None:
+            return
+        idx = self.tabs.indexOf(self.sessoes_arquivos_tab)
+        if idx != -1:
+            self.tabs.removeTab(idx)
+        try:
+            self.psexec_tab.hostOnlineChanged.disconnect(
+                self.sessoes_arquivos_tab.set_host_online
+            )
+        except TypeError:
+            pass
+        try:
+            self.sessoes_arquivos_tab.openProcessPidRequested.disconnect(
+                self._open_processos_at_pid
+            )
+        except TypeError:
+            pass
+        try:
+            self.sessoes_arquivos_tab.shutdown()
+        except Exception:
+            pass
+        self.sessoes_arquivos_tab.deleteLater()
+        self.sessoes_arquivos_tab = None
+        self._update_psinfo_mode_ui()
+        self._last_tab_widget = self.tabs.currentWidget()
+        self._refresh_tab_bar_layout()
+
     def _close_appsearch_tab(self) -> None:
         """Fecha a Pesquisa somente pelo X ao lado do título da aba."""
         if self.appsearch_tab is None:
@@ -1195,6 +1289,7 @@ class MainWindow(QMainWindow):
 
         self.settings_tab = SettingsTab()
         self.settings_tab.pstoolsPathChanged.connect(self._on_pstools_path_changed)
+        self.settings_tab.handlePathChanged.connect(self._on_handle_path_changed)
         self._wire_network_range_status()
         self._wire_print_server()
         self.tabs.addTab(self.settings_tab, self.tr("Configurações"))
@@ -1216,6 +1311,7 @@ class MainWindow(QMainWindow):
         self.psexec_tab.refresh_processos_button_state()
         self.psexec_tab.refresh_servicos_button_state()
         self.psexec_tab.refresh_energia_button_state()
+        self.psexec_tab.refresh_sessoes_arquivos_button_state()
         self.psexec_tab.refresh_host_status()
         if self.processos_tab is not None:
             self.processos_tab.refresh_tool_capabilities()
@@ -1223,6 +1319,13 @@ class MainWindow(QMainWindow):
             self.servicos_tab.refresh_tool_capabilities()
         if self.energia_tab is not None:
             self.energia_tab.refresh_tool_capabilities()
+        if self.sessoes_arquivos_tab is not None:
+            self.sessoes_arquivos_tab.refresh_tool_capabilities()
+
+    def _on_handle_path_changed(self, _path: str) -> None:
+        self.psexec_tab.refresh_sessoes_arquivos_button_state()
+        if self.sessoes_arquivos_tab is not None:
+            self.sessoes_arquivos_tab.refresh_tool_capabilities()
 
     def _on_tab_changed(self, _index: int) -> None:
         # PsInfo: fecha ao sair da aba.
@@ -1463,6 +1566,7 @@ class MainWindow(QMainWindow):
         processos_widget = self.processos_tab
         servicos_widget = self.servicos_tab
         energia_widget = self.energia_tab
+        sessoes_arquivos_widget = self.sessoes_arquivos_tab
         appsearch_widget = self.appsearch_tab
         settings_widget = self.settings_tab
         connectivity_widget = self.connectivity_tab
@@ -1488,6 +1592,11 @@ class MainWindow(QMainWindow):
                 continue
             if energia_widget is not None and w is energia_widget:
                 continue
+            if (
+                sessoes_arquivos_widget is not None
+                and w is sessoes_arquivos_widget
+            ):
+                continue
             if appsearch_widget is not None and w is appsearch_widget:
                 continue
             if settings_widget is not None and w is settings_widget:
@@ -1507,6 +1616,7 @@ class MainWindow(QMainWindow):
             processos_widget,
             servicos_widget,
             energia_widget,
+            sessoes_arquivos_widget,
             appsearch_widget,
             settings_widget,
             connectivity_widget,
@@ -1895,6 +2005,7 @@ class MainWindow(QMainWindow):
             getattr(self, "processos_tab", None),
             getattr(self, "servicos_tab", None),
             getattr(self, "energia_tab", None),
+            getattr(self, "sessoes_arquivos_tab", None),
             getattr(self, "psinfo_tab", None),
             getattr(self, "batchinstall_tab", None),
             getattr(self, "connectivity_tab", None),

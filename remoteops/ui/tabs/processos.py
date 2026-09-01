@@ -1095,6 +1095,23 @@ class ProcessosTab(QWidget):
         self._select_pid_in_tree(pid)
         self._refresh_action_buttons()
 
+    def focus_pid(self, pid: int, *, refresh_if_missing: bool = True) -> bool:
+        """Seleciona um PID (ex.: vindo de Sessões e Arquivos). Retorna se achou."""
+        try:
+            target = int(pid)
+        except (TypeError, ValueError):
+            return False
+        if target in self._rows_by_pid:
+            self._select_pid(target)
+            return True
+        self._selected_pid = target
+        self._select_pid_in_table(target)
+        self._select_pid_in_tree(target)
+        self._refresh_action_buttons()
+        if refresh_if_missing and self._ui_alive():
+            self.refresh_processes()
+        return target in self._rows_by_pid
+
     def _select_pid_in_table(self, pid: int, *, scroll: bool = True) -> None:
         self.table.blockSignals(True)
         try:

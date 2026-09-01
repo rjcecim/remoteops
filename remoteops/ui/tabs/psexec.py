@@ -244,6 +244,7 @@ class PsExecTab(QWidget):
     openProcessosRequested = pyqtSignal()
     openServicosRequested = pyqtSignal()
     openEnergiaRequested = pyqtSignal()
+    openSessoesArquivosRequested = pyqtSignal()
     openRustDeskRequested = pyqtSignal()
     openMessageRequested = pyqtSignal()
     openPrintersRequested = pyqtSignal()
@@ -328,6 +329,14 @@ class PsExecTab(QWidget):
         )
         self.energia_button.clicked.connect(self.openEnergiaRequested.emit)
         card1.add_header_button(self.energia_button)
+
+        self.sessoes_arquivos_button = card1.make_header_button(
+            "\uE8F1", self.tr("Sessões e arquivos remotos")
+        )
+        self.sessoes_arquivos_button.clicked.connect(
+            self.openSessoesArquivosRequested.emit
+        )
+        card1.add_header_button(self.sessoes_arquivos_button)
 
         self.rustdesk_button = card1.make_header_button(
             "\uE774", self.tr("Conectar via RustDesk")
@@ -1062,6 +1071,7 @@ class PsExecTab(QWidget):
             self.processos_button,
             self.servicos_button,
             self.energia_button,
+            self.sessoes_arquivos_button,
             self.rustdesk_button,
             self.message_button,
             self.printers_button,
@@ -1073,6 +1083,7 @@ class PsExecTab(QWidget):
         self.refresh_processos_button_state(online=online)
         self.refresh_servicos_button_state(online=online)
         self.refresh_energia_button_state(online=online)
+        self.refresh_sessoes_arquivos_button_state(online=online)
 
     def refresh_processos_button_state(self, online: bool | None = None) -> None:
         """Habilita Processos só com host Online e PsList disponível."""
@@ -1123,6 +1134,32 @@ class PsExecTab(QWidget):
         else:
             self.energia_button.setToolTip(
                 self.tr("Gerenciamento de energia remoto (PsShutdown)")
+            )
+
+    def refresh_sessoes_arquivos_button_state(
+        self, online: bool | None = None
+    ) -> None:
+        """Habilita Sessões e Arquivos com host Online e ao menos uma ferramenta."""
+        from remoteops.utils.handle import handle_available
+        from remoteops.utils.psfile import psfile_available
+        from remoteops.utils.psloggedon import psloggedon_available
+
+        is_online = self._host_online if online is None else bool(online)
+        has_any = (
+            psloggedon_available() or psfile_available() or handle_available()
+        )
+        enabled = is_online and has_any
+        self.sessoes_arquivos_button.setEnabled(enabled)
+        if is_online and not has_any:
+            self.sessoes_arquivos_button.setToolTip(
+                self.tr(
+                    "PsLoggedOn/PsFile (PSTools) ou Handle "
+                    "(Configurações → Handle) não encontrados."
+                )
+            )
+        else:
+            self.sessoes_arquivos_button.setToolTip(
+                self.tr("Sessões e arquivos remotos")
             )
 
     def _set_host_status(

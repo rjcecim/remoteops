@@ -54,64 +54,125 @@ def set_pstools_dir(path: str, *, persist: bool = True) -> str:
     return normalized
 
 
+def _bitness_of_name(name: str) -> str:
+    """Classifica o executável Sysinternals como ``64`` ou ``32`` pelo nome."""
+    n = (name or "").lower()
+    # Ex.: PsExec64.exe, handle64.exe, psfile64.exe, handle64a.exe (ARM64)
+    if "64" in os.path.splitext(n)[0]:
+        return "64"
+    return "32"
+
+
+def _names_64_then_32(names: Sequence[str]) -> List[str]:
+    """Ordena nomes: variantes 64-bit primeiro, depois 32-bit (ordem relativa preservada)."""
+    cleaned = [n for n in names if n]
+    sixty_four = [n for n in cleaned if _bitness_of_name(n) == "64"]
+    thirty_two = [n for n in cleaned if _bitness_of_name(n) != "64"]
+    return sixty_four + thirty_two
+
+
 def resolve_pstools_tool(pstools_dir: str, names: Sequence[str]) -> str:
     """
-    Resolve o caminho de uma ferramenta dentro da pasta PSTools.
-    Tenta cada nome em ordem; se nenhum existir, retorna pasta+primeiro nome
-    (ou só o nome, se a pasta estiver vazia — usa PATH).
+    Resolve o caminho de uma ferramenta dentro da pasta.
+
+    Prefere a variante 64-bit; se não existir, usa a 32-bit. Se nenhuma
+    existir, devolve pasta+primeiro nome 64 (ou 32), para mensagem de erro.
     """
     base = normalize_pstools_dir(pstools_dir)
-    names = [n for n in names if n]
-    if not names:
+    ordered = _names_64_then_32(names)
+    if not ordered:
         return ""
     if not base:
-        return names[0]
-    for name in names:
+        return ordered[0]
+    for name in ordered:
         candidate = os.path.join(base, name)
         if os.path.isfile(candidate):
             return candidate
-    return os.path.join(base, names[0])
+    return os.path.join(base, ordered[0])
+
+
+def _probe_tool_variants(
+    folder: str, label: str, names: Sequence[str]
+) -> Dict[str, object]:
+    """Inspeciona variantes 32/64 de uma ferramenta na pasta."""
+    path_64 = ""
+    path_32 = ""
+    for name in names:
+        candidate = os.path.join(folder, name)
+        if not os.path.isfile(candidate):
+            continue
+        bit = _bitness_of_name(name)
+        if bit == "64" and not path_64:
+            path_64 = candidate
+        elif bit == "32" and not path_32:
+            path_32 = candidate
+    found_64 = bool(path_64)
+    found_32 = bool(path_32)
+    found = found_64 or found_32
+    # Preferência de execução: 64-bit, depois 32-bit
+    resolved = path_64 or path_32
+    if not resolved and names:
+        resolved = os.path.join(folder, names[0])
+    return {
+        "label": label,
+        "names": list(names),
+        "path": resolved,
+        "found": found,
+        "found_64": found_64,
+        "found_32": found_32,
+        "path_64": path_64,
+        "path_32": path_32,
+    }
+
+
+# Ferramentas da pasta PSTools (Handle tem pasta própria — ver handle.py).
+PSTOOLS_PROBE_TOOLS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("PsExec", ("PsExec64.exe", "PsExec.exe")),
+    ("PsInfo", ("PsInfo64.exe", "PsInfo.exe")),
+    ("PsPing", ("PsPing64.exe", "PsPing.exe")),
+    ("PsList", ("PsList64.exe", "PsList.exe")),
+    ("PsKill", ("PsKill64.exe", "PsKill.exe")),
+    ("PsSuspend", ("PsSuspend64.exe", "PsSuspend.exe")),
+    ("PsService", ("PsService64.exe", "PsService.exe")),
+    ("PsShutdown", ("PsShutdown64.exe", "PsShutdown.exe")),
+    ("PsLoggedOn", ("PsLoggedon64.exe", "PsLoggedon.exe")),
+    ("PsFile", ("psfile64.exe", "PsFile64.exe", "psfile.exe", "PsFile.exe")),
+)
 
 
 def probe_pstools(pstools_dir: Optional[str] = None) -> Dict[str, object]:
     """
     Inspeciona a pasta PSTools e retorna status dos binários principais.
-    (RustDesk NÃO fica em PSTools — ver ``probe_rustdesk_local``.)
+
+    Handle NÃO fica aqui (pasta própria). A escolha 64→32 na execução
+    é feita por ``resolve_pstools_tool``.
     """
     base = normalize_pstools_dir(pstools_dir or get_pstools_dir()) or DEFAULT_PSTOOLS_DIR
-    tools: List[Tuple[str, Sequence[str]]] = [
-        ("PsExec", ("PsExec64.exe", "PsExec.exe")),
-        ("PsInfo", ("PsInfo64.exe", "PsInfo.exe")),
-        ("PsPing", ("PsPing64.exe", "PsPing.exe")),
-        ("PsList", ("PsList64.exe", "PsList.exe")),
-        ("PsKill", ("PsKill64.exe", "PsKill.exe")),
-        ("PsSuspend", ("PsSuspend64.exe", "PsSuspend.exe")),
-        ("PsService", ("PsService64.exe", "PsService.exe")),
-        ("PsShutdown", ("PsShutdown64.exe", "PsShutdown.exe")),
-    ]
-    items = []
-    found_count = 0
-    for label, names in tools:
-        resolved = ""
-        present = False
-        for name in names:
-            candidate = os.path.join(base, name)
-            if os.path.isfile(candidate):
-                resolved = candidate
-                present = True
-                found_count += 1
-                break
-        if not resolved and names:
-            resolved = os.path.join(base, names[0])
-        items.append(
-            {
-                "label": label,
-                "names": list(names),
-                "path": resolved,
-                "found": present,
-            }
-        )
     dir_ok = os.path.isdir(base)
+    items: List[Dict[str, object]] = []
+    found_count = 0
+    if dir_ok:
+        for label, names in PSTOOLS_PROBE_TOOLS:
+            item = _probe_tool_variants(base, label, names)
+            if item.get("found"):
+                found_count += 1
+            items.append(item)
+    else:
+        # Pasta ausente: ainda devolve a lista esperada (found=False) para UI/API.
+        for label, names in PSTOOLS_PROBE_TOOLS:
+            items.append(
+                {
+                    "label": label,
+                    "names": list(names),
+                    "path": os.path.join(base, names[0]) if names else "",
+                    "found": False,
+                    "found_64": False,
+                    "found_32": False,
+                    "path_64": "",
+                    "path_32": "",
+                }
+            )
+
     psexec_ok = bool(items and items[0].get("found"))
     psinfo_ok = bool(len(items) > 1 and items[1].get("found"))
     return {
@@ -120,7 +181,7 @@ def probe_pstools(pstools_dir: Optional[str] = None) -> Dict[str, object]:
         "tools": items,
         "ok_count": found_count,
         "total": len(items),
-        # Saudável enquanto PsExec e PsInfo existirem; demais ferramentas são opcionais.
+        # Saudável enquanto PsExec e PsInfo existirem; demais são opcionais.
         "healthy": dir_ok and psexec_ok and psinfo_ok,
     }
 

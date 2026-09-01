@@ -26,7 +26,6 @@ from remoteops.ui.widgets.card import (
     make_card_stack,
 )
 from remoteops.ui.widgets.content_tab_widget import ContentSizedTabWidget
-from remoteops.ui.widgets.flow import FlowLayout
 from remoteops.ui.widgets.mdl2_tab_bar import Mdl2TabBar
 from remoteops.ui.widgets.network_range import NetworkRangeConfigWidget
 from remoteops.ui.widgets.spinbox import StepSpinBox
@@ -38,6 +37,11 @@ from remoteops.utils.app_logging import (
     set_file_logging_enabled,
 )
 from remoteops.utils.app_settings import SETTINGS_SAVE_ERROR_MSG, SettingsWriteError
+from remoteops.utils.handle import (
+    DEFAULT_HANDLE_DIR,
+    get_handle_dir,
+    set_handle_dir,
+)
 from remoteops.utils.printer_settings import (
     DEFAULT_PRINT_LIST_TIMEOUT_S,
     DEFAULT_PRINT_SERVER,
@@ -54,7 +58,6 @@ from remoteops.utils.printers import print_server_unc
 from remoteops.utils.pstools import (
     DEFAULT_PSTOOLS_DIR,
     get_pstools_dir,
-    probe_pstools,
     probe_rustdesk_local,
     set_pstools_dir,
 )
@@ -90,6 +93,25 @@ def _caption(text: str) -> QLabel:
 def _add_caption(grid, row: int, text: str) -> None:
     """Legenda em largura total (sem AlignLeft, senão o texto é cortado)."""
     grid.addWidget(_caption(text), row, 0, 1, 2)
+
+
+def _folder_status_row() -> tuple[QWidget, _StatusDot, QLabel]:
+    """Linha Status: ponto + nome da ferramenta (ou pasta ausente)."""
+    row = QHBoxLayout()
+    row.setSpacing(8)
+    row.setContentsMargins(2, 0, 0, 0)
+    dot = _StatusDot()
+    label = QLabel()
+    label.setObjectName("folderStatus")
+    label.setStyleSheet(
+        f"QLabel#folderStatus {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
+    )
+    row.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+    row.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
+    row.addStretch()
+    wrap = QWidget()
+    wrap.setLayout(row)
+    return wrap, dot, label
 
 
 def _open_in_explorer(path: str) -> None:
@@ -130,13 +152,13 @@ class SettingsTab(QWidget):
     """Aba de configurações do aplicativo."""
 
     pstoolsPathChanged = pyqtSignal(str)
+    handlePathChanged = pyqtSignal(str)
     networkRangeChanged = pyqtSignal()
     printServerChanged = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._tools_flow: FlowLayout | None = None
 
         self._root_layout = make_card_stack(self)
         self._tabs = self._build_tabs()
@@ -153,6 +175,7 @@ class SettingsTab(QWidget):
 
         for card in (
             self._pstools_card,
+            self._handle_card,
             self._rustdesk_card,
             self._logs_card,
             self._printers_card,
@@ -166,6 +189,7 @@ class SettingsTab(QWidget):
         )
 
         self.refresh_pstools_status()
+        self.refresh_handle_status()
         self.refresh_rustdesk_status()
         self._reload_printer_fields()
 
@@ -182,6 +206,13 @@ class SettingsTab(QWidget):
         inner_bar.set_tab_meta(idx_ps, "\uE8B7")
         tabs.setTabToolTip(
             idx_ps, self.tr("Pasta do PsExec, PsInfo, PsPing, PsList, PsService e utilitários")
+        )
+
+        self._handle_card = self._build_handle_card()
+        idx_h = tabs.addTab(_wrap_page(self._handle_card), self.tr("Handle"))
+        inner_bar.set_tab_meta(idx_h, "\uE8F1")
+        tabs.setTabToolTip(
+            idx_h, self.tr("Pasta do Handle Sysinternals (download separado do PsTools)")
         )
 
         self._rustdesk_card = self._build_rustdesk_card()
@@ -241,11 +272,59 @@ class SettingsTab(QWidget):
         add_row(g1, row, self.tr("Caminho"), path_wrap)
         row += 1
 
-        status_wrap = QWidget()
-        status_wrap.setMinimumWidth(0)
-        self._tools_flow = FlowLayout(status_wrap, margin=0, h_spacing=16, v_spacing=4)
+        status_wrap, self.pstools_status_dot, self.pstools_status_label = (
+            _folder_status_row()
+        )
         add_row(g1, row, self.tr("Status"), status_wrap)
         return card_ps
+
+    def _build_handle_card(self) -> CardWidget:
+        card = CardWidget("\uE8F1", self.tr("Handle"))
+        card.set_collapsible(True, collapsed=False)
+        card.set_resettable(True, self.tr("Restaurar padrões deste card"))
+        card.resetRequested.connect(self._reset_handle)
+        grid = grid_in_card(card)
+        row = 0
+
+        path_row = QHBoxLayout()
+        path_row.setSpacing(4)
+        path_row.setContentsMargins(0, 0, 0, 0)
+        self.handle_edit = QLineEdit()
+        self.handle_edit.setReadOnly(True)
+        self.handle_edit.setText(get_handle_dir())
+        self.handle_edit.setToolTip(
+            self.tr("Pasta onde estão Handle64.exe / Handle.exe")
+        )
+        self.handle_browse_btn = make_icon_button(
+            "\uED25", self.tr("Alterar pasta Handle")
+        )
+        self.handle_browse_btn.clicked.connect(self._browse_handle)
+        self.handle_open_btn = make_icon_button(
+            "\uED43", self.tr("Abrir pasta no Explorer")
+        )
+        self.handle_open_btn.clicked.connect(self._open_handle_folder)
+        path_row.addWidget(self.handle_edit, 1)
+        path_row.addWidget(self.handle_browse_btn)
+        path_row.addWidget(self.handle_open_btn)
+        path_wrap = QWidget()
+        path_wrap.setLayout(path_row)
+        path_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        add_row(grid, row, self.tr("Caminho"), path_wrap)
+        row += 1
+
+        status_wrap, self.handle_status_dot, self.handle_status_label = (
+            _folder_status_row()
+        )
+        add_row(grid, row, self.tr("Status"), status_wrap)
+        row += 1
+        _add_caption(
+            grid,
+            row,
+            self.tr(
+                "Download Sysinternals separado do PsTools. Padrão: C:\\Handle\\."
+            ),
+        )
+        return card
 
     def _build_rustdesk_card(self) -> CardWidget:
         card_rd = CardWidget("\uE774", self.tr("RustDesk"))
@@ -480,6 +559,7 @@ class SettingsTab(QWidget):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self.refresh_pstools_status()
+        self.refresh_handle_status()
         self.refresh_rustdesk_status()
         self.log_session_check.setChecked(is_file_logging_enabled())
         try:
@@ -640,6 +720,34 @@ class SettingsTab(QWidget):
         self.refresh_pstools_status()
         self.pstoolsPathChanged.emit(new_path)
 
+    def _browse_handle(self) -> None:
+        start = get_handle_dir()
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            self.tr("Selecionar pasta Handle"),
+            start if os.path.isdir(start) else DEFAULT_HANDLE_DIR,
+        )
+        if not folder:
+            return
+        try:
+            new_path = set_handle_dir(folder)
+        except SettingsWriteError as exc:
+            self._show_settings_save_error(exc)
+            return
+        self.handle_edit.setText(new_path)
+        self.refresh_handle_status()
+        self.handlePathChanged.emit(new_path)
+
+    def _reset_handle(self) -> None:
+        try:
+            new_path = set_handle_dir(DEFAULT_HANDLE_DIR)
+        except SettingsWriteError as exc:
+            self._show_settings_save_error(exc)
+            return
+        self.handle_edit.setText(new_path)
+        self.refresh_handle_status()
+        self.handlePathChanged.emit(new_path)
+
     def _on_log_session_toggled(self, checked: bool) -> None:
         try:
             set_file_logging_enabled(checked)
@@ -665,6 +773,9 @@ class SettingsTab(QWidget):
     def _open_pstools_folder(self) -> None:
         _open_in_explorer(get_pstools_dir())
 
+    def _open_handle_folder(self) -> None:
+        _open_in_explorer(get_handle_dir())
+
     def _open_rustdesk_folder(self) -> None:
         info = probe_rustdesk_local()
         path = str(info.get("path") or "")
@@ -684,65 +795,32 @@ class SettingsTab(QWidget):
                 self.tr("Não encontrado em C:\\Program Files\\RustDesk\\")
             )
 
-    def _clear_tools_flow(self) -> None:
-        flow = self._tools_flow
-        if flow is None:
-            return
-        while flow.count():
-            item = flow.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-
-    def _add_pstools_chip(self, tool: dict, dir_ok: bool) -> None:
-        flow = self._tools_flow
-        if flow is None:
-            return
-        chip = QHBoxLayout()
-        chip.setSpacing(6)
-        chip.setContentsMargins(0, 0, 0, 0)
-        dot = _StatusDot(diameter=8)
-        name = QLabel(str(tool.get("label") or ""))
-        name.setObjectName("pstoolsToolName")
-        name.setStyleSheet(
-            f"QLabel#pstoolsToolName {{ font-size: {SIZE_UI_SMALL}pt; }}"
-        )
-        detail = QLabel()
-        detail.setObjectName("toolDetail")
-        detail.setStyleSheet(
-            f"QLabel#toolDetail {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
-        )
-        detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        if tool.get("found"):
+    def _set_folder_status(
+        self, dot: _StatusDot, label: QLabel, path: str, tool_name: str
+    ) -> None:
+        if path and os.path.isdir(path):
             dot.set_color(_STATUS_COLORS["ok"])
-            path = str(tool.get("path") or "")
-            detail.setText(os.path.basename(path))
-            name.setToolTip(path)
-            detail.setToolTip(path)
+            label.setText(self.tr("{0} encontrado").format(tool_name))
         else:
             dot.set_color(_STATUS_COLORS["err"])
-            expected = " / ".join(tool.get("names") or [])
-            if not dir_ok:
-                detail.setText(self.tr("pasta ausente"))
-                tip = self.tr("Pasta PSTools não encontrada")
-            else:
-                detail.setText(self.tr("ausente"))
-                tip = self.tr(f"Ausente ({expected})")
-            name.setToolTip(tip)
-            detail.setToolTip(str(tool.get("path") or "") or tip)
-        chip.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
-        chip.addWidget(name, 0, Qt.AlignmentFlag.AlignVCenter)
-        chip.addWidget(detail, 0, Qt.AlignmentFlag.AlignVCenter)
-        wrap = QWidget()
-        wrap.setLayout(chip)
-        wrap.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        flow.addWidget(wrap)
+            label.setText(self.tr("Pasta não encontrada"))
 
     def refresh_pstools_status(self) -> None:
-        info = probe_pstools(get_pstools_dir())
-        self.pstools_edit.setText(str(info["dir"]))
-        dir_ok = bool(info["dir_ok"])
-        self._clear_tools_flow()
-        for tool in list(info["tools"]):
-            self._add_pstools_chip(tool, dir_ok)
+        path = get_pstools_dir()
+        self.pstools_edit.setText(path)
+        self._set_folder_status(
+            self.pstools_status_dot,
+            self.pstools_status_label,
+            path,
+            self.tr("PSTools"),
+        )
+
+    def refresh_handle_status(self) -> None:
+        path = get_handle_dir()
+        self.handle_edit.setText(path)
+        self._set_folder_status(
+            self.handle_status_dot,
+            self.handle_status_label,
+            path,
+            self.tr("Handle"),
+        )
