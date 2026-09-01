@@ -487,7 +487,7 @@ $script:WingetCancelled = $false
 $script:WingetTimedOut = $false
 
 $meta = [pscustomobject]@{
-  Timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+  Timestamp = (Get-Date).ToString('dd/MM/yyyy HH:mm:ss')
   Computer  = $env:COMPUTERNAME
   User      = $env:USERNAME
   Winget    = $null

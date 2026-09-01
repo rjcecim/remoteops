@@ -107,14 +107,18 @@ class TestPsLoggedOnParse(unittest.TestCase):
         self.assertEqual(len(rows), 3)
         self.assertEqual(rows[0].display_user, "TCE-PA\\0101093")
         self.assertEqual(rows[0].logon_type, "Local")
+        self.assertEqual(rows[0].logon_time, "31/08/2026 11:45:30")
         self.assertEqual(rows[1].username, "usuario02")
+        self.assertEqual(rows[1].logon_time, "24/03/2020 14:28:50")
         self.assertEqual(rows[2].logon_type, "Rede")
         self.assertEqual(rows[2].domain, "DOMAIN")
+        self.assertEqual(rows[2].logon_time, "24/03/2020 17:24:23")
 
     def test_empty_share_section(self) -> None:
         rows = parse_psloggedon_output(_EMPTY_SHARE)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].logon_type, "Local")
+        self.assertEqual(rows[0].logon_time, "11/07/2012 19:05:37")
 
     def test_no_one(self) -> None:
         self.assertEqual(parse_psloggedon_output(_NO_ONE), [])

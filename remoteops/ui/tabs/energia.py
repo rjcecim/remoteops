@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Callable, Optional, Tuple
+
+from remoteops.utils.dates import format_now_datetime
 
 from PyQt6 import sip
 from PyQt6.QtCore import QTime, Qt, QThread, pyqtSignal
@@ -1360,7 +1361,7 @@ class EnergiaTab(QWidget):
         else:
             countdown = "imediato"
         row = {
-            "when": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            "when": format_now_datetime(),
             "operator": current_operator() or "—",
             "host": result.host,
             "action": action_profile(result.action).label,

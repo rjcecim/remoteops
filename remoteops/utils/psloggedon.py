@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
+from remoteops.utils.dates import to_display_datetime
 from remoteops.utils.pstools import get_pstools_dir, resolve_pstools_tool
 
 PSLOGGEDON_NAMES: Tuple[str, ...] = ("PsLoggedon64.exe", "PsLoggedon.exe")
@@ -152,6 +153,9 @@ def parse_psloggedon_output(text: str) -> List[RemoteLoggedOnUser]:
         if not m:
             continue
         logon_time = (m.group(1) or "").strip()
+        shown = to_display_datetime(logon_time)
+        if shown:
+            logon_time = shown
         account = (m.group(2) or "").strip()
         if not account or account.lower() in ("locally.", "shares."):
             continue

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QLocale, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPalette, QPen
 from PyQt6.QtWidgets import (
     QApplication,
@@ -418,6 +418,8 @@ def apply_ui_defaults(app: QApplication) -> None:
     Paleta clara, Fusion (desenho estável) e QSS global.
     Não define font-family em QPushButton/QToolButton para preservar MDL2.
     """
+    QLocale.setDefault(QLocale(QLocale.Language.Portuguese, QLocale.Country.Brazil))
+
     held = _FluentStyle()
     app.setStyle(held)
     # Sem essa referência, o Qt descarta a subclasse e o checkbox volta quadrado.

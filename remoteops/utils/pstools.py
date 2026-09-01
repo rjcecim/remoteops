@@ -137,6 +137,7 @@ PSTOOLS_PROBE_TOOLS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("PsShutdown", ("PsShutdown64.exe", "PsShutdown.exe")),
     ("PsLoggedOn", ("PsLoggedon64.exe", "PsLoggedon.exe")),
     ("PsFile", ("psfile64.exe", "PsFile64.exe", "psfile.exe", "PsFile.exe")),
+    ("PsGetSid", ("PsGetSid64.exe", "PsGetSid.exe")),
 )
 
 

@@ -33,7 +33,7 @@ from remoteops.ui.tabs.powershell import PowerShellTab
 from remoteops.ui.tabs.printers import PrintersTab
 from remoteops.ui.tabs.processos import ProcessosTab
 from remoteops.ui.tabs.psexec import PsExecTab
-from remoteops.ui.tabs.psinfo import PsInfoTab
+from remoteops.ui.tabs.inventario import InventarioTab
 from remoteops.ui.tabs.robocopy import RobocopyTab
 from remoteops.ui.tabs.servicos import ServicosTab
 from remoteops.ui.tabs.sessoes_arquivos import SessoesArquivosTab
@@ -476,11 +476,11 @@ class MainWindow(QMainWindow):
             if idx != -1:
                 self.tabs.setCurrentIndex(idx)
                 # Sempre re-executar para o host atual
-                self.psinfo_tab.run_psinfo()
+                self.psinfo_tab.run_inventory()
                 self._update_psinfo_mode_ui()
                 return
 
-        self.psinfo_tab = PsInfoTab(
+        self.psinfo_tab = InventarioTab(
             log_output=self.log_output,
             host_source=self.psexec_tab.host_edit,
             creds_provider=lambda: (
@@ -489,12 +489,12 @@ class MainWindow(QMainWindow):
             ),
         )
         # PsInfo deve ser sempre a última aba
-        self.tabs.addTab(self.psinfo_tab, self.tr("PsInfo"))
+        self.tabs.addTab(self.psinfo_tab, self.tr("Inventário"))
         psinfo_idx = self.tabs.indexOf(self.psinfo_tab)
         self.tabs.tabBar().setTabData(psinfo_idx, "\uE946")  # Info
         self._refresh_tab_bar_layout()
         self.tabs.setCurrentIndex(psinfo_idx)
-        self.psinfo_tab.run_psinfo()
+        self.psinfo_tab.run_inventory()
         self._update_psinfo_mode_ui()
 
     def open_hostapps_tab(self) -> None:

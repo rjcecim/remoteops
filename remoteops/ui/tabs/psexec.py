@@ -294,23 +294,20 @@ class PsExecTab(QWidget):
         self.host_edit.setToolTip(self.tr("Nome ou IP do computador remoto"))
         _add_row(g1, 0, self.tr("Host remoto"), host_clear_container)
 
-        self.hostapps_button = card1.make_header_button(
-            "\uE71D", self.tr("Listar aplicativos do host (Remote Registry)")
-        )
-        self.hostapps_button.clicked.connect(self.openHostAppsRequested.emit)
-        card1.add_header_button(self.hostapps_button)
-
-        self.winget_button = card1.make_header_button(
-            "\uE7B8", self.tr("WinGet — pacotes remotos (winget)")
-        )
-        self.winget_button.clicked.connect(self.openWinGetRequested.emit)
-        card1.add_header_button(self.winget_button)
-
+        # Ver → software → interagir → impacto (reset/recolher ficam no fim).
         self.psinfo_button = card1.make_header_button(
-            "\uE946", self.tr("Abrir PsInfo (inventário)")
+            "\uE946", self.tr("Abrir Inventário")
         )
         self.psinfo_button.clicked.connect(self.openPsInfoRequested.emit)
         card1.add_header_button(self.psinfo_button)
+
+        self.sessoes_arquivos_button = card1.make_header_button(
+            "\uE8F1", self.tr("Sessões e arquivos remotos")
+        )
+        self.sessoes_arquivos_button.clicked.connect(
+            self.openSessoesArquivosRequested.emit
+        )
+        card1.add_header_button(self.sessoes_arquivos_button)
 
         self.processos_button = card1.make_header_button(
             "\uE9D9", self.tr("Processos remotos (PsList)")
@@ -324,31 +321,17 @@ class PsExecTab(QWidget):
         self.servicos_button.clicked.connect(self.openServicosRequested.emit)
         card1.add_header_button(self.servicos_button)
 
-        self.energia_button = card1.make_header_button(
-            "\uE7E8", self.tr("Gerenciamento de energia remoto (PsShutdown)")
+        self.hostapps_button = card1.make_header_button(
+            "\uE71D", self.tr("Listar aplicativos do host (Remote Registry)")
         )
-        self.energia_button.clicked.connect(self.openEnergiaRequested.emit)
-        card1.add_header_button(self.energia_button)
+        self.hostapps_button.clicked.connect(self.openHostAppsRequested.emit)
+        card1.add_header_button(self.hostapps_button)
 
-        self.sessoes_arquivos_button = card1.make_header_button(
-            "\uE8F1", self.tr("Sessões e arquivos remotos")
+        self.winget_button = card1.make_header_button(
+            "\uE7B8", self.tr("WinGet — pacotes remotos (winget)")
         )
-        self.sessoes_arquivos_button.clicked.connect(
-            self.openSessoesArquivosRequested.emit
-        )
-        card1.add_header_button(self.sessoes_arquivos_button)
-
-        self.rustdesk_button = card1.make_header_button(
-            "\uE774", self.tr("Conectar via RustDesk")
-        )
-        self.rustdesk_button.clicked.connect(self.openRustDeskRequested.emit)
-        card1.add_header_button(self.rustdesk_button)
-
-        self.message_button = card1.make_header_button(
-            "\uE8BD", self.tr("Enviar mensagem ao host")
-        )
-        self.message_button.clicked.connect(self.openMessageRequested.emit)
-        card1.add_header_button(self.message_button)
+        self.winget_button.clicked.connect(self.openWinGetRequested.emit)
+        card1.add_header_button(self.winget_button)
 
         self.printers_button = card1.make_header_button(
             "\uE749", self.tr("Impressoras de rede")
@@ -356,6 +339,24 @@ class PsExecTab(QWidget):
         self.printers_button.clicked.connect(self.openPrintersRequested.emit)
         card1.add_header_button(self.printers_button)
         self.refresh_printers_button_tooltip()
+
+        self.message_button = card1.make_header_button(
+            "\uE8BD", self.tr("Enviar mensagem ao host")
+        )
+        self.message_button.clicked.connect(self.openMessageRequested.emit)
+        card1.add_header_button(self.message_button)
+
+        self.rustdesk_button = card1.make_header_button(
+            "\uE774", self.tr("Conectar via RustDesk")
+        )
+        self.rustdesk_button.clicked.connect(self.openRustDeskRequested.emit)
+        card1.add_header_button(self.rustdesk_button)
+
+        self.energia_button = card1.make_header_button(
+            "\uE7E8", self.tr("Gerenciamento de energia remoto (PsShutdown)")
+        )
+        self.energia_button.clicked.connect(self.openEnergiaRequested.emit)
+        card1.add_header_button(self.energia_button)
 
         # Status (legenda com bolinha abaixo do host)
         status_row = QHBoxLayout()
@@ -1065,16 +1066,16 @@ class PsExecTab(QWidget):
 
     def _host_action_buttons(self):
         return (
-            self.hostapps_button,
-            self.winget_button,
             self.psinfo_button,
+            self.sessoes_arquivos_button,
             self.processos_button,
             self.servicos_button,
-            self.energia_button,
-            self.sessoes_arquivos_button,
-            self.rustdesk_button,
-            self.message_button,
+            self.hostapps_button,
+            self.winget_button,
             self.printers_button,
+            self.message_button,
+            self.rustdesk_button,
+            self.energia_button,
         )
 
     def _update_host_action_buttons(self, online: bool) -> None:

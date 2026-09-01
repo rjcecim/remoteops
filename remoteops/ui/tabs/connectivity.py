@@ -8,6 +8,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
+from remoteops.utils.dates import format_now_datetime
+
 from PyQt6 import sip
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -373,7 +375,7 @@ class ConnectivityTab(QWidget):
 
     def _append_result(self, result: PsPingResult) -> None:
         now = datetime.now()
-        stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+        stamp = format_now_datetime()
         proto = "TCP" if result.mode == PsPingMode.TCP else "ICMP"
         port = str(result.port) if result.port else "—"
         outcome = state_caption(result.state)

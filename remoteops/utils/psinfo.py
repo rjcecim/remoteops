@@ -5,9 +5,10 @@ import re
 import shlex
 import subprocess
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from remoteops.core.console_codec import decode_console_bytes
+from remoteops.core.console_codec import decode_best_effort, decode_console_bytes
+from remoteops.utils.dates import to_display_date
 from remoteops.core.win_cmd import run_captured
 
 
@@ -208,6 +209,170 @@ def is_psinfo_usage_text(text: str) -> bool:
     """True se a saída for a tela de Usage (comando malformado)."""
     t = (text or "").lower()
     return "usage: psinfo" in t or ("psinfo returns information" in t and "-nobanner" in t)
+
+
+PSINFO_DEFAULT_TIMEOUT = 90.0
+
+_UPTIME_ERROR_MARKERS = (
+    "error reading uptime",
+    "unable to read uptime",
+    "cannot read uptime",
+)
+
+_SCRIPT_UPTIME = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$os = Get-CimInstance Win32_OperatingSystem | Select-Object -First 1 LastBootUpTime
+if (-not $os -or -not $os.LastBootUpTime) {
+  @{ seconds = $null } | ConvertTo-Json -Compress
+  exit
+}
+$seconds = [int64]((Get-Date) - [datetime]$os.LastBootUpTime).TotalSeconds
+@{ seconds = $seconds } | ConvertTo-Json -Compress
+"""
+
+
+def is_invalid_psinfo_uptime(text: str) -> bool:
+    """PsInfo remoto costuma devolver 'Error reading uptime' — tratar como ausente."""
+    s = (text or "").strip()
+    if not s:
+        return True
+    low = s.lower()
+    if low in ("n/a", "na", "unknown", "—", "-"):
+        return True
+    return any(marker in low for marker in _UPTIME_ERROR_MARKERS)
+
+
+def format_uptime_duration(seconds: int) -> str:
+    """Formato estilo PsInfo: '5 days 3 hours 12 minutes 0 seconds'."""
+    total = max(0, int(seconds))
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{days} days {hours} hours {minutes} minutes {secs} seconds"
+
+
+def uptime_from_enrich(enrich: Optional[dict]) -> str:
+    if not isinstance(enrich, dict):
+        return ""
+    raw = enrich.get("UptimeSeconds")
+    if raw is None:
+        return ""
+    try:
+        seconds = int(raw)
+    except (TypeError, ValueError):
+        return ""
+    if seconds < 0:
+        return ""
+    return format_uptime_duration(seconds)
+
+
+def query_remote_uptime_seconds(
+    host: str,
+    *,
+    user: str = "",
+    password: str = "",
+    pstools_dir: str = "",
+) -> Optional[int]:
+    """Calcula uptime no host remoto via WMI (fallback quando o PsInfo falha)."""
+    from remoteops.utils.inventory.remote_exec import run_remote_powershell
+
+    data, err = run_remote_powershell(
+        host,
+        _SCRIPT_UPTIME,
+        user=user,
+        password=password,
+        pstools_dir=pstools_dir,
+    )
+    if err or not isinstance(data, dict):
+        return None
+    raw = data.get("seconds")
+    if raw is None:
+        return None
+    try:
+        seconds = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds >= 0 else None
+
+
+def patch_system_uptime(
+    system: Dict[str, str],
+    host: str,
+    *,
+    user: str = "",
+    password: str = "",
+    pstools_dir: str = "",
+    fallback_seconds: Optional[int] = None,
+) -> None:
+    """Substitui uptime inválido do PsInfo por valor WMI ou ``fallback_seconds``."""
+    if not is_invalid_psinfo_uptime(system.get("Uptime", "")):
+        return
+    seconds = fallback_seconds
+    if seconds is None:
+        seconds = query_remote_uptime_seconds(
+            host,
+            user=user,
+            password=password,
+            pstools_dir=pstools_dir,
+        )
+    if seconds is not None:
+        system["Uptime"] = format_uptime_duration(seconds)
+
+
+def run_psinfo(
+    host: str,
+    *,
+    include_disks: bool = True,
+    include_hotfixes: bool = False,
+    user: str = "",
+    password: str = "",
+    pstools_dir: str = "",
+    timeout: float = PSINFO_DEFAULT_TIMEOUT,
+) -> tuple[str, str]:
+    """Executa PsInfo no host e retorna ``(stdout, erro)``."""
+    from remoteops.utils.pstools import get_pstools_dir, resolve_pstools_tool
+
+    if not build_psinfo_target(host):
+        return "", "Host remoto não informado."
+
+    exe = resolve_pstools_tool(
+        pstools_dir or get_pstools_dir(),
+        ("PsInfo64.exe", "PsInfo.exe"),
+    )
+    if not exe:
+        return "", "PsInfo não encontrado na pasta PSTools."
+
+    args = build_psinfo_argv(
+        exe,
+        host,
+        include_disks=include_disks,
+        include_hotfixes=include_hotfixes,
+        nobanner=True,
+        user=user,
+        password=password,
+    )
+    try:
+        proc = run_captured(args, timeout=max(5.0, float(timeout)))
+    except subprocess.TimeoutExpired:
+        return "", f"PsInfo excedeu {int(timeout)}s."
+    except FileNotFoundError:
+        return "", "PsInfo não encontrado."
+    except OSError as exc:
+        return "", f"Falha ao iniciar PsInfo: {exc}"
+
+    out = decode_best_effort(proc.stdout or b"").strip()
+    err = decode_best_effort(proc.stderr or b"").strip()
+    combined = out if out else err
+
+    if is_psinfo_usage_text(combined):
+        return "", "PsInfo rejeitou o comando."
+    if proc.returncode != 0 and not out:
+        return "", err or f"PsInfo falhou (exit {proc.returncode})."
+    return combined, ""
+
+
+# Alias usado pelo inventário e testes legados
+collect_psinfo_raw = run_psinfo
 
 
 def _reg_str(sub, value_name: str) -> str:
@@ -668,8 +833,12 @@ def parse_psinfo_output(text: str, host: str = "") -> PsInfoResult:
         if in_hotfixes:
             m = _HOTFIX_LINE_RE.match(stripped)
             if m:
+                raw_date = m.group("date").strip()
                 hotfixes.append(
-                    PsInfoHotfix(id=m.group("id").strip(), installed=m.group("date").strip())
+                    PsInfoHotfix(
+                        id=m.group("id").strip(),
+                        installed=to_display_date(raw_date) or raw_date,
+                    )
                 )
             continue
 
@@ -731,7 +900,8 @@ def _parse_hotfix_json(out: str) -> tuple[List[PsInfoHotfix], str]:
         items.append(
             PsInfoHotfix(
                 id=hid,
-                installed=str(row.get("InstalledOn") or "").strip(),
+                installed=to_display_date(row.get("InstalledOn"))
+                or str(row.get("InstalledOn") or "").strip(),
                 description=str(row.get("Description") or "").strip(),
             )
         )
@@ -758,7 +928,7 @@ def _shorten_hotfix_error(err: str) -> str:
 _GET_HOTFIX_SELECT = (
     "Select-Object HotFixID, Description, "
     "@{N='InstalledOn';E={ if ($null -ne $_.InstalledOn) { "
-    "try { ([datetime]$_.InstalledOn).ToString('yyyy-MM-dd') } "
+    "try { ([datetime]$_.InstalledOn).ToString('dd/MM/yyyy') } "
     "catch { [string]$_.InstalledOn } } else { '' } }} | "
     "ConvertTo-Json -Compress"
 )
@@ -773,87 +943,25 @@ def list_remote_hotfixes(
     pstools_dir: str = "",
 ) -> tuple[List[PsInfoHotfix], str]:
     """
-    Lista hotfixes remotos.
+    Lista hotfixes no host remoto via PsExec → Get-HotFix local.
 
-    1) ``Get-HotFix -ComputerName`` (com ``-Credential`` se houver usuário/senha)
-    2) Se acesso negado: ``PsExec`` rodando ``Get-HotFix`` localmente no remoto
-
-    Retorna ``(lista, nota_ou_erro)``.
+    Não usa ``Get-HotFix -ComputerName`` nesta estação: isso dispara
+    ``powershell.exe`` com WMI/RPC e costuma ser bloqueado pelo Fortinet.
     """
-    import os
-
     h = _strip_host(host)
     if not h:
         return [], "Host inválido."
 
-    u = (user or "").strip()
-    p = password or ""
-
-    # Credenciais via env (não vão na linha de comando do -Command)
-    script = (
-        "$ErrorActionPreference = 'Stop'; "
-        "$h = $env:RO_HF_HOST; $u = $env:RO_HF_USER; $pw = $env:RO_HF_PASS; "
-        "if ($u) { "
-        "$sec = ConvertTo-SecureString $pw -AsPlainText -Force; "
-        "$cred = New-Object System.Management.Automation.PSCredential ($u, $sec); "
-        f"Get-HotFix -ComputerName $h -Credential $cred | {_GET_HOTFIX_SELECT} "
-        "} else { "
-        f"Get-HotFix -ComputerName $h | {_GET_HOTFIX_SELECT} "
-        "}"
+    items, err = _list_hotfixes_via_psexec(
+        h,
+        user=(user or "").strip(),
+        password=password or "",
+        timeout=timeout,
+        pstools_dir=pstools_dir,
     )
-    env = os.environ.copy()
-    env["RO_HF_HOST"] = h
-    env["RO_HF_USER"] = u
-    env["RO_HF_PASS"] = p if u else ""
-
-    try:
-        proc = run_captured(
-            [
-                "powershell.exe",
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                script,
-            ],
-            timeout=max(5.0, float(timeout)),
-            env=env,
-        )
-    except subprocess.TimeoutExpired:
-        return [], f"Get-HotFix excedeu {int(timeout)}s."
-    except OSError as exc:
-        return [], f"Falha ao iniciar PowerShell: {exc}"
-    finally:
-        env["RO_HF_PASS"] = ""
-
-    out = decode_console_bytes(proc.stdout or b"").strip()
-    err = decode_console_bytes(proc.stderr or b"").strip()
-    if out:
-        items, parse_err = _parse_hotfix_json(out)
-        if items:
-            return items, ""
-        if parse_err and proc.returncode == 0:
-            return [], parse_err
-
-    short = _shorten_hotfix_error(err or f"Get-HotFix falhou (exit {proc.returncode}).")
-    access_denied = "acesso negado" in short.lower() or "0x80070005" in (err or "")
-
-    # Fallback: Get-HotFix local no remoto via PsExec (usa credenciais do formulário)
-    if access_denied or not out:
-        items_px, err_px = _list_hotfixes_via_psexec(
-            h,
-            user=u,
-            password=p,
-            timeout=timeout,
-            pstools_dir=pstools_dir,
-        )
-        if items_px:
-            return items_px, "via PsExec"
-        if err_px:
-            return [], f"{short} | Fallback PsExec: {err_px}"
-    return [], short
+    if items:
+        return items, "via PsExec"
+    return [], err or "Não foi possível listar hotfixes via PsExec."
 
 
 def _list_hotfixes_via_psexec(
@@ -985,11 +1093,14 @@ def format_system_display(
         rows.append(("Geral", "Hotfixes", str(hotfix_count)))
 
     known_keys = {k for _, keys in SYSTEM_FIELD_GROUPS for k in keys}
+    date_keys = {"Install date", "Expiration date"}
     for group_name, keys in SYSTEM_FIELD_GROUPS:
         for key in keys:
             if key not in remaining:
                 continue
             val = remaining.pop(key)
+            if key in date_keys:
+                val = to_display_date(val) or val
             rows.append((group_name, labels.get(key, key), val))
 
     for key in sorted(remaining.keys(), key=lambda x: x.lower()):
@@ -1226,3 +1337,87 @@ def prepare_disks_for_display(
         )
 
     return filtered, totals, root_vol
+
+
+def _safe_str(value: Any, *, default: str = "") -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text if text else default
+
+
+def build_overview_from_psinfo(
+    parsed: PsInfoResult,
+    host: str,
+    enrich: Optional[dict] = None,
+) -> dict:
+    """Extrai resumo da visão geral a partir do PsInfo parseado."""
+    sys = parsed.system or {}
+    hostname = extract_psinfo_host(parsed) or host
+
+    manufacturer = ""
+    model = ""
+    domain = ""
+    network_summary = ""
+    network_detail = ""
+
+    if isinstance(enrich, dict):
+        cs = enrich.get("ComputerSystem")
+        if isinstance(cs, dict):
+            manufacturer = _safe_str(cs.get("Manufacturer"))
+            model = _safe_str(cs.get("Model"))
+            domain = _safe_str(cs.get("Domain"))
+        net = enrich.get("Network")
+        if isinstance(net, dict):
+            network_summary = _safe_str(net.get("IPAddress"))
+            network_detail = _safe_str(net.get("InterfaceAlias"))
+
+    if not manufacturer:
+        manufacturer = sys.get("Registered organization", "")
+    if not model:
+        model = sys.get("Processor type", "")
+    kernel = sys.get("Kernel version", "")
+    product = sys.get("Product type", "")
+    arch = "x64" if "64" in (sys.get("Processor speed", "") + kernel).lower() or "x64" in kernel.lower() else ""
+    os_summary = " · ".join(p for p in [product, kernel, arch] if p)
+    if not domain:
+        domain = sys.get("Registered organization", "")
+    uptime = sys.get("Uptime", "")
+    if is_invalid_psinfo_uptime(uptime):
+        uptime = uptime_from_enrich(enrich) or ""
+    cpu = sys.get("Processor type", "")
+    proc_count = sys.get("Processors", "")
+    mem = sys.get("Physical memory", "")
+
+    storage_summary = ""
+    storage_detail = ""
+    if parsed.disks_raw:
+        rows = parse_disks_table(parsed.disks_raw)
+        display, _, _root = prepare_disks_for_display(rows, system_root=sys.get("System root", ""))
+        fixed = [r for r in display if r.type.lower() == "fixed" and (r.volume or "").lower() != "total"]
+        if fixed:
+            main = fixed[0]
+            storage_summary = f"{main.format or 'NTFS'} {main.size}".strip()
+            storage_detail = f"{main.volume}: {main.free} livre"
+
+    return {
+        "hostname": hostname,
+        "manufacturer": manufacturer,
+        "model": model,
+        "os_summary": os_summary,
+        "domain": domain,
+        "uptime": uptime,
+        "cpu_summary": cpu,
+        "cpu_detail": proc_count,
+        "memory_summary": mem,
+        "memory_detail": "",
+        "storage_summary": storage_summary,
+        "storage_detail": storage_detail,
+        "network_summary": network_summary,
+        "network_detail": network_detail,
+        "security_summary": "",
+        "security_detail": "",
+        "updates_summary": "",
+        "updates_detail": "",
+        "psinfo": parsed,
+    }

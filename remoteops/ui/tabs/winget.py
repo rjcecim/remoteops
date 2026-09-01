@@ -5,8 +5,9 @@ Reutiliza host e credenciais do PsExec (sem cards Conexao/Autenticacao).
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Callable, Optional, Tuple
+
+from remoteops.utils.dates import format_now_datetime
 
 from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtGui import QFont
@@ -874,7 +875,7 @@ class WinGetTab(QWidget):
     def _on_list(self) -> None:
         self._start_worker(
             action="list",
-            log_header=f"--- CONSULTA {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---",
+            log_header=f"--- CONSULTA {format_now_datetime()} ---",
         )
 
     def _on_search(self) -> None:
@@ -884,7 +885,7 @@ class WinGetTab(QWidget):
         self._start_worker(
             action="search",
             query=term,
-            log_header=f"--- BUSCA {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---",
+            log_header=f"--- BUSCA {format_now_datetime()} ---",
         )
 
     def _on_upgrade(self) -> None:
@@ -1018,7 +1019,7 @@ class WinGetTab(QWidget):
         self._start_worker(
             action="installed",
             ids=[],
-            log_header=f"--- INSTALADOS {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---",
+            log_header=f"--- INSTALADOS {format_now_datetime()} ---",
         )
 
     def _make_checkbox_cell(self, on_changed) -> QWidget:

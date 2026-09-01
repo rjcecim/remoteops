@@ -15,6 +15,8 @@ import uuid
 from datetime import datetime
 from typing import Callable
 
+from remoteops.utils.dates import format_now_datetime
+
 from .clixml import (
     build_clixml_diagnostics,
     contains_raw_clixml,
@@ -196,7 +198,7 @@ def _fallback_exec_payload(
     return {
         "Ok": False,
         "Action": action,
-        "Meta": {"Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+        "Meta": {"Timestamp": format_now_datetime()},
         "Error": "Execução remota não retornou JSON (provável falha do PsExec/host durante a execução).",
         "Results": results,
     }
