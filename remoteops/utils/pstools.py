@@ -3,7 +3,12 @@ from __future__ import annotations
 import os
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from remoteops.utils.app_settings import KEY_PSTOOLS_DIR, load_setting, save_portable_settings
+from remoteops.utils.app_settings import (
+    KEY_PSTOOLS_DIR,
+    KEY_RUSTDESK_DIR,
+    load_setting,
+    save_portable_settings,
+)
 
 # Pasta padrão das PSTools (PsExec, PsInfo, etc.)
 DEFAULT_PSTOOLS_DIR = r"C:\PSTools"
@@ -11,6 +16,7 @@ DEFAULT_PSTOOLS_DIR = r"C:\PSTools"
 PSTOOLS_DIR = DEFAULT_PSTOOLS_DIR
 
 _runtime_dir: Optional[str] = None
+_runtime_rustdesk_dir: Optional[str] = None
 
 
 def normalize_pstools_dir(path: str) -> str:
@@ -188,28 +194,77 @@ def probe_pstools(pstools_dir: Optional[str] = None) -> Dict[str, object]:
     }
 
 
-def rustdesk_local_candidates() -> List[str]:
-    """Caminhos locais usuais do RustDesk (instalação em Program Files)."""
-    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
-    pfx86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
-    return [
-        os.path.join(pf, "RustDesk", "rustdesk.exe"),
-        os.path.join(pfx86, "RustDesk", "rustdesk.exe"),
+DEFAULT_RUSTDESK_DIR = r"C:\Program Files\RustDesk"
+
+
+def normalize_rustdesk_dir(path: str) -> str:
+    """Normaliza pasta do RustDesk (aceita caminho de .exe → diretório)."""
+    return normalize_pstools_dir(path)
+
+
+def _load_rustdesk_dir_from_settings() -> str:
+    raw = load_setting(KEY_RUSTDESK_DIR, "")
+    normalized = normalize_rustdesk_dir(str(raw or ""))
+    return normalized or DEFAULT_RUSTDESK_DIR
+
+
+def get_rustdesk_dir() -> str:
+    """Pasta RustDesk em uso (settings.ini; padrão Program Files\\RustDesk)."""
+    global _runtime_rustdesk_dir
+    if _runtime_rustdesk_dir is None:
+        _runtime_rustdesk_dir = _load_rustdesk_dir_from_settings()
+    return _runtime_rustdesk_dir
+
+
+def set_rustdesk_dir(path: str, *, persist: bool = True) -> str:
+    """Define a pasta RustDesk em runtime e persiste o snapshot se pedido."""
+    global _runtime_rustdesk_dir
+    normalized = normalize_rustdesk_dir(path) or DEFAULT_RUSTDESK_DIR
+    if persist:
+        save_portable_settings({KEY_RUSTDESK_DIR: normalized})
+    _runtime_rustdesk_dir = normalized
+    return normalized
+
+
+def rustdesk_local_candidates(rustdesk_dir: Optional[str] = None) -> List[str]:
+    """Candidatos a rustdesk.exe na pasta configurada (sem fallback silencioso)."""
+    base = normalize_rustdesk_dir(
+        rustdesk_dir if rustdesk_dir is not None else get_rustdesk_dir()
+    ) or DEFAULT_RUSTDESK_DIR
+    candidates = [
+        os.path.join(base, "rustdesk.exe"),
+        os.path.join(base, "RustDesk", "rustdesk.exe"),
     ]
+    default_cf = os.path.normcase(os.path.normpath(DEFAULT_RUSTDESK_DIR))
+    if os.path.normcase(os.path.normpath(base)) == default_cf:
+        pfx86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        extra = os.path.join(pfx86, "RustDesk", "rustdesk.exe")
+        if extra not in candidates:
+            candidates.append(extra)
+    return candidates
 
 
-def probe_rustdesk_local() -> Dict[str, object]:
-    """Status do RustDesk instalado localmente (não usa a pasta PSTools)."""
-    candidates = rustdesk_local_candidates()
+def probe_rustdesk_local(rustdesk_dir: Optional[str] = None) -> Dict[str, object]:
+    """Status do rustdesk.exe na pasta configurada (não usa a pasta PSTools)."""
+    base = (
+        normalize_rustdesk_dir(rustdesk_dir or get_rustdesk_dir())
+        or DEFAULT_RUSTDESK_DIR
+    )
+    dir_ok = os.path.isdir(base)
+    candidates = rustdesk_local_candidates(base)
     for path in candidates:
         if os.path.isfile(path):
             return {
                 "found": True,
                 "path": path,
+                "dir": base,
+                "dir_ok": dir_ok,
                 "candidates": candidates,
             }
     return {
         "found": False,
-        "path": candidates[0] if candidates else r"C:\Program Files\RustDesk\rustdesk.exe",
+        "path": os.path.join(base, "rustdesk.exe"),
+        "dir": base,
+        "dir_ok": dir_ok,
         "candidates": candidates,
     }

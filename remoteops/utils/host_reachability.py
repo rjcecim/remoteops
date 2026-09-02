@@ -31,6 +31,11 @@ CAPTION_TCP_UNAVAILABLE = "Online — TCP 445 indisponível"
 CAPTION_OFFLINE = "Offline ou inacessível"
 CAPTION_UNRESOLVED = "Nome não resolvido"
 CAPTION_INVALID = "Host inválido"
+CAPTION_PSEXEC_READY_LIMITED = "Online — ping.exe / TCP 445 (sem PsPing)"
+CAPTION_ICMP_BLOCKED_LIMITED = "Acessível — TCP 445; ICMP via ping.exe (sem PsPing)"
+CAPTION_TCP_UNAVAILABLE_LIMITED = "Online — ping.exe ok; TCP 445 indisponível (sem PsPing)"
+CAPTION_OFFLINE_LIMITED = "Offline — ping.exe e TCP 445 (sem PsPing)"
+CAPTION_UNRESOLVED_LIMITED = "Nome não resolvido (ping.exe; sem PsPing)"
 
 
 class HostAccessKind(str, Enum):
@@ -119,23 +124,24 @@ def psexec_tcp_blocked_message(*, icmp_ok: Optional[bool] = None) -> str:
     )
 
 
+def _pstools_folder(pstools_dir: Optional[str] = None) -> str:
+    from remoteops.utils.pstools import get_pstools_dir
+
+    return (pstools_dir if pstools_dir is not None else get_pstools_dir()) or ""
+
+
 def _tooltip_for(caption: str, *, limited: bool, extra: str = "") -> str:
     parts = [caption]
-    if limited:
+    if limited and not extra:
         parts.append(PSPING_MISSING_CAPTION)
     if extra:
         parts.append(extra)
     return "\n".join(parts)
 
 
-def _from_kind(
-    host: str,
-    kind: HostAccessKind,
-    *,
-    icmp: Optional[PsPingResult] = None,
-    tcp: Optional[PsPingResult] = None,
-    limited: bool = False,
-) -> HostReachability:
+def _caption_for(
+    kind: HostAccessKind, *, limited: bool
+) -> str:
     captions = {
         HostAccessKind.PSEXEC_READY: CAPTION_PSEXEC_READY,
         HostAccessKind.ICMP_BLOCKED: CAPTION_ICMP_BLOCKED,
@@ -145,6 +151,27 @@ def _from_kind(
         HostAccessKind.INVALID_HOST: CAPTION_INVALID,
         HostAccessKind.CANCELLED: "Verificando…",
     }
+    limited_captions = {
+        HostAccessKind.PSEXEC_READY: CAPTION_PSEXEC_READY_LIMITED,
+        HostAccessKind.ICMP_BLOCKED: CAPTION_ICMP_BLOCKED_LIMITED,
+        HostAccessKind.TCP_UNAVAILABLE: CAPTION_TCP_UNAVAILABLE_LIMITED,
+        HostAccessKind.OFFLINE: CAPTION_OFFLINE_LIMITED,
+        HostAccessKind.UNRESOLVED: CAPTION_UNRESOLVED_LIMITED,
+    }
+    if limited and kind in limited_captions:
+        return limited_captions[kind]
+    return captions[kind]
+
+
+def _from_kind(
+    host: str,
+    kind: HostAccessKind,
+    *,
+    icmp: Optional[PsPingResult] = None,
+    tcp: Optional[PsPingResult] = None,
+    limited: bool = False,
+    pstools_dir: Optional[str] = None,
+) -> HostReachability:
     status = {
         HostAccessKind.PSEXEC_READY: "online",
         HostAccessKind.ICMP_BLOCKED: "warn",
@@ -154,14 +181,21 @@ def _from_kind(
         HostAccessKind.INVALID_HOST: "invalid",
         HostAccessKind.CANCELLED: "checking",
     }
-    caption = captions[kind]
+    caption = _caption_for(kind, limited=limited)
     psexec_enabled = kind in (
         HostAccessKind.PSEXEC_READY,
         HostAccessKind.ICMP_BLOCKED,
     )
     extra = ""
     if limited and kind not in (HostAccessKind.INVALID_HOST, HostAccessKind.CANCELLED):
-        extra = "ICMP via ping.exe; TCP via socket."
+        folder = _pstools_folder(pstools_dir)
+        extra = (
+            f"PsPing não encontrado em {folder}."
+            if folder
+            else "PsPing não encontrado na pasta PSTools."
+        )
+        extra += "\nICMP via ping.exe; TCP 445 via socket."
+        extra += "\nNão é uma verificação com PsPing."
     return HostReachability(
         host=host,
         kind=kind,
@@ -271,6 +305,10 @@ def probe_host_reachability(
     limited = not present
     port = PSEXEC_TCP_PORT
 
+    def _reach(kind: HostAccessKind, **kwargs) -> HostReachability:
+        kwargs.setdefault("limited", limited)
+        return _from_kind(h, kind, pstools_dir=pstools_dir, **kwargs)
+
     try:
         if present:
             icmp = run_psping(
@@ -288,11 +326,9 @@ def probe_host_reachability(
                 present = False
                 limited = True
             elif _cancelled() or icmp.state == PsPingState.CANCELLED:
-                return _from_kind(h, HostAccessKind.CANCELLED, icmp=icmp, limited=limited)
+                return _reach(HostAccessKind.CANCELLED, icmp=icmp)
             elif icmp.state == PsPingState.NAME_UNRESOLVED:
-                return _from_kind(
-                    h, HostAccessKind.UNRESOLVED, icmp=icmp, limited=limited
-                )
+                return _reach(HostAccessKind.UNRESOLVED, icmp=icmp)
             else:
                 tcp = run_psping(
                     h,
@@ -310,23 +346,28 @@ def probe_host_reachability(
                     present = False
                     limited = True
                 elif _cancelled() or tcp.state == PsPingState.CANCELLED:
-                    return _from_kind(
-                        h, HostAccessKind.CANCELLED, icmp=icmp, tcp=tcp, limited=limited
-                    )
+                    return _reach(HostAccessKind.CANCELLED, icmp=icmp, tcp=tcp)
                 else:
                     kind = _classify(icmp, tcp)
-                    return _from_kind(h, kind, icmp=icmp, tcp=tcp, limited=limited)
+                    return _reach(kind, icmp=icmp, tcp=tcp)
 
         if not present:
+            if log:
+                from remoteops.utils.app_logging import log_operation
+
+                folder = _pstools_folder(pstools_dir)
+                where = folder or "pasta PSTools"
+                log_operation(
+                    f"[HOST] {h}: PsPing ausente em {where} — "
+                    "ICMP via ping.exe, TCP 445 via socket"
+                )
             status_fn = icmp_fallback or ping_host_status
             icmp_status = status_fn(h)
             icmp = _icmp_from_fallback(h, icmp_status)
             if _cancelled():
-                return _from_kind(h, HostAccessKind.CANCELLED, icmp=icmp, limited=True)
+                return _reach(HostAccessKind.CANCELLED, icmp=icmp, limited=True)
             if icmp.state == PsPingState.NAME_UNRESOLVED:
-                return _from_kind(
-                    h, HostAccessKind.UNRESOLVED, icmp=icmp, limited=True
-                )
+                return _reach(HostAccessKind.UNRESOLVED, icmp=icmp, limited=True)
             if tcp_fallback is not None:
                 probe = tcp_fallback(h, port)
             else:
@@ -335,18 +376,18 @@ def probe_host_reachability(
                 probe = probe_tcp_port(h, port)
             tcp = _tcp_from_fallback(h, port, str(probe or "error"))
             if _cancelled():
-                return _from_kind(
-                    h, HostAccessKind.CANCELLED, icmp=icmp, tcp=tcp, limited=True
+                return _reach(
+                    HostAccessKind.CANCELLED, icmp=icmp, tcp=tcp, limited=True
                 )
             if use_cache:
                 store_cached_psping(icmp)
                 store_cached_psping(tcp)
             kind = _classify(icmp, tcp)
-            return _from_kind(h, kind, icmp=icmp, tcp=tcp, limited=True)
+            return _reach(kind, icmp=icmp, tcp=tcp, limited=True)
 
-        return _from_kind(h, HostAccessKind.OFFLINE, limited=limited)
+        return _reach(HostAccessKind.OFFLINE)
     except Exception:
-        return _from_kind(h, HostAccessKind.OFFLINE, limited=limited)
+        return _reach(HostAccessKind.OFFLINE, limited=limited)
 
 
 def probe_tcp_445(
@@ -407,10 +448,18 @@ def decide_batch_connectivity(reach: HostReachability) -> BatchConnectivityDecis
         return BatchConnectivityDecision(
             False, False, False, f"{host}: {label}"
         )
+    limited_note = (
+        " — verificação limitada (PsPing ausente; ping.exe / TCP 445)"
+        if reach.limited
+        else ""
+    )
     if reach.psexec_enabled:
         if reach.kind == HostAccessKind.ICMP_BLOCKED:
             return BatchConnectivityDecision(
-                True, True, True, f"{host}: acessível — ICMP bloqueado"
+                True,
+                True,
+                True,
+                f"{host}: acessível — ICMP bloqueado{limited_note}",
             )
         return BatchConnectivityDecision(True, True, False, "")
     return BatchConnectivityDecision(

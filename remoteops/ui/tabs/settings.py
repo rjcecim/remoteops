@@ -40,6 +40,7 @@ from remoteops.utils.app_settings import SETTINGS_SAVE_ERROR_MSG, SettingsWriteE
 from remoteops.utils.handle import (
     DEFAULT_HANDLE_DIR,
     get_handle_dir,
+    probe_handle,
     set_handle_dir,
 )
 from remoteops.utils.printer_settings import (
@@ -57,9 +58,13 @@ from remoteops.utils.printer_settings import (
 from remoteops.utils.printers import print_server_unc
 from remoteops.utils.pstools import (
     DEFAULT_PSTOOLS_DIR,
+    DEFAULT_RUSTDESK_DIR,
     get_pstools_dir,
+    get_rustdesk_dir,
+    probe_pstools,
     probe_rustdesk_local,
     set_pstools_dir,
+    set_rustdesk_dir,
 )
 from remoteops.utils.remote_registry_query import (
     MAX_REMOTE_REGISTRY_TIMEOUT_SECONDS,
@@ -103,12 +108,13 @@ def _folder_status_row() -> tuple[QWidget, _StatusDot, QLabel]:
     dot = _StatusDot()
     label = QLabel()
     label.setObjectName("folderStatus")
+    label.setWordWrap(True)
+    label.setMinimumWidth(0)
     label.setStyleSheet(
         f"QLabel#folderStatus {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
     )
     row.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
-    row.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
-    row.addStretch()
+    row.addWidget(label, 1, Qt.AlignmentFlag.AlignVCenter)
     wrap = QWidget()
     wrap.setLayout(row)
     return wrap, dot, label
@@ -153,6 +159,7 @@ class SettingsTab(QWidget):
 
     pstoolsPathChanged = pyqtSignal(str)
     handlePathChanged = pyqtSignal(str)
+    rustdeskPathChanged = pyqtSignal(str)
     networkRangeChanged = pyqtSignal()
     printServerChanged = pyqtSignal()
 
@@ -329,49 +336,45 @@ class SettingsTab(QWidget):
     def _build_rustdesk_card(self) -> CardWidget:
         card_rd = CardWidget("\uE774", self.tr("RustDesk"))
         card_rd.set_collapsible(True, collapsed=False)
-        card_rd.set_resettable(True, self.tr("Atualizar status do RustDesk"))
-        card_rd.resetRequested.connect(self.refresh_rustdesk_status)
+        card_rd.set_resettable(True, self.tr("Restaurar padrões deste card"))
+        card_rd.resetRequested.connect(self._reset_rustdesk)
         g_rd = grid_in_card(card_rd)
-
-        rd_status_row = QHBoxLayout()
-        rd_status_row.setSpacing(8)
-        rd_status_row.setContentsMargins(2, 0, 0, 0)
-        self.rustdesk_status_dot = _StatusDot()
-        self.rustdesk_status_label = QLabel()
-        self.rustdesk_status_label.setObjectName("rustdeskStatus")
-        self.rustdesk_status_label.setStyleSheet(
-            f"QLabel#rustdeskStatus {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
-        )
-        rd_status_row.addWidget(
-            self.rustdesk_status_dot, 0, Qt.AlignmentFlag.AlignVCenter
-        )
-        rd_status_row.addWidget(
-            self.rustdesk_status_label, 0, Qt.AlignmentFlag.AlignVCenter
-        )
-        rd_status_row.addStretch()
-        rd_status_wrap = QWidget()
-        rd_status_wrap.setLayout(rd_status_row)
-        add_row(g_rd, 0, self.tr("Status"), rd_status_wrap)
+        row = 0
 
         rd_path_row = QHBoxLayout()
         rd_path_row.setSpacing(4)
         rd_path_row.setContentsMargins(0, 0, 0, 0)
         self.rustdesk_edit = QLineEdit()
         self.rustdesk_edit.setReadOnly(True)
+        self.rustdesk_edit.setText(get_rustdesk_dir())
+        self.rustdesk_edit.setToolTip(self.tr("Pasta onde está rustdesk.exe"))
+        self.rustdesk_browse_btn = make_icon_button(
+            "\uED25", self.tr("Alterar pasta RustDesk")
+        )
+        self.rustdesk_browse_btn.clicked.connect(self._browse_rustdesk)
         self.rustdesk_open_btn = make_icon_button(
-            "\uED43", self.tr("Abrir pasta do RustDesk")
+            "\uED43", self.tr("Abrir pasta no Explorer")
         )
         self.rustdesk_open_btn.clicked.connect(self._open_rustdesk_folder)
         rd_path_row.addWidget(self.rustdesk_edit, 1)
+        rd_path_row.addWidget(self.rustdesk_browse_btn)
         rd_path_row.addWidget(self.rustdesk_open_btn)
         rd_path_wrap = QWidget()
         rd_path_wrap.setLayout(rd_path_row)
-        add_row(g_rd, 1, self.tr("Caminho"), rd_path_wrap)
+        rd_path_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        add_row(g_rd, row, self.tr("Caminho"), rd_path_wrap)
+        row += 1
+
+        status_wrap, self.rustdesk_status_dot, self.rustdesk_status_label = (
+            _folder_status_row()
+        )
+        add_row(g_rd, row, self.tr("Status"), status_wrap)
+        row += 1
         _add_caption(
             g_rd,
-            2,
+            row,
             self.tr(
-                "Instalação local em C:\\Program Files\\RustDesk\\ "
+                "Pasta local do rustdesk.exe. Padrão: C:\\Program Files\\RustDesk\\ "
                 "(não fica na pasta PSTools)."
             ),
         )
@@ -555,6 +558,36 @@ class SettingsTab(QWidget):
         self.rr_timeout_spin.setFixedWidth(ref_w)
         self.search_workers_spin.setFixedWidth(ref_w)
         return card_search
+
+    def hideEvent(self, event) -> None:
+        self.flush_pending_settings()
+        super().hideEvent(event)
+
+    def flush_pending_settings(self) -> None:
+        """Grava no settings.ini o que ainda estiver só na UI (campo com foco)."""
+        if getattr(self, "_flushing_settings", False):
+            return
+        if not hasattr(self, "print_server_edit"):
+            return
+        self._flushing_settings = True
+        try:
+            for spin in (
+                getattr(self, "search_workers_spin", None),
+                getattr(self, "rr_timeout_spin", None),
+                getattr(self, "print_timeout_spin", None),
+            ):
+                if spin is not None:
+                    spin.interpretText()
+            self._on_print_server_editing_finished()
+            if hasattr(self, "network_range"):
+                self.network_range.commit()
+            checked = bool(self.log_session_check.isChecked())
+            if checked != bool(is_file_logging_enabled()):
+                set_file_logging_enabled(checked)
+        except SettingsWriteError as exc:
+            self._show_settings_save_error(exc)
+        finally:
+            self._flushing_settings = False
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -777,50 +810,203 @@ class SettingsTab(QWidget):
         _open_in_explorer(get_handle_dir())
 
     def _open_rustdesk_folder(self) -> None:
-        info = probe_rustdesk_local()
-        path = str(info.get("path") or "")
-        folder = os.path.dirname(path) if path else r"C:\Program Files\RustDesk"
-        _open_in_explorer(folder if os.path.isdir(folder) else path)
+        _open_in_explorer(get_rustdesk_dir())
+
+    def _browse_rustdesk(self) -> None:
+        start = get_rustdesk_dir()
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            self.tr("Selecionar pasta RustDesk"),
+            start if os.path.isdir(start) else DEFAULT_RUSTDESK_DIR,
+        )
+        if not folder:
+            return
+        try:
+            new_path = set_rustdesk_dir(folder)
+        except SettingsWriteError as exc:
+            self._show_settings_save_error(exc)
+            return
+        self.rustdesk_edit.setText(new_path)
+        self.refresh_rustdesk_status()
+        self.rustdeskPathChanged.emit(new_path)
+
+    def _reset_rustdesk(self) -> None:
+        try:
+            new_path = set_rustdesk_dir(DEFAULT_RUSTDESK_DIR)
+        except SettingsWriteError as exc:
+            self._show_settings_save_error(exc)
+            return
+        self.rustdesk_edit.setText(new_path)
+        self.refresh_rustdesk_status()
+        self.rustdeskPathChanged.emit(new_path)
+
+    def _apply_tool_status(
+        self,
+        dot: _StatusDot,
+        label: QLabel,
+        state: str,
+        text: str,
+        tooltip: str = "",
+    ) -> None:
+        dot.set_color(_STATUS_COLORS.get(state, _STATUS_COLORS["err"]))
+        label.setText(text)
+        tip = tooltip or text
+        label.setToolTip(tip)
+        dot.setToolTip(tip)
+
+    @staticmethod
+    def _join_labels(names: list[str], *, limit: int = 3) -> str:
+        cleaned = [n for n in names if n]
+        if not cleaned:
+            return ""
+        if len(cleaned) == 1:
+            return cleaned[0]
+        if len(cleaned) <= limit:
+            return ", ".join(cleaned[:-1]) + " e " + cleaned[-1]
+        shown = ", ".join(cleaned[:limit])
+        return f"{shown} e mais {len(cleaned) - limit}"
+
+    @staticmethod
+    def _tools_tooltip(tools: list) -> str:
+        lines: list[str] = []
+        for item in tools:
+            label = str(item.get("label") or "")
+            if not label:
+                continue
+            mark = "encontrado" if item.get("found") else "ausente"
+            lines.append(f"{label}: {mark}")
+        return "\n".join(lines)
 
     def refresh_rustdesk_status(self) -> None:
         info = probe_rustdesk_local()
-        path = str(info.get("path") or "")
-        self.rustdesk_edit.setText(path)
-        if info.get("found"):
-            self.rustdesk_status_dot.set_color(_STATUS_COLORS["ok"])
-            self.rustdesk_status_label.setText(self.tr("Instalado"))
-        else:
-            self.rustdesk_status_dot.set_color(_STATUS_COLORS["err"])
-            self.rustdesk_status_label.setText(
-                self.tr("Não encontrado em C:\\Program Files\\RustDesk\\")
+        folder = str(info.get("dir") or get_rustdesk_dir())
+        self.rustdesk_edit.setText(folder)
+        exe = os.path.basename(str(info.get("path") or "rustdesk.exe")) or "rustdesk.exe"
+        if not info.get("dir_ok"):
+            self._apply_tool_status(
+                self.rustdesk_status_dot,
+                self.rustdesk_status_label,
+                "err",
+                self.tr("Pasta não encontrada"),
+                self.tr(f"Pasta configurada: {folder}"),
             )
-
-    def _set_folder_status(
-        self, dot: _StatusDot, label: QLabel, path: str, tool_name: str
-    ) -> None:
-        if path and os.path.isdir(path):
-            dot.set_color(_STATUS_COLORS["ok"])
-            label.setText(self.tr("{0} encontrado").format(tool_name))
-        else:
-            dot.set_color(_STATUS_COLORS["err"])
-            label.setText(self.tr("Pasta não encontrada"))
+            return
+        if info.get("found"):
+            found_path = str(info.get("path") or "")
+            self._apply_tool_status(
+                self.rustdesk_status_dot,
+                self.rustdesk_status_label,
+                "ok",
+                self.tr("{0} encontrado").format(exe),
+                found_path,
+            )
+            return
+        self._apply_tool_status(
+            self.rustdesk_status_dot,
+            self.rustdesk_status_label,
+            "err",
+            self.tr("{0} não encontrado nesta pasta").format(exe),
+            self.tr(f"Procurado em: {folder}"),
+        )
 
     def refresh_pstools_status(self) -> None:
-        path = get_pstools_dir()
+        probe = probe_pstools()
+        path = str(probe.get("dir") or get_pstools_dir())
         self.pstools_edit.setText(path)
-        self._set_folder_status(
+        tools = list(probe.get("tools") or [])
+        tooltip = self._tools_tooltip(tools)
+        if not probe.get("dir_ok"):
+            self._apply_tool_status(
+                self.pstools_status_dot,
+                self.pstools_status_label,
+                "err",
+                self.tr("Pasta não encontrada"),
+                tooltip or self.tr(f"Pasta configurada: {path}"),
+            )
+            return
+        missing = [str(t.get("label") or "") for t in tools if not t.get("found")]
+        ok_count = int(probe.get("ok_count") or 0)
+        total = int(probe.get("total") or len(tools))
+        psping_ok = any(
+            str(t.get("label") or "") == "PsPing" and t.get("found") for t in tools
+        )
+        if ok_count <= 0:
+            self._apply_tool_status(
+                self.pstools_status_dot,
+                self.pstools_status_label,
+                "err",
+                self.tr("Nenhuma ferramenta encontrada nesta pasta"),
+                tooltip,
+            )
+            return
+        if not probe.get("healthy"):
+            lack = self._join_labels(
+                [n for n in ("PsExec", "PsInfo") if n in missing] or missing
+            )
+            self._apply_tool_status(
+                self.pstools_status_dot,
+                self.pstools_status_label,
+                "err",
+                self.tr("Pasta existe — falta {0}").format(lack),
+                tooltip,
+            )
+            return
+        if missing:
+            lack = self._join_labels(missing)
+            if not psping_ok:
+                text = self.tr("PsExec e PsInfo ok — PsPing ausente")
+                if len(missing) > 1:
+                    text = self.tr("PsExec e PsInfo ok — falta {0}").format(lack)
+            else:
+                text = self.tr("PsExec e PsInfo ok ({0}/{1}) — falta {2}").format(
+                    ok_count, total, lack
+                )
+            self._apply_tool_status(
+                self.pstools_status_dot,
+                self.pstools_status_label,
+                "warn",
+                text,
+                tooltip,
+            )
+            return
+        self._apply_tool_status(
             self.pstools_status_dot,
             self.pstools_status_label,
-            path,
-            self.tr("PSTools"),
+            "ok",
+            self.tr("{0}/{1} ferramentas encontradas").format(ok_count, total),
+            tooltip,
         )
 
     def refresh_handle_status(self) -> None:
-        path = get_handle_dir()
+        probe = probe_handle()
+        path = str(probe.get("dir") or get_handle_dir())
         self.handle_edit.setText(path)
-        self._set_folder_status(
+        tool = probe.get("tool") or {}
+        tooltip = self._tools_tooltip([tool] if tool else [])
+        if not probe.get("dir_ok"):
+            self._apply_tool_status(
+                self.handle_status_dot,
+                self.handle_status_label,
+                "err",
+                self.tr("Pasta não encontrada"),
+                tooltip or self.tr(f"Pasta configurada: {path}"),
+            )
+            return
+        if tool.get("found"):
+            found_path = str(tool.get("path") or "")
+            exe = os.path.basename(found_path) or "Handle64.exe"
+            self._apply_tool_status(
+                self.handle_status_dot,
+                self.handle_status_label,
+                "ok",
+                self.tr("{0} encontrado").format(exe),
+                found_path or tooltip,
+            )
+            return
+        self._apply_tool_status(
             self.handle_status_dot,
             self.handle_status_label,
-            path,
-            self.tr("Handle"),
+            "err",
+            self.tr("Handle64.exe / Handle.exe não encontrado nesta pasta"),
+            tooltip,
         )

@@ -355,7 +355,7 @@ def _log_psping(result: PsPingResult) -> None:
         if _logged_missing:
             return
         _logged_missing = True
-        log_operation("[PSPING] Executável não encontrado")
+        log_operation(f"[PSPING] {result.message or 'Executável não encontrado'}")
         return
     if result.state == PsPingState.CANCELLED:
         log_operation("[PSPING] Teste cancelado")
@@ -385,7 +385,15 @@ def _missing_result(
     port: Optional[int],
     attempts: int,
     family: IpFamily,
+    pstools_dir: Optional[str] = None,
 ) -> PsPingResult:
+    from remoteops.utils.pstools import get_pstools_dir
+
+    folder = (pstools_dir if pstools_dir is not None else get_pstools_dir()) or ""
+    if folder:
+        message = f"PsPing não encontrado em {folder}."
+    else:
+        message = "PsPing não encontrado na pasta PSTools."
     return PsPingResult(
         host=normalize_host(host),
         mode=mode,
@@ -393,7 +401,7 @@ def _missing_result(
         port=int(port) if port else None,
         attempts=snap_attempts(attempts),
         ip_family=family,
-        message="PsPing não encontrado na pasta PSTools.",
+        message=message,
     )
 
 
@@ -469,7 +477,7 @@ def run_psping(
 
         exe = resolve_psping_exe(pstools_dir)
         if not exe or not os.path.isfile(exe):
-            result = _missing_result(h, mode, port_n, n, family)
+            result = _missing_result(h, mode, port_n, n, family, pstools_dir=pstools_dir)
             if log:
                 _log_psping(result)
             return result

@@ -354,7 +354,7 @@ class _BatchInstallWorker(QThread):
                     if decision.log_message:
                         self.logLine.emit(f"[LOTE] {decision.log_message}")
                     return
-                if decision.icmp_blocked and decision.log_message:
+                if decision.continue_inventory and decision.log_message:
                     self.logLine.emit(f"[LOTE] {decision.log_message}")
                 ping_q.put(host)
 

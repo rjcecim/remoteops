@@ -84,9 +84,12 @@ class _HostStatusWorker(QThread):
         self.requestInterruption()
 
     def run(self) -> None:
+        from remoteops.utils.pstools import get_pstools_dir
+
         reach = probe_host_reachability(
             self._host,
             should_cancel=lambda: self._cancel or self.isInterruptionRequested(),
+            pstools_dir=get_pstools_dir(),
         )
         self.result.emit(self._host, reach)
 
@@ -374,12 +377,13 @@ class PsExecTab(QWidget):
         self.host_status_dot = _StatusDot()
         self.host_status_label = QLabel()
         self.host_status_label.setObjectName("hostStatusCaption")
+        self.host_status_label.setWordWrap(True)
+        self.host_status_label.setMinimumWidth(0)
         self.host_status_label.setStyleSheet(
             f"QLabel#hostStatusCaption {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
         )
         status_row.addWidget(self.host_status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
-        status_row.addWidget(self.host_status_label, 0, Qt.AlignmentFlag.AlignVCenter)
-        status_row.addStretch()
+        status_row.addWidget(self.host_status_label, 1, Qt.AlignmentFlag.AlignVCenter)
         self.diagnose_btn = QPushButton(self.tr("Diagnosticar"))
         self.diagnose_btn.setObjectName("diagnoseHostBtn")
         self.diagnose_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1073,124 +1077,166 @@ class PsExecTab(QWidget):
     def is_host_online(self) -> bool:
         return bool(self._host_online)
 
-    def _host_action_buttons(self):
-        return (
-            self.psinfo_button,
-            self.sessoes_arquivos_button,
-            self.contas_locais_button,
-            self.processos_button,
-            self.servicos_button,
-            self.hostapps_button,
-            self.winget_button,
-            self.printers_button,
-            self.message_button,
-            self.rustdesk_button,
-            self.energia_button,
-        )
-
-    def _update_host_action_buttons(self, online: bool) -> None:
-        for btn in self._host_action_buttons():
-            btn.setEnabled(online)
-        self.refresh_processos_button_state(online=online)
-        self.refresh_servicos_button_state(online=online)
-        self.refresh_energia_button_state(online=online)
-        self.refresh_contas_locais_button_state(online=online)
-        self.refresh_sessoes_arquivos_button_state(online=online)
-
-    def refresh_processos_button_state(self, online: bool | None = None) -> None:
-        """Habilita Processos só com host Online e PsList disponível."""
-        from remoteops.utils.processos import pslist_available
-
-        is_online = self._host_online if online is None else bool(online)
-        has_pslist = pslist_available()
-        enabled = is_online and has_pslist
-        self.processos_button.setEnabled(enabled)
-        if is_online and not has_pslist:
-            self.processos_button.setToolTip(
-                self.tr("PsList não encontrado na pasta PSTools configurada.")
-            )
+    def _apply_module_button(
+        self,
+        btn,
+        *,
+        enabled: bool,
+        online: bool,
+        ok_tip: str,
+        missing_tip: str,
+    ) -> None:
+        btn.setEnabled(bool(enabled))
+        if online and not enabled:
+            btn.setToolTip(missing_tip)
         else:
-            self.processos_button.setToolTip(
-                self.tr("Processos remotos (PsList)")
-            )
+            btn.setToolTip(ok_tip)
 
-    def refresh_servicos_button_state(self, online: bool | None = None) -> None:
-        """Habilita Serviços só com host Online e PsService disponível."""
-        from remoteops.utils.servicos import psservice_available
-
-        is_online = self._host_online if online is None else bool(online)
-        has_tool = psservice_available()
-        enabled = is_online and has_tool
-        self.servicos_button.setEnabled(enabled)
-        if is_online and not has_tool:
-            self.servicos_button.setToolTip(
-                self.tr("PsService não encontrado na pasta PSTools configurada.")
-            )
-        else:
-            self.servicos_button.setToolTip(
-                self.tr("Serviços remotos (PsService)")
-            )
-
-    def refresh_contas_locais_button_state(self, online: bool | None = None) -> None:
-        """Habilita Contas Locais com host Online e PsExec disponível."""
+    def has_psexec_exe(self) -> bool:
         from remoteops.utils.pstools import probe_pstools
 
-        is_online = self._host_online if online is None else bool(online)
         tools = probe_pstools().get("tools") or []
-        has_psexec = bool(tools and tools[0].get("found"))
-        enabled = is_online and has_psexec
-        self.contas_locais_button.setEnabled(enabled)
+        return bool(tools and tools[0].get("found"))
+
+    def can_run_psexec(self) -> bool:
+        """Host alcançável e PsExec.exe presente na pasta configurada."""
+        return bool(self._host_online) and self.has_psexec_exe()
+
+    def _update_host_action_buttons(self, online: bool | None = None) -> None:
+        """Host online não basta: cada módulo exige o binário correspondente."""
+        from remoteops.utils.handle import handle_available
+        from remoteops.utils.pstools import probe_pstools, probe_rustdesk_local
+
+        is_online = self._host_online if online is None else bool(online)
+        found = {
+            str(item.get("label") or ""): bool(item.get("found"))
+            for item in (probe_pstools().get("tools") or [])
+        }
+        has_psexec = bool(found.get("PsExec"))
+        missing_psexec = self.tr(
+            "PsExec não encontrado na pasta PSTools configurada."
+        )
+        missing_in_pstools = self.tr(
+            "{0} não encontrado na pasta PSTools configurada."
+        )
+
+        self._apply_module_button(
+            self.psinfo_button,
+            enabled=is_online and bool(found.get("PsInfo")),
+            online=is_online,
+            ok_tip=self.tr("Abrir Inventário"),
+            missing_tip=missing_in_pstools.format("PsInfo"),
+        )
+        has_sessoes = bool(
+            found.get("PsLoggedOn")
+            or found.get("PsFile")
+            or (handle_available() and has_psexec)
+        )
+        self._apply_module_button(
+            self.sessoes_arquivos_button,
+            enabled=is_online and has_sessoes,
+            online=is_online,
+            ok_tip=self.tr("Sessões e arquivos remotos"),
+            missing_tip=self.tr(
+                "PsLoggedOn e PsFile não encontrados na pasta PSTools. "
+                "Handle exige Handle.exe e PsExec."
+            ),
+        )
+        self._apply_module_button(
+            self.contas_locais_button,
+            enabled=is_online and has_psexec,
+            online=is_online,
+            ok_tip=self.tr("Contas locais e alteração de senha (PsPasswd)"),
+            missing_tip=missing_psexec,
+        )
+        self._apply_module_button(
+            self.processos_button,
+            enabled=is_online and bool(found.get("PsList")),
+            online=is_online,
+            ok_tip=self.tr("Processos remotos (PsList)"),
+            missing_tip=missing_in_pstools.format("PsList"),
+        )
+        self._apply_module_button(
+            self.servicos_button,
+            enabled=is_online and bool(found.get("PsService")),
+            online=is_online,
+            ok_tip=self.tr("Serviços remotos (PsService)"),
+            missing_tip=missing_in_pstools.format("PsService"),
+        )
+        self.hostapps_button.setEnabled(is_online)
+        self.hostapps_button.setToolTip(
+            self.tr("Listar aplicativos do host (Remote Registry)")
+        )
+        self._apply_module_button(
+            self.winget_button,
+            enabled=is_online and has_psexec,
+            online=is_online,
+            ok_tip=self.tr("WinGet — pacotes remotos (winget)"),
+            missing_tip=missing_psexec,
+        )
+        self.printers_button.setEnabled(is_online)
+        self.refresh_printers_button_tooltip()
         if is_online and not has_psexec:
-            self.contas_locais_button.setToolTip(
-                self.tr("PsExec não encontrado na pasta PSTools configurada.")
+            base = self.printers_button.toolTip() or self.tr("Impressoras de rede")
+            self.printers_button.setToolTip(
+                self.tr(
+                    "{0}\nInstalar, remover ou definir padrão exige "
+                    "PsExec na pasta PSTools configurada."
+                ).format(base)
+            )
+        self._apply_module_button(
+            self.message_button,
+            enabled=is_online and has_psexec,
+            online=is_online,
+            ok_tip=self.tr("Enviar mensagem ao host"),
+            missing_tip=missing_psexec,
+        )
+        rustdesk_found = bool(probe_rustdesk_local().get("found"))
+        if is_online and not has_psexec:
+            rustdesk_missing = missing_psexec
+        elif is_online and not rustdesk_found:
+            rustdesk_missing = self.tr(
+                "rustdesk.exe não encontrado na pasta RustDesk configurada."
             )
         else:
-            self.contas_locais_button.setToolTip(
-                self.tr("Contas locais e alteração de senha (PsPasswd)")
-            )
+            rustdesk_missing = missing_psexec
+        self._apply_module_button(
+            self.rustdesk_button,
+            enabled=is_online and has_psexec and rustdesk_found,
+            online=is_online,
+            ok_tip=self.tr("Conectar via RustDesk"),
+            missing_tip=rustdesk_missing,
+        )
+        self._apply_module_button(
+            self.energia_button,
+            enabled=is_online and bool(found.get("PsShutdown")),
+            online=is_online,
+            ok_tip=self.tr("Gerenciamento de energia remoto (PsShutdown)"),
+            missing_tip=missing_in_pstools.format("PsShutdown"),
+        )
+
+    def refresh_host_action_buttons(self, online: bool | None = None) -> None:
+        self._update_host_action_buttons(online)
+
+    def refresh_processos_button_state(self, online: bool | None = None) -> None:
+        self._update_host_action_buttons(online)
+
+    def refresh_servicos_button_state(self, online: bool | None = None) -> None:
+        self._update_host_action_buttons(online)
+
+    def refresh_contas_locais_button_state(self, online: bool | None = None) -> None:
+        self._update_host_action_buttons(online)
 
     def refresh_energia_button_state(self, online: bool | None = None) -> None:
-        """Habilita Energia só com host Online e PsShutdown disponível."""
-        from remoteops.utils.psshutdown import psshutdown_available
-
-        is_online = self._host_online if online is None else bool(online)
-        has_tool = psshutdown_available()
-        enabled = is_online and has_tool
-        self.energia_button.setEnabled(enabled)
-        if is_online and not has_tool:
-            self.energia_button.setToolTip(
-                self.tr("PsShutdown não encontrado na pasta PSTools configurada.")
-            )
-        else:
-            self.energia_button.setToolTip(
-                self.tr("Gerenciamento de energia remoto (PsShutdown)")
-            )
+        self._update_host_action_buttons(online)
 
     def refresh_sessoes_arquivos_button_state(
         self, online: bool | None = None
     ) -> None:
-        """Habilita Sessões e Arquivos com host Online e ao menos uma ferramenta."""
-        from remoteops.utils.handle import handle_available
-        from remoteops.utils.psfile import psfile_available
-        from remoteops.utils.psloggedon import psloggedon_available
+        self._update_host_action_buttons(online)
 
-        is_online = self._host_online if online is None else bool(online)
-        has_any = (
-            psloggedon_available() or psfile_available() or handle_available()
-        )
-        enabled = is_online and has_any
-        self.sessoes_arquivos_button.setEnabled(enabled)
-        if is_online and not has_any:
-            self.sessoes_arquivos_button.setToolTip(
-                self.tr(
-                    "PsLoggedOn/PsFile (PSTools) ou Handle "
-                    "(Configurações → Handle) não encontrados."
-                )
-            )
-        else:
-            self.sessoes_arquivos_button.setToolTip(
-                self.tr("Sessões e arquivos remotos")
-            )
+    def refresh_rustdesk_button_state(self, online: bool | None = None) -> None:
+        self._update_host_action_buttons(online)
 
     def _set_host_status(
         self,

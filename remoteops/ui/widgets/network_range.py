@@ -375,6 +375,16 @@ class NetworkRangeConfigWidget(CardWidget):
     def _on_ignored_edited(self) -> None:
         self._persist(ignored_subnets=self.ignored_edit.text())
 
+    def commit(self) -> None:
+        """Persiste os campos visíveis, mesmo sem ter saído do QLineEdit."""
+        self._persist(
+            enabled=bool(self.enabled_check.isChecked()),
+            start_ip=self.start_ip_edit.text(),
+            end_ip=self.end_ip_edit.text(),
+            ignored_subnets=self.ignored_edit.text(),
+            scan_threads=snap_scan_threads(int(self.threads_slider.value())),
+        )
+
     def _on_threads_changed(self, value: int) -> None:
         self.threads_value.setText(str(snap_scan_threads(value)))
         if not self.threads_slider.isSliderDown():

@@ -1146,12 +1146,14 @@ class SessoesArquivosTab(QWidget):
         self._refresh_action_buttons()
 
     def refresh_all(self) -> None:
-        """Carga inicial ao abrir a aba: usuários + arquivos de rede."""
+        """Carga inicial ao abrir a aba: só consulta o que a pasta tem."""
         if not self._ui_alive():
             return
         self.sync_from_host()
-        self.refresh_loggedon()
-        self.refresh_psfile()
+        if psloggedon_available():
+            self.refresh_loggedon()
+        if psfile_available():
+            self.refresh_psfile()
 
     def refresh_tool_capabilities(self) -> None:
         self._refresh_action_buttons()

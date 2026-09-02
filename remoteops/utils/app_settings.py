@@ -17,6 +17,7 @@ SETTINGS_SAVE_ERROR_MSG = (
 # Chaves conhecidas (somente preferências não sensíveis)
 KEY_PSTOOLS_DIR = "tools/pstools_dir"
 KEY_HANDLE_DIR = "tools/handle_dir"
+KEY_RUSTDESK_DIR = "tools/rustdesk_dir"
 KEY_SEARCH_MAX_WORKERS = "search/max_workers"
 KEY_SEARCH_HOSTS_PATH = "search/hosts_path"
 KEY_LOGS_FILE_ENABLED = "logs/file_logging_enabled"
@@ -42,7 +43,10 @@ def get_settings_path() -> Path:
 
 
 def create_settings() -> QSettings:
-    return QSettings(str(get_settings_path()), QSettings.Format.IniFormat)
+    settings = QSettings(str(get_settings_path()), QSettings.Format.IniFormat)
+    # Sem fallbacks: não misturar com o Registro / AppData do Windows.
+    settings.setFallbacksEnabled(False)
+    return settings
 
 
 def load_setting(key: str, default: Any = None) -> Any:
@@ -87,7 +91,7 @@ def _collect_current_settings() -> Dict[str, Any]:
         get_network_range_config,
     )
     from remoteops.utils.printer_settings import get_print_list_timeout, get_print_server
-    from remoteops.utils.pstools import get_pstools_dir
+    from remoteops.utils.pstools import get_pstools_dir, get_rustdesk_dir
     from remoteops.utils.remote_registry_query import get_remote_registry_timeout
     from remoteops.utils.search_settings import get_search_hosts_path, get_search_max_workers
 
@@ -95,6 +99,7 @@ def _collect_current_settings() -> Dict[str, Any]:
     return {
         KEY_PSTOOLS_DIR: get_pstools_dir(),
         KEY_HANDLE_DIR: get_handle_dir(),
+        KEY_RUSTDESK_DIR: get_rustdesk_dir(),
         KEY_SEARCH_MAX_WORKERS: int(get_search_max_workers()),
         KEY_SEARCH_HOSTS_PATH: get_search_hosts_path(),
         KEY_LOGS_FILE_ENABLED: bool(is_file_logging_enabled()),
@@ -109,6 +114,20 @@ def _collect_current_settings() -> Dict[str, Any]:
     }
 
 
+def _to_ini_value(value: Any) -> Any:
+    """Normaliza para o QSettings gravar booleanos e vazios de forma estável."""
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, float):
+        ival = int(value)
+        if float(ival) == value:
+            return ival
+        return value
+    if value is None:
+        return ""
+    return value
+
+
 def save_portable_settings(updates: Optional[Dict[str, Any]] = None) -> None:
     """
     Grava o snapshot completo em settings.ini.
@@ -121,9 +140,11 @@ def save_portable_settings(updates: Optional[Dict[str, Any]] = None) -> None:
         values.update(updates)
 
     try:
+        get_settings_path().parent.mkdir(parents=True, exist_ok=True)
         settings = create_settings()
+        settings.clear()
         for key, value in values.items():
-            settings.setValue(key, value)
+            settings.setValue(key, _to_ini_value(value))
         settings.sync()
         _check_sync_status(settings)
     except SettingsWriteError:

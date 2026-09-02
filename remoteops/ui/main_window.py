@@ -257,18 +257,18 @@ class MainWindow(QMainWindow):
         self._last_tab_widget = self.tabs.currentWidget()
 
     def _set_run_button_enabled(self, enabled: bool) -> None:
-        """Habilita Executar só se o host estiver Online (e o caller pediu enable)."""
+        """Habilita Executar só com host Online e PsExec na pasta configurada."""
         if not enabled:
             self.run_button.setEnabled(False)
             return
-        self.run_button.setEnabled(bool(self.psexec_tab.is_host_online))
+        self.run_button.setEnabled(bool(self.psexec_tab.can_run_psexec()))
 
-    def _on_host_online_changed(self, online: bool) -> None:
+    def _on_host_online_changed(self, _online: bool) -> None:
         # Em execução o Parar fica ativo — não reabilitar Executar no meio do processo.
         if self.stop_button.isEnabled():
             self.run_button.setEnabled(False)
             return
-        self.run_button.setEnabled(bool(online))
+        self.run_button.setEnabled(bool(self.psexec_tab.can_run_psexec()))
 
     def _current_creds(self) -> CredentialContext:
         return CredentialContext(
@@ -1321,6 +1321,10 @@ class MainWindow(QMainWindow):
         """Fecha Configurações somente pelo X ao lado do título da aba."""
         if self.settings_tab is None:
             return
+        try:
+            self.settings_tab.flush_pending_settings()
+        except Exception:
+            pass
         idx = self.tabs.indexOf(self.settings_tab)
         if idx != -1:
             self.tabs.removeTab(idx)
@@ -1427,6 +1431,7 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsTab()
         self.settings_tab.pstoolsPathChanged.connect(self._on_pstools_path_changed)
         self.settings_tab.handlePathChanged.connect(self._on_handle_path_changed)
+        self.settings_tab.rustdeskPathChanged.connect(self._on_rustdesk_path_changed)
         self._wire_network_range_status()
         self._wire_print_server()
         self.tabs.addTab(self.settings_tab, self.tr("Configurações"))
@@ -1445,12 +1450,10 @@ class MainWindow(QMainWindow):
 
         invalidate_psping_cache()
         self.update_command()
-        self.psexec_tab.refresh_processos_button_state()
-        self.psexec_tab.refresh_servicos_button_state()
-        self.psexec_tab.refresh_energia_button_state()
-        self.psexec_tab.refresh_contas_locais_button_state()
-        self.psexec_tab.refresh_sessoes_arquivos_button_state()
+        self.psexec_tab.refresh_host_action_buttons()
         self.psexec_tab.refresh_host_status()
+        if not self.stop_button.isEnabled():
+            self.run_button.setEnabled(bool(self.psexec_tab.can_run_psexec()))
         if self.processos_tab is not None:
             self.processos_tab.refresh_tool_capabilities()
         if self.servicos_tab is not None:
@@ -1463,9 +1466,12 @@ class MainWindow(QMainWindow):
             self.sessoes_arquivos_tab.refresh_tool_capabilities()
 
     def _on_handle_path_changed(self, _path: str) -> None:
-        self.psexec_tab.refresh_sessoes_arquivos_button_state()
+        self.psexec_tab.refresh_host_action_buttons()
         if self.sessoes_arquivos_tab is not None:
             self.sessoes_arquivos_tab.refresh_tool_capabilities()
+
+    def _on_rustdesk_path_changed(self, _path: str) -> None:
+        self.psexec_tab.refresh_rustdesk_button_state()
 
     def _on_tab_changed(self, _index: int) -> None:
         # PsInfo: fecha ao sair da aba.
@@ -2138,6 +2144,12 @@ class MainWindow(QMainWindow):
         self.update_command()
 
     def closeEvent(self, event):
+        settings_tab = getattr(self, "settings_tab", None)
+        if settings_tab is not None:
+            try:
+                settings_tab.flush_pending_settings()
+            except Exception:
+                pass
         # Encerra workers Qt antes de destruir widgets (evita
         # "QThread: Destroyed while thread is still running").
         for tab in (
