@@ -1547,10 +1547,12 @@ class IdentitySectionPanel(QWidget):
 
     copy_requested = pyqtSignal(str)
     sid_query_requested = pyqtSignal(str)
+    open_contas_locais_requested = pyqtSignal(str)
 
     def __init__(self, data: IdentityData, parent=None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        self._data = data
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1625,6 +1627,36 @@ class IdentitySectionPanel(QWidget):
         query.add_row(query_wrap)
         root.addWidget(query)
 
+        accounts_btn = make_icon_button(
+            "\uE77B",
+            "Abrir em Contas Locais",
+            size=28,
+        )
+        accounts_btn.clicked.connect(self._emit_open_contas_locais)
+        console_user = (data.user_name or "").strip()
+        computer = (data.computer_name or "").strip().rstrip("$")
+        from remoteops.utils.local_accounts import is_probably_local_session_user
+
+        if console_user and console_user != "—":
+            if is_probably_local_session_user(
+                console_user,
+                data.computer_domain or "",
+                computer_name=computer,
+            ):
+                accounts_btn.setToolTip(
+                    "Listar contas locais e selecionar a conta do console, se existir."
+                )
+            else:
+                accounts_btn.setEnabled(False)
+                accounts_btn.setToolTip(
+                    "Contas de domínio não podem ser alteradas por este módulo."
+                )
+        else:
+            accounts_btn.setToolTip(
+                "Abrir Contas Locais sem pré-selecionar conta."
+            )
+        root.addWidget(accounts_btn)
+
         if data.error and not data.computer_sid and not data.user_sid:
             warn = muted_label(data.error)
             warn.setStyleSheet(f"color: #B86E00; font-size: 8.5pt;")
@@ -1641,6 +1673,14 @@ class IdentitySectionPanel(QWidget):
         account = (self._sid_query_edit.text() or "").strip()
         if account:
             self.sid_query_requested.emit(account)
+
+    def _emit_open_contas_locais(self) -> None:
+        user = (self._data.user_name or "").strip()
+        if user == "—":
+            user = ""
+        if "\\" in user:
+            user = user.split("\\", 1)[-1]
+        self.open_contas_locais_requested.emit(user)
 
     def set_sid_query_result(self, text: str) -> None:
         self._sid_query_result.setText(text or "")

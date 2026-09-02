@@ -715,6 +715,7 @@ class SessoesArquivosTab(QWidget):
     """Usuários conectados, arquivos de rede e handles de processo no host remoto."""
 
     openProcessPidRequested = pyqtSignal(int)
+    openContasLocaisRequested = pyqtSignal(str, str)
 
     def __init__(
         self,
@@ -1363,8 +1364,27 @@ class SessoesArquivosTab(QWidget):
         menu = QMenu(self)
         act_copy_row = menu.addAction(self.tr("Copiar linha"))
         act_copy_user = menu.addAction(self.tr("Copiar usuário"))
+        act_open_accounts = menu.addAction(self.tr("Abrir em Contas Locais"))
         act_copy_row.setEnabled(row is not None)
         act_copy_user.setEnabled(row is not None)
+        if row is not None:
+            host = self._get_host()
+            from remoteops.utils.local_accounts import is_probably_local_session_user
+
+            is_local = is_probably_local_session_user(
+                row.display_user,
+                row.domain,
+                computer_name=host,
+            )
+            act_open_accounts.setEnabled(is_local)
+            if not is_local:
+                act_open_accounts.setToolTip(
+                    self.tr(
+                        "Contas de domínio não podem ser alteradas por este módulo."
+                    )
+                )
+        else:
+            act_open_accounts.setEnabled(False)
         chosen = menu.exec(self.users_table.viewport().mapToGlobal(pos))
         if row is None:
             return
@@ -1381,6 +1401,9 @@ class SessoesArquivosTab(QWidget):
             )
         elif chosen is act_copy_user:
             self._copy_text(row.display_user)
+        elif chosen is act_open_accounts:
+            username = row.username or row.display_user
+            self.openContasLocaisRequested.emit(username, "")
 
     # ── PsFile ────────────────────────────────────────────────────────────
 

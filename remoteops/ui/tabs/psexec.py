@@ -244,6 +244,7 @@ class PsExecTab(QWidget):
     openProcessosRequested = pyqtSignal()
     openServicosRequested = pyqtSignal()
     openEnergiaRequested = pyqtSignal()
+    openContasLocaisRequested = pyqtSignal()
     openSessoesArquivosRequested = pyqtSignal()
     openRustDeskRequested = pyqtSignal()
     openMessageRequested = pyqtSignal()
@@ -308,6 +309,14 @@ class PsExecTab(QWidget):
             self.openSessoesArquivosRequested.emit
         )
         card1.add_header_button(self.sessoes_arquivos_button)
+
+        self.contas_locais_button = card1.make_header_button(
+            "\uE77B", self.tr("Contas locais e alteração de senha (PsPasswd)")
+        )
+        self.contas_locais_button.clicked.connect(
+            self.openContasLocaisRequested.emit
+        )
+        card1.add_header_button(self.contas_locais_button)
 
         self.processos_button = card1.make_header_button(
             "\uE9D9", self.tr("Processos remotos (PsList)")
@@ -1068,6 +1077,7 @@ class PsExecTab(QWidget):
         return (
             self.psinfo_button,
             self.sessoes_arquivos_button,
+            self.contas_locais_button,
             self.processos_button,
             self.servicos_button,
             self.hostapps_button,
@@ -1084,6 +1094,7 @@ class PsExecTab(QWidget):
         self.refresh_processos_button_state(online=online)
         self.refresh_servicos_button_state(online=online)
         self.refresh_energia_button_state(online=online)
+        self.refresh_contas_locais_button_state(online=online)
         self.refresh_sessoes_arquivos_button_state(online=online)
 
     def refresh_processos_button_state(self, online: bool | None = None) -> None:
@@ -1118,6 +1129,24 @@ class PsExecTab(QWidget):
         else:
             self.servicos_button.setToolTip(
                 self.tr("Serviços remotos (PsService)")
+            )
+
+    def refresh_contas_locais_button_state(self, online: bool | None = None) -> None:
+        """Habilita Contas Locais com host Online e PsExec disponível."""
+        from remoteops.utils.pstools import probe_pstools
+
+        is_online = self._host_online if online is None else bool(online)
+        tools = probe_pstools().get("tools") or []
+        has_psexec = bool(tools and tools[0].get("found"))
+        enabled = is_online and has_psexec
+        self.contas_locais_button.setEnabled(enabled)
+        if is_online and not has_psexec:
+            self.contas_locais_button.setToolTip(
+                self.tr("PsExec não encontrado na pasta PSTools configurada.")
+            )
+        else:
+            self.contas_locais_button.setToolTip(
+                self.tr("Contas locais e alteração de senha (PsPasswd)")
             )
 
     def refresh_energia_button_state(self, online: bool | None = None) -> None:

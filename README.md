@@ -53,6 +53,7 @@ Versão: **`2.0.0`** (`remoteops.core.version.__version__`).
 | **Pesquisa** | Aplicativos em vários hosts, com desinstalação quando houver `UninstallString` |
 | **RustDesk** | Coleta o ID no remoto e abre `rustdesk.exe --connect <ID>` localmente |
 | **Sessões e Arquivos** | Usuários conectados via PsLoggedOn, arquivos SMB via PsFile e pesquisa de handles locais via Handle executado pelo PsExec |
+| **Contas Locais** | Listagem de contas locais remotas e alteração de senha via PsPasswd (somente contas locais) |
 | **UI** | Fluent / PyQt6, tooltips em card, tabelas em uma linha com elipse |
 | **Portátil** | `settings.ini`, `hosts.json` e `logs/` ao lado do exe (ou na raiz do repo em dev) |
 
@@ -79,6 +80,7 @@ Aba **PsExec** está sempre visível. As demais abrem sob demanda.
 | **Serviços** | Botão na aba PsExec | PsService — consulta e controle de serviços |
 | **Energia** | Botão na aba PsExec | PsShutdown — desligar, reiniciar, hibernar |
 | **Sessões e Arquivos** | Botão na aba PsExec | PsLoggedOn + PsFile + Handle (via PsExec) |
+| **Contas Locais** | Botão na aba PsExec | Contas locais (PowerShell remoto) + alteração de senha (PsPasswd) |
 | **Pesquisa de Aplicativos** | Ícone de busca no cabeçalho | Multi-host (faixa de IP ou `hosts.json`) |
 | **Configurações** | Ícone de engrenagem no cabeçalho | PSTools, Handle, RustDesk, logs, Remote Registry, faixa de IP, servidor de impressão |
 | **Conectividade** | Botão Diagnosticar na linha de Status do PsExec | ICMP Ping e TCP Ping (PsPing); não duplica o console compartilhado |
@@ -92,7 +94,7 @@ Aba **PsExec** está sempre visível. As demais abrem sob demanda.
 | **Sistema** | Windows 10 ou 11 |
 | **Python** | 3.10+ (desenvolvimento) |
 | **PyQt6** | Interface |
-| **PSTools** | Pasta com PsExec e PsInfo (obrigatórios) e, opcionalmente, PsPing, PsList, PsService, PsShutdown, PsLoggedOn, PsFile — padrão `C:\PSTools\` (ajustável em Configurações) |
+| **PSTools** | Pasta com PsExec e PsInfo (obrigatórios) e, opcionalmente, PsPing, PsList, PsService, PsShutdown, PsLoggedOn, PsFile, **PsPasswd** — padrão `C:\PSTools\` (ajustável em Configurações) |
 | **Handle** | Opcional — pasta própria com `Handle64.exe` / `Handle.exe` (padrão `C:\Handle\`, ajustável em Configurações → Handle; download Sysinternals separado do PsTools) |
 | **WinGet** | No host remoto, para a aba WinGet |
 | **RustDesk** | Opcional, no host e na máquina local |
@@ -159,6 +161,19 @@ Política em `remoteops.utils.redaction`:
 - A senha é lida na UI na hora de executar (`CredentialContext`), injetada no argv e descartada em seguida.
 - Prefira a sessão Windows atual (sem `-u`/`-p`) quando possível.
 
+### Contas Locais e PsPasswd
+
+A aba **Contas Locais** (botão na aba PsExec) lista somente contas com `LocalAccount=True` via PowerShell remoto (`Get-CimInstance Win32_UserAccount`). Contas de domínio **não** aparecem nem podem ser alteradas.
+
+- **Credencial administrativa** (`-u`/`-p` do PsExec/PsPasswd): usada apenas para conectar ao computador remoto.
+- **Nova senha**: aplicada à conta local selecionada na tabela (nunca digitada livremente).
+- **PsPasswd** (`PsPasswd64.exe` / `PsPasswd.exe`) é **opcional**: sem ele a listagem funciona, mas o botão de alterar senha fica desabilitado.
+- O PsPasswd é executado **localmente** com destino `\\HOST` (nunca sem host — evita alterar a máquina administrativa).
+- Preview/logs mascaram **as duas senhas** (administrativa após `-p` e nova senha como último argumento).
+- A alteração de senha é feita **sempre no host atual** da aba PsExec.
+- Para rotação recorrente com senhas diferentes por dispositivo, prefira **Windows LAPS** (não integrado nesta versão).
+- Os binários Sysinternals **não** são empacotados no `RemoteOps.exe`.
+
 ### Limitações
 
 - Com `-u`/`-p`, a senha fica na command line do processo (limitação do PsExec).
@@ -189,16 +204,6 @@ Preferência **Salvar log em arquivo** em Configurações:
 
 ---
 
-## Testes
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-A pasta `tests/` é versionada; o `RemoteOps.spec` continua a excluí-la do EXE. Os testes de PsPing e conectividade não exigem rede real nem o executável do PsPing.
-
----
-
 ## Build
 
 ```bash
@@ -223,7 +228,6 @@ RemoteOps/
 │   ├── ui/                      # janela, abas, widgets, estilo Fluent
 │   ├── utils/                   # settings, hosts, catálogo, rede, redação, sessões
 │   └── winget/                  # backend WinGet remoto
-├── tests/                       # unittest (stdlib)
 ├── assets/
 ├── config/
 ├── hosts.example.json

@@ -136,6 +136,8 @@ class _InventoryWorker(QThread):
 class InventarioTab(QWidget):
     """Painel de inventário remoto com navegação lateral."""
 
+    openContasLocaisRequested = pyqtSignal(str)
+
     def __init__(
         self,
         parent=None,
@@ -564,6 +566,7 @@ class InventarioTab(QWidget):
         panel = IdentitySectionPanel(data)
         panel.copy_requested.connect(self._copy_clipboard)
         panel.sid_query_requested.connect(self._query_sid)
+        panel.open_contas_locais_requested.connect(self.openContasLocaisRequested.emit)
         self._identity_panel = panel
         self._present_section(
             InventorySection.IDENTITY,

@@ -24,6 +24,7 @@ from remoteops.ui.style import SPACE_SM
 from remoteops.ui.tabs.appsearch import AppSearchTab
 from remoteops.ui.tabs.batchinstall import BatchInstallTab
 from remoteops.ui.tabs.cmd import CmdTab
+from remoteops.ui.tabs.contas_locais import ContasLocaisTab
 from remoteops.ui.tabs.connectivity import ConnectivityTab
 from remoteops.ui.tabs.energia import EnergiaTab
 from remoteops.ui.tabs.hostapps import HostAppsTab
@@ -105,6 +106,7 @@ class MainWindow(QMainWindow):
         self.processos_tab = None
         self.servicos_tab = None
         self.energia_tab = None
+        self.contas_locais_tab = None
         self.sessoes_arquivos_tab = None
         self.appsearch_tab = None
         self.settings_tab = None
@@ -177,6 +179,7 @@ class MainWindow(QMainWindow):
         self.psexec_tab.openProcessosRequested.connect(self.open_processos_tab)
         self.psexec_tab.openServicosRequested.connect(self.open_servicos_tab)
         self.psexec_tab.openEnergiaRequested.connect(self.open_energia_tab)
+        self.psexec_tab.openContasLocaisRequested.connect(self.open_contas_locais_tab)
         self.psexec_tab.openSessoesArquivosRequested.connect(
             self.open_sessoes_arquivos_tab
         )
@@ -488,6 +491,9 @@ class MainWindow(QMainWindow):
                 self.psexec_tab.pass_edit.text() or "",
             ),
         )
+        self.psinfo_tab.openContasLocaisRequested.connect(
+            self._open_contas_locais_from_inventario
+        )
         # PsInfo deve ser sempre a última aba
         self.tabs.addTab(self.psinfo_tab, self.tr("Inventário"))
         psinfo_idx = self.tabs.indexOf(self.psinfo_tab)
@@ -765,6 +771,87 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(idx)
         self._update_psinfo_mode_ui()
 
+    def open_contas_locais_tab(
+        self,
+        *,
+        username: str = "",
+        sid: str = "",
+        load_accounts: bool = False,
+    ) -> None:
+        """Abre a aba Contas Locais sob demanda."""
+        host = self.psexec_tab.host_edit.text().strip()
+        if not host:
+            self.log_output.append_log(
+                self.tr(
+                    "[CONTAS] Preencha o Host remoto antes de abrir Contas Locais."
+                )
+            )
+            return
+        if not self.psexec_tab.is_host_online:
+            self.log_output.append_log(
+                self.tr("[CONTAS] O host precisa estar Online para abrir Contas Locais.")
+            )
+            return
+
+        self._remember_window_size()
+
+        if self.contas_locais_tab is not None:
+            idx = self.tabs.indexOf(self.contas_locais_tab)
+            if idx != -1:
+                self.tabs.setCurrentIndex(idx)
+                self.contas_locais_tab.sync_from_host()
+                if load_accounts or username or sid:
+                    if load_accounts:
+                        self.contas_locais_tab.load_accounts()
+                    self.contas_locais_tab.focus_account(
+                        username=username,
+                        sid=sid,
+                        load=False,
+                    )
+                self._update_psinfo_mode_ui()
+                return
+
+        self.contas_locais_tab = ContasLocaisTab(
+            host_source=self.psexec_tab.host_edit,
+            creds_provider=lambda: (
+                self.psexec_tab.auth_username(),
+                self.psexec_tab.pass_edit.text() or "",
+            ),
+            online_provider=lambda: bool(self.psexec_tab.is_host_online),
+        )
+        self.psexec_tab.hostOnlineChanged.connect(
+            self.contas_locais_tab.set_host_online
+        )
+        self.contas_locais_tab.openConnectivityRequested.connect(
+            self._open_connectivity_for_host
+        )
+        self.contas_locais_tab.openSessoesRequested.connect(
+            self.open_sessoes_arquivos_tab
+        )
+        self.tabs.addTab(self.contas_locais_tab, self.tr("Contas Locais"))
+        idx = self.tabs.indexOf(self.contas_locais_tab)
+        bar = self.tabs.tabBar()
+        if isinstance(bar, Mdl2TabBar):
+            bar.set_tab_meta(idx, "\uE77B", closable=True)
+        else:
+            bar.setTabData(idx, "\uE77B")
+        self._refresh_tab_bar_layout()
+        self.tabs.setCurrentIndex(idx)
+        if load_accounts:
+            self.contas_locais_tab.load_accounts()
+        if username or sid:
+            self.contas_locais_tab.focus_account(
+                username=username,
+                sid=sid,
+                load=False,
+            )
+        self._update_psinfo_mode_ui()
+
+    def _open_connectivity_for_host(self, host: str) -> None:
+        if host:
+            self.psexec_tab.host_edit.setText(host)
+        self.open_connectivity_tab()
+
     def open_sessoes_arquivos_tab(self) -> None:
         """Abre a aba Sessões e Arquivos (PsLoggedOn / PsFile / Handle)."""
         host = self.psexec_tab.host_edit.text().strip()
@@ -801,6 +888,9 @@ class MainWindow(QMainWindow):
         self.sessoes_arquivos_tab.openProcessPidRequested.connect(
             self._open_processos_at_pid
         )
+        self.sessoes_arquivos_tab.openContasLocaisRequested.connect(
+            self._open_contas_locais_from_sessoes
+        )
         self.tabs.addTab(self.sessoes_arquivos_tab, self.tr("Sessões e Arquivos"))
         idx = self.tabs.indexOf(self.sessoes_arquivos_tab)
         bar = self.tabs.tabBar()
@@ -822,6 +912,22 @@ class MainWindow(QMainWindow):
             self.processos_tab.focus_pid(int(pid))
         except Exception:
             pass
+
+    def _open_contas_locais_from_sessoes(self, username: str, sid: str) -> None:
+        name = (username or "").strip()
+        if "\\" in name:
+            name = name.split("\\", 1)[-1]
+        self.open_contas_locais_tab(
+            username=name,
+            sid=(sid or "").strip(),
+            load_accounts=True,
+        )
+
+    def _open_contas_locais_from_inventario(self, username: str = "") -> None:
+        name = (username or "").strip()
+        if "\\" in name:
+            name = name.split("\\", 1)[-1]
+        self.open_contas_locais_tab(load_accounts=True, username=name)
 
     def open_appsearch_tab(self) -> None:
         """Cria a aba Pesquisa de Aplicativos sob demanda e foca nela."""
@@ -928,6 +1034,7 @@ class MainWindow(QMainWindow):
         self._close_processos_tab()
         self._close_servicos_tab()
         self._close_energia_tab()
+        self._close_contas_locais_tab()
         self._close_sessoes_arquivos_tab()
         self._close_appsearch_tab()
         self._close_settings_tab()
@@ -988,6 +1095,8 @@ class MainWindow(QMainWindow):
             self._close_servicos_tab()
         elif widget is self.energia_tab:
             self._close_energia_tab()
+        elif widget is self.contas_locais_tab:
+            self._close_contas_locais_tab()
         elif widget is self.sessoes_arquivos_tab:
             self._close_sessoes_arquivos_tab()
         elif widget is self.appsearch_tab:
@@ -1135,6 +1244,28 @@ class MainWindow(QMainWindow):
         self._last_tab_widget = self.tabs.currentWidget()
         self._refresh_tab_bar_layout()
 
+    def _close_contas_locais_tab(self) -> None:
+        if self.contas_locais_tab is None:
+            return
+        idx = self.tabs.indexOf(self.contas_locais_tab)
+        if idx != -1:
+            self.tabs.removeTab(idx)
+        try:
+            self.psexec_tab.hostOnlineChanged.disconnect(
+                self.contas_locais_tab.set_host_online
+            )
+        except TypeError:
+            pass
+        try:
+            self.contas_locais_tab.shutdown()
+        except Exception:
+            pass
+        self.contas_locais_tab.deleteLater()
+        self.contas_locais_tab = None
+        self._update_psinfo_mode_ui()
+        self._last_tab_widget = self.tabs.currentWidget()
+        self._refresh_tab_bar_layout()
+
     def _close_sessoes_arquivos_tab(self) -> None:
         if self.sessoes_arquivos_tab is None:
             return
@@ -1150,6 +1281,12 @@ class MainWindow(QMainWindow):
         try:
             self.sessoes_arquivos_tab.openProcessPidRequested.disconnect(
                 self._open_processos_at_pid
+            )
+        except TypeError:
+            pass
+        try:
+            self.sessoes_arquivos_tab.openContasLocaisRequested.disconnect(
+                self._open_contas_locais_from_sessoes
             )
         except TypeError:
             pass
@@ -1311,6 +1448,7 @@ class MainWindow(QMainWindow):
         self.psexec_tab.refresh_processos_button_state()
         self.psexec_tab.refresh_servicos_button_state()
         self.psexec_tab.refresh_energia_button_state()
+        self.psexec_tab.refresh_contas_locais_button_state()
         self.psexec_tab.refresh_sessoes_arquivos_button_state()
         self.psexec_tab.refresh_host_status()
         if self.processos_tab is not None:
@@ -1319,6 +1457,8 @@ class MainWindow(QMainWindow):
             self.servicos_tab.refresh_tool_capabilities()
         if self.energia_tab is not None:
             self.energia_tab.refresh_tool_capabilities()
+        if self.contas_locais_tab is not None:
+            self.contas_locais_tab.refresh_tool_capabilities()
         if self.sessoes_arquivos_tab is not None:
             self.sessoes_arquivos_tab.refresh_tool_capabilities()
 
@@ -1566,6 +1706,7 @@ class MainWindow(QMainWindow):
         processos_widget = self.processos_tab
         servicos_widget = self.servicos_tab
         energia_widget = self.energia_tab
+        contas_locais_widget = self.contas_locais_tab
         sessoes_arquivos_widget = self.sessoes_arquivos_tab
         appsearch_widget = self.appsearch_tab
         settings_widget = self.settings_tab
@@ -1592,6 +1733,8 @@ class MainWindow(QMainWindow):
                 continue
             if energia_widget is not None and w is energia_widget:
                 continue
+            if contas_locais_widget is not None and w is contas_locais_widget:
+                continue
             if (
                 sessoes_arquivos_widget is not None
                 and w is sessoes_arquivos_widget
@@ -1616,6 +1759,7 @@ class MainWindow(QMainWindow):
             processos_widget,
             servicos_widget,
             energia_widget,
+            contas_locais_widget,
             sessoes_arquivos_widget,
             appsearch_widget,
             settings_widget,
@@ -2005,6 +2149,7 @@ class MainWindow(QMainWindow):
             getattr(self, "processos_tab", None),
             getattr(self, "servicos_tab", None),
             getattr(self, "energia_tab", None),
+            getattr(self, "contas_locais_tab", None),
             getattr(self, "sessoes_arquivos_tab", None),
             getattr(self, "psinfo_tab", None),
             getattr(self, "batchinstall_tab", None),
