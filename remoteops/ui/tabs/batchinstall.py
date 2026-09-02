@@ -21,9 +21,11 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QWidget,
 )
 
+from remoteops.core.executor import _emit_conpty_text
 from remoteops.services.batch_install import (
     REASON_CANCELLED,
     REASON_IN_PROGRESS,
@@ -55,6 +57,7 @@ from remoteops.ui.widgets.card import (
     make_field_label,
 )
 from remoteops.ui.widgets.log import LogOutputWidget
+from remoteops.ui.widgets.mdl2_tab_bar import Mdl2TabBar
 from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
 from remoteops.ui.widgets.status_dot import StatusDot as _StatusDot
 from remoteops.ui.widgets.table import configure_standard_table, pause_table_sorting
@@ -100,6 +103,9 @@ class _BatchInstallWorker(QThread):
     progress = pyqtSignal(int, int, int, int, str)  # gen, done, failed, total, host
     rowUpsert = pyqtSignal(int, object)
     logLine = pyqtSignal(str)
+    consoleStarted = pyqtSignal(str)
+    consoleChunk = pyqtSignal(str)
+    consoleActive = pyqtSignal(bool)
     finished_ok = pyqtSignal(int)
     finished_aborted = pyqtSignal(int)
     finished_err = pyqtSignal(int, str)
@@ -120,6 +126,8 @@ class _BatchInstallWorker(QThread):
         inbox: Optional[Queue] = None,
         detect_only: bool = False,
         pending_rows: Optional[List[BatchHostRow]] = None,
+        console_cols: int = 120,
+        console_rows: int = 30,
     ):
         super().__init__()
         self.hosts = list(hosts)
@@ -147,6 +155,8 @@ class _BatchInstallWorker(QThread):
         self._failed = 0
         self._next_order = 0
         self._state_lock = threading.Lock()
+        self._console_cols = max(20, int(console_cols or 120))
+        self._console_rows = max(5, int(console_rows or 30))
 
     def offer_host(self, host: str) -> None:
         if self._inbox is None or self._intake_closed or self._abort:
@@ -168,6 +178,11 @@ class _BatchInstallWorker(QThread):
         self._abort = True
         self._install_proc_cancel = True
         self.close_intake()
+
+    def set_console_size(self, cols: int, rows: int) -> None:
+        with self._state_lock:
+            self._console_cols = max(20, int(cols))
+            self._console_rows = max(5, int(rows))
 
     def run(self) -> None:
         gen = self.generation
@@ -379,14 +394,24 @@ class _BatchInstallWorker(QThread):
             pstools_path=pstools,
             has_password=bool(self._password),
         )
-        if spec.display_command:
-            self.logLine.emit(f"[LOTE] {row.host}: {spec.display_command}")
-        outcome = run_remote_installer(
-            spec,
-            password=self._password,
-            should_cancel=lambda: self._install_proc_cancel,
-            on_line=lambda line: self.logLine.emit(f"[LOTE] {row.host}: {line}"),
-        )
+        display = (spec.display_command or "").strip()
+        if display and not display.startswith("#"):
+            self.consoleStarted.emit(display)
+        with self._state_lock:
+            cols = self._console_cols
+            rows = self._console_rows
+        self.consoleActive.emit(True)
+        try:
+            outcome = run_remote_installer(
+                spec,
+                password=self._password,
+                should_cancel=lambda: self._install_proc_cancel,
+                on_output=lambda chunk: self.consoleChunk.emit(chunk),
+                cols=cols,
+                rows=rows,
+            )
+        finally:
+            self.consoleActive.emit(False)
         apply_install_outcome(row, outcome)
         if outcome.ok:
             self.logLine.emit(
@@ -443,6 +468,8 @@ class BatchInstallTab(QWidget):
         self._scan_ready = False
         self._busy_kind = ""
         self._hosts_source_sig = None
+        self._console_size = (120, 30)
+        self._console_carry: List[str] = []
 
         root = make_card_stack(self)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -598,12 +625,63 @@ class BatchInstallTab(QWidget):
         self.results_card.content_layout.addWidget(self.table, 1)
         root.addWidget(self.results_card, 2)
 
-        self.log_output = LogOutputWidget()
-        self.log_output.set_layout_stretch(1)
-        root.addWidget(self.log_output, 1)
-        # Instalação em Lote fica fora do bind: stretch 0 / altura = conteúdo.
-        # Se entrar no bind, recebe stretch≥1 e incha além do máximo em que abre.
-        bind_card_stack(root, (self.results_card, self.log_output))
+        output_card = CardWidget("\uE9F9", self.tr("Saída"))
+        self.output_card = output_card
+        output_card.set_collapsible(True, collapsed=False)
+        output_card.set_expanding(True)
+        output_card.set_layout_stretch(1)
+
+        self._output_copy_btn = output_card.make_header_button(
+            "\uE8C8",
+            self.tr("Copiar seleção (ou tudo, se nada estiver selecionado)"),
+        )
+        self._output_copy_btn.clicked.connect(self._copy_current_output)
+        output_card.add_header_button(self._output_copy_btn)
+        self._output_clear_btn = output_card.make_header_button(
+            "\uE74D", self.tr("Limpar este console (apenas na tela)")
+        )
+        self._output_clear_btn.clicked.connect(self._clear_current_output)
+        output_card.add_header_button(self._output_clear_btn)
+
+        self._output_tabs = QTabWidget()
+        inner_bar = Mdl2TabBar(self._output_tabs)
+        inner_bar.setExpanding(False)
+        self._output_tabs.setTabBar(inner_bar)
+        self._output_tabs.setDocumentMode(True)
+        self._output_tabs.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+
+        self.log_messages = LogOutputWidget(
+            self, title=self.tr("Mensagens"), icon="\uE8BD"
+        )
+        self.log_messages.set_interactive(False)
+        self.log_messages.set_session_status("idle")
+        self._embed_inner_card(self.log_messages)
+
+        self.log_console = LogOutputWidget(
+            self, title=self.tr("Console de Saída"), icon="\uE9F9"
+        )
+        self.log_console.set_interactive(False)
+        self.log_console.set_session_status("idle")
+        self.log_console.interruptRequested.connect(self.stop_install)
+        self.log_console.sessionExitRequested.connect(self.stop_install)
+        self.log_console.consoleResized.connect(self._on_console_resized)
+        self._embed_inner_card(self.log_console)
+
+        idx_msg = self._output_tabs.addTab(
+            self.log_messages, self.tr("Mensagens")
+        )
+        inner_bar.set_tab_meta(idx_msg, "\uE8BD")
+        idx_console = self._output_tabs.addTab(
+            self.log_console, self.tr("Console de Saída")
+        )
+        inner_bar.set_tab_meta(idx_console, "\uE9F9")
+        self._output_tabs.setCurrentIndex(0)
+        output_card.content_layout.addWidget(self._output_tabs, 1)
+        root.addWidget(output_card, 1)
+        # Formulário (install_card) fica fora do bind: stretch 0 / altura = conteúdo.
+        bind_card_stack(root, (self.results_card, output_card))
         self.destroyed.connect(self._abort_worker)
         self.refresh_hosts_status()
         self.refresh_product_hint()
@@ -615,6 +693,95 @@ class BatchInstallTab(QWidget):
 
     def _ui_alive(self) -> bool:
         return not sip.isdeleted(self)
+
+    @staticmethod
+    def _embed_inner_card(card: CardWidget) -> None:
+        """Remove borda/cabeçalho do card embutido numa aba interna."""
+        card.set_collapsible(False)
+        card._header_widget.hide()
+        card._divider.hide()
+        card._set_divider_spacing_visible(False)
+        card._container.setStyleSheet(
+            "QWidget#cardContainer { background: transparent; border: none; }"
+        )
+        card._container_layout.setContentsMargins(0, 0, 0, 0)
+        card.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        card._container.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+
+    def _current_output_log(self) -> LogOutputWidget:
+        if int(self._output_tabs.currentIndex()) == 1:
+            return self.log_console
+        return self.log_messages
+
+    def _copy_current_output(self) -> None:
+        self._current_output_log().copyRequested.emit()
+
+    def _clear_current_output(self) -> None:
+        self._current_output_log().clear_log()
+
+    def _show_output_tab(self, index: int) -> None:
+        if hasattr(self, "_output_tabs"):
+            self._output_tabs.setCurrentIndex(int(index))
+
+    def _on_console_resized(self, cols: int, rows: int) -> None:
+        self._console_size = (max(20, int(cols)), max(5, int(rows)))
+        w = self._worker
+        if w is not None:
+            w.set_console_size(*self._console_size)
+
+    def _reset_console_idle(self, *, clear: bool = False) -> None:
+        self._console_carry = []
+        self.log_console.set_interactive(False)
+        self.log_console.set_partial_line("")
+        self.log_console.set_session_status("idle")
+        if clear:
+            self.log_console.clear_log()
+
+    def _finish_console_session(self, *, error: bool = False) -> None:
+        self._flush_console_partial()
+        self.log_console.set_interactive(False)
+        self.log_console.set_session_status("error" if error else "exited")
+
+    def _flush_console_partial(self) -> None:
+        leftover = (self._console_carry[0] if self._console_carry else "").strip()
+        self._console_carry = []
+        if leftover:
+            self.log_console.append_log(leftover)
+        self.log_console.set_partial_line("")
+
+    def _on_console_started(self, command: str) -> None:
+        if not self._ui_alive():
+            return
+        self._flush_console_partial()
+        text = (command or "").strip()
+        if text:
+            self.log_console.append_log(text)
+
+    def _on_console_chunk(self, chunk: str) -> None:
+        if not self._ui_alive():
+            return
+        _emit_conpty_text(
+            chunk,
+            prefix="",
+            on_line=self.log_console.append_log,
+            carry=self._console_carry,
+            on_partial=self.log_console.set_partial_line,
+        )
+
+    def _on_console_active(self, active: bool) -> None:
+        if not self._ui_alive():
+            return
+        if active:
+            self.log_console.set_interactive(True)
+            self.log_console.set_session_status("running")
+            return
+        self._flush_console_partial()
+        self.log_console.set_interactive(False)
+        self.log_console.append_log("")
 
     def _current_exe(self) -> str:
         try:
@@ -794,6 +961,9 @@ class BatchInstallTab(QWidget):
             (w.progress, self._on_progress),
             (w.rowUpsert, self._on_row_upsert),
             (w.logLine, self._on_log_line),
+            (w.consoleStarted, self._on_console_started),
+            (w.consoleChunk, self._on_console_chunk),
+            (w.consoleActive, self._on_console_active),
             (w.finished_ok, self._on_ok),
             (w.finished_aborted, self._on_aborted),
             (w.finished_err, self._on_err),
@@ -867,7 +1037,7 @@ class BatchInstallTab(QWidget):
         self.stop_btn.setEnabled(False)
         if self._busy_kind == "install":
             self._set_phase_message(self.tr("Interrompendo..."))
-            self.log_output.append_log(
+            self.log_messages.append_log(
                 self.tr(
                     "[LOTE] Interrupção solicitada. Novas instalações não serão iniciadas. "
                     "A instalação já enviada via PsExec pode continuar no computador remoto."
@@ -875,7 +1045,7 @@ class BatchInstallTab(QWidget):
             )
         else:
             self._set_phase_message(self.tr("Interrompendo..."))
-            self.log_output.append_log(
+            self.log_messages.append_log(
                 self.tr("[LOTE] Interrupção solicitada. A varredura será encerrada.")
             )
 
@@ -995,8 +1165,10 @@ class BatchInstallTab(QWidget):
         self.summary_lbl.setText("")
         self._set_progress_rows_visible(False)
         self._set_busy(False)
-        self.log_output.clear_log()
-        self.log_output.set_session_status("idle")
+        self.log_messages.clear_log()
+        self.log_messages.set_session_status("idle")
+        self._reset_console_idle(clear=True)
+        self._show_output_tab(0)
         self.refresh_product_hint()
 
     def _start_network_scan(self, exe: str, desired: str) -> None:
@@ -1026,6 +1198,8 @@ class BatchInstallTab(QWidget):
         self._set_progress_rows_visible(True, network=True)
         self._set_phase_message(self.tr("Varrendo hosts..."))
         self._refresh_progress_ui()
+        self._reset_console_idle(clear=True)
+        self._show_output_tab(0)
         self._begin_streaming_scan(exe, desired, generation)
         self._scan_worker = _NetworkScanWorker(
             ips, cfg.scan_threads, generation=generation
@@ -1036,7 +1210,7 @@ class BatchInstallTab(QWidget):
         self._scan_worker.finished_aborted.connect(self._on_scan_aborted)
         self._scan_worker.finished_err.connect(self._on_scan_err)
         self._scan_worker.start()
-        self.log_output.append_log(
+        self.log_messages.append_log(
             self.tr(
                 f"[LOTE] Varrendo {cfg.start_ip}–{cfg.end_ip} "
                 f"({len(ips)} IP(s), {cfg.scan_threads} threads)..."
@@ -1055,18 +1229,18 @@ class BatchInstallTab(QWidget):
         return str(user or ""), str(password or ""), params
 
     def _log_identity(self, identity, desired: str) -> None:
-        self.log_output.append_log(
+        self.log_messages.append_log(
             self.tr(
                 f"[LOTE] Produto: {identity.label}. "
                 f"Needles: {', '.join(identity.needles[:6]) or '—'}"
             )
         )
         if desired:
-            self.log_output.append_log(self.tr(f"[LOTE] Versão desejada: {desired}"))
+            self.log_messages.append_log(self.tr(f"[LOTE] Versão desejada: {desired}"))
         else:
             installer_ver = (getattr(identity, "installer_version", None) or "").strip()
             if installer_ver:
-                self.log_output.append_log(
+                self.log_messages.append_log(
                     self.tr(
                         f"[LOTE] Versão desejada vazia: usando a versão do "
                         f"instalador ({installer_ver}). Hosts já nessa versão "
@@ -1074,7 +1248,7 @@ class BatchInstallTab(QWidget):
                     )
                 )
             else:
-                self.log_output.append_log(
+                self.log_messages.append_log(
                     self.tr(
                         "[LOTE] Versão desejada vazia e instalador sem versão: "
                         "só instala se o aplicativo não estiver presente."
@@ -1128,6 +1302,8 @@ class BatchInstallTab(QWidget):
         self._set_progress_rows_visible(True, network=from_network)
         self._set_phase_message(self.tr("Varrendo hosts..."))
         self._refresh_progress_ui()
+        self._reset_console_idle(clear=True)
+        self._show_output_tab(0)
 
         identity = identify_product(exe)
         user, password, params = self._creds_and_params()
@@ -1147,7 +1323,7 @@ class BatchInstallTab(QWidget):
         )
         self._connect_worker(self._worker)
         self._worker.start()
-        self.log_output.append_log(
+        self.log_messages.append_log(
             self.tr(
                 f"[LOTE] Consultando {len(hosts)} host(s) "
                 f"({workers} consultas simultâneas)."
@@ -1174,9 +1350,15 @@ class BatchInstallTab(QWidget):
         self._set_progress_rows_visible(True, network=False)
         self._set_phase_message(self.tr("Instalando..."))
         self._refresh_progress_ui()
+        self.log_console.clear_log()
+        self._console_carry = []
+        self.log_console.set_session_status("running")
+        self.log_console.set_interactive(False)
+        self._show_output_tab(1)
 
         identity = identify_product(exe)
         user, password, params = self._creds_and_params()
+        cols, rows = self._console_size
         self._worker = _BatchInstallWorker(
             [],
             exe_path=exe,
@@ -1189,10 +1371,12 @@ class BatchInstallTab(QWidget):
             generation=generation,
             timeout=get_remote_registry_timeout(),
             pending_rows=pending,
+            console_cols=cols,
+            console_rows=rows,
         )
         self._connect_worker(self._worker)
         self._worker.start()
-        self.log_output.append_log(
+        self.log_messages.append_log(
             self.tr(
                 f"[LOTE] Instalando em {len(pending)} host(s) da varredura."
             )
@@ -1203,6 +1387,9 @@ class BatchInstallTab(QWidget):
         w.progress.connect(self._on_progress)
         w.rowUpsert.connect(self._on_row_upsert)
         w.logLine.connect(self._on_log_line)
+        w.consoleStarted.connect(self._on_console_started)
+        w.consoleChunk.connect(self._on_console_chunk)
+        w.consoleActive.connect(self._on_console_active)
         w.finished_ok.connect(self._on_ok)
         w.finished_aborted.connect(self._on_aborted)
         w.finished_err.connect(self._on_err)
@@ -1244,7 +1431,7 @@ class BatchInstallTab(QWidget):
         self._hosts_total = len(names)
         self._scan_ips_done = self._scan_ips_total
         self._refresh_progress_ui()
-        self.log_output.append_log(
+        self.log_messages.append_log(
             self.tr(f"[LOTE] Varredura concluída: {len(names)} host(s) Windows.")
         )
 
@@ -1261,7 +1448,7 @@ class BatchInstallTab(QWidget):
         self._set_busy(False)
         self._set_phase_message(self.tr("Varredura interrompida"))
         self.summary_lbl.setText(self.tr("Varredura de rede interrompida."))
-        self.log_output.append_log(self.tr("[LOTE] Varredura de rede interrompida."))
+        self.log_messages.append_log(self.tr("[LOTE] Varredura de rede interrompida."))
 
     def _on_scan_err(self, generation: int, msg: str) -> None:
         if not self._ui_alive() or int(generation) != int(self._generation):
@@ -1270,12 +1457,12 @@ class BatchInstallTab(QWidget):
         if w is not None:
             w.abort()
         if w is not None and w.isRunning():
-            self.log_output.append_log(self.tr(f"[LOTE] {msg}"))
+            self.log_messages.append_log(self.tr(f"[LOTE] {msg}"))
             return
         self._accepting = False
         self._set_busy(False)
         self._set_phase_message(self.tr(f"Falha: {msg}"))
-        self.log_output.append_log(self.tr(f"[LOTE] {msg}"))
+        self.log_messages.append_log(self.tr(f"[LOTE] {msg}"))
 
     def _on_progress(
         self,
@@ -1297,7 +1484,7 @@ class BatchInstallTab(QWidget):
     def _on_log_line(self, line: str) -> None:
         if not self._ui_alive():
             return
-        self.log_output.append_log(line)
+        self.log_messages.append_log(line)
 
     def _on_row_upsert(self, generation: int, row: object) -> None:
         if not self._ui_alive() or int(generation) != int(self._generation):
@@ -1367,7 +1554,7 @@ class BatchInstallTab(QWidget):
                 self.summary_lbl.setText(
                     self.tr("Nenhum computador encontrado na varredura.")
                 )
-                self.log_output.append_log(
+                self.log_messages.append_log(
                     self.tr("[LOTE] Varredura concluída sem hosts Windows.")
                 )
                 return
@@ -1376,18 +1563,18 @@ class BatchInstallTab(QWidget):
             self._set_phase_message("")
             self._update_summary(final=True)
             summary = summarize_rows(list(self._rows.values()))
-            self.log_output.append_log(
+            self.log_messages.append_log(
                 self.tr(f"[LOTE] Varredura concluída. {summary.as_text()}")
             )
             pending = sum(1 for row in self._rows.values() if row.needs_install)
             if pending:
-                self.log_output.append_log(
+                self.log_messages.append_log(
                     self.tr(
                         f"[LOTE] {pending} host(s) prontos para instalar. Use o botão Play."
                     )
                 )
             else:
-                self.log_output.append_log(
+                self.log_messages.append_log(
                     self.tr(
                         "[LOTE] Nenhum host precisa de instalação ou atualização."
                     )
@@ -1400,7 +1587,8 @@ class BatchInstallTab(QWidget):
         self._set_phase_message("")
         self._update_summary(final=True)
         summary = summarize_rows(list(self._rows.values()))
-        self.log_output.append_log(self.tr(f"[LOTE] Concluída. {summary.as_text()}"))
+        self.log_messages.append_log(self.tr(f"[LOTE] Concluída. {summary.as_text()}"))
+        self._finish_console_session()
 
     def _on_aborted(self, generation: int) -> None:
         if not self._ui_alive() or int(generation) != int(self._generation):
@@ -1413,24 +1601,28 @@ class BatchInstallTab(QWidget):
             self._set_phase_message(self.tr("Varredura interrompida"))
             self._update_summary(final=True, interrupted=True)
             summary = summarize_rows(list(self._rows.values()))
-            self.log_output.append_log(
+            self.log_messages.append_log(
                 self.tr(f"[LOTE] Varredura interrompida. {summary.as_text()}")
             )
             return
         self._set_phase_message(self.tr("Instalação em lote interrompida"))
         self._update_summary(final=True, interrupted=True)
         summary = summarize_rows(list(self._rows.values()))
-        self.log_output.append_log(
+        self.log_messages.append_log(
             self.tr(f"[LOTE] Interrompida. {summary.as_text()}")
         )
+        self._finish_console_session()
 
     def _on_err(self, generation: int, msg: str) -> None:
         if not self._ui_alive() or int(generation) != int(self._generation):
             return
+        kind = self._busy_kind
         self._accepting = False
         self._scan_ready = False
         self._set_phase_message(self.tr(f"Falha: {msg}"))
-        self.log_output.append_log(self.tr(f"[LOTE] {msg}"))
+        self.log_messages.append_log(self.tr(f"[LOTE] {msg}"))
+        if kind == "install":
+            self._finish_console_session(error=True)
 
     def _update_summary(self, final: bool = False, interrupted: bool = False) -> None:
         summary = summarize_rows(list(self._rows.values()))

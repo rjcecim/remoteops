@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import subprocess
-import threading
-import time
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, Optional, Sequence, Tuple
 
 from remoteops.core.builder import CommandBuilder
-from remoteops.core.console_codec import decode_best_effort
+from remoteops.core.conpty import run_argv_conpty
 from remoteops.core.models import CommandSpec
-from remoteops.core.win_cmd import CREATE_NO_WINDOW, popen_argv
 from remoteops.services.ops import materialize_password_in_argv
 from remoteops.utils.product_identity import (
     ProductIdentity,
@@ -311,10 +307,12 @@ def run_remote_installer(
     *,
     password: str = "",
     should_cancel: Optional[Callable[[], bool]] = None,
-    on_line: Optional[LogFn] = None,
+    on_output: Optional[LogFn] = None,
+    cols: int = 120,
+    rows: int = 30,
 ) -> RemoteInstallOutcome:
     """
-    Executa o spec do CommandBuilder e espera o instalador remoto.
+    Executa o spec do CommandBuilder e espera o instalador remoto via ConPTY.
 
     Sucesso do PsExec (conexão) ≠ sucesso da instalação: só ``installer_ok``
     quando o processo remoto termina com código de instalador conhecido.
@@ -331,85 +329,49 @@ def run_remote_installer(
 
     argv = materialize_password_in_argv(spec.argv, password)
     passwords = [password] if (password or "").strip() else None
-    log = on_line or (lambda _m: None)
+    emit = on_output or (lambda _m: None)
 
-    try:
-        proc = popen_argv(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            creationflags=CREATE_NO_WINDOW,
+    def _emit_chunk(chunk: str) -> None:
+        safe = redact_command_text(chunk, passwords=passwords)
+        if safe:
+            emit(safe)
+
+    conpty = run_argv_conpty(
+        argv,
+        on_output=_emit_chunk,
+        should_cancel=should_cancel,
+        timeout=None,
+        cols=max(20, int(cols)),
+        rows=max(5, int(rows)),
+    )
+    stdout = redact_command_text(conpty.output or "", passwords=passwords)
+    code = conpty.return_code
+    lines = [ln for ln in stdout.splitlines() if ln.strip()]
+
+    if conpty.exception and not stdout and not conpty.cancelled:
+        safe = redact_command_text(conpty.exception, passwords=passwords)
+        lower = (safe or "").casefold()
+        missing = (
+            "cannot find the file" in lower
+            or "não encontrado" in lower
+            or "the system cannot find" in lower
         )
-    except FileNotFoundError:
+        if missing:
+            msg = f"Executável não encontrado: {argv[0] if argv else 'PsExec'}"
+        else:
+            msg = f"Falha ao iniciar o PsExec: {safe}"
         return RemoteInstallOutcome(
             ok=False,
-            message=f"Executável não encontrado: {argv[0] if argv else 'PsExec'}",
-            display_command=display,
-        )
-    except OSError as exc:
-        safe = redact_command_text(str(exc), passwords=passwords)
-        return RemoteInstallOutcome(
-            ok=False,
-            message=f"Falha ao iniciar o PsExec: {safe}",
+            return_code=code if code is not None else 1,
+            message=msg,
+            stdout=stdout,
             display_command=display,
         )
 
-    stdout_acc: List[str] = []
-    stderr_acc: List[str] = []
-
-    def _read(pipe, bucket: List[str], prefix: str = "") -> None:
-        try:
-            for raw in iter(pipe.readline, b""):
-                line = decode_best_effort(raw).rstrip("\r\n")
-                if not line:
-                    continue
-                bucket.append(line)
-                log(f"{prefix}{line}" if prefix else line)
-        except (OSError, ValueError):
-            pass
-        finally:
-            try:
-                pipe.close()
-            except OSError:
-                pass
-
-    t_out = threading.Thread(
-        target=_read, args=(proc.stdout, stdout_acc, ""), daemon=True
-    )
-    t_err = threading.Thread(
-        target=_read, args=(proc.stderr, stderr_acc, ""), daemon=True
-    )
-    t_out.start()
-    t_err.start()
-
-    cancelled = False
-    while proc.poll() is None:
-        if should_cancel and should_cancel():
-            cancelled = True
-            try:
-                proc.terminate()
-            except OSError:
-                pass
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                try:
-                    proc.kill()
-                except OSError:
-                    pass
-            break
-        time.sleep(0.15)
-
-    t_out.join(timeout=5)
-    t_err.join(timeout=5)
-    code = proc.returncode
-    stdout = "\n".join(stdout_acc)
-    stderr = "\n".join(stderr_acc)
-    combined = f"{stdout}\n{stderr}".lower()
+    combined = stdout.lower()
     psexec_launch_error = _looks_like_psexec_failure(combined, code)
 
-    if cancelled:
+    if conpty.cancelled:
         return RemoteInstallOutcome(
             ok=False,
             return_code=code,
@@ -418,7 +380,6 @@ def run_remote_installer(
             installer_ok=False,
             message=REASON_CANCELLED,
             stdout=stdout,
-            stderr=stderr,
             display_command=display,
         )
 
@@ -432,11 +393,10 @@ def run_remote_installer(
             installer_ok=True,
             message="",
             stdout=stdout,
-            stderr=stderr,
             display_command=display,
         )
     if psexec_launch_error:
-        detail = _first_error_line(stderr_acc or stdout_acc) or f"código {code}"
+        detail = _first_error_line(lines) or f"código {code}"
         return RemoteInstallOutcome(
             ok=False,
             return_code=code,
@@ -444,7 +404,6 @@ def run_remote_installer(
             installer_ok=False,
             message=f"PsExec: {detail}",
             stdout=stdout,
-            stderr=stderr,
             display_command=display,
         )
     return RemoteInstallOutcome(
@@ -454,7 +413,6 @@ def run_remote_installer(
         installer_ok=False,
         message=f"Instalador retornou código {code}",
         stdout=stdout,
-        stderr=stderr,
         display_command=display,
     )
 

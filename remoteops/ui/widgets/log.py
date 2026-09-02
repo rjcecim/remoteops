@@ -60,9 +60,11 @@ class LogOutputWidget(CardWidget):
     sessionExitRequested = pyqtSignal()
     consoleResized = pyqtSignal(int, int)
 
-    def __init__(self, parent=None):
-        super().__init__("\uE9F9", "Console de Saída", parent)
-        self._title_label.setText(self.tr("Console de Saída"))
+    def __init__(self, parent=None, *, title: str = "", icon: str = ""):
+        label = title or "Console de Saída"
+        glyph = icon or "\uE9F9"
+        super().__init__(glyph, label, parent)
+        self._title_label.setText(self.tr(label))
         self.set_layout_stretch(1)
         self.set_expanding(True)
         self.set_collapsible(True, collapsed=False)
