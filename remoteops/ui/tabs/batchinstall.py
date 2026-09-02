@@ -448,7 +448,10 @@ class BatchInstallTab(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         install_card = CardWidget("\uE118", self.tr("Instalação em Lote"))
+        self.install_card = install_card
         install_card.set_collapsible(True, collapsed=False)
+        # Formulário compacto: teto = altura em que abre (sizeHint), sem absorver sobra.
+        install_card.set_layout_stretch(0)
         self.scan_btn = install_card.make_header_button(
             "\uE721", self.tr("Varrer hosts (faixa de IP ou hosts.json)")
         )
@@ -598,7 +601,9 @@ class BatchInstallTab(QWidget):
         self.log_output = LogOutputWidget()
         self.log_output.set_layout_stretch(1)
         root.addWidget(self.log_output, 1)
-        bind_card_stack(root, (install_card, self.results_card, self.log_output))
+        # Instalação em Lote fica fora do bind: stretch 0 / altura = conteúdo.
+        # Se entrar no bind, recebe stretch≥1 e incha além do máximo em que abre.
+        bind_card_stack(root, (self.results_card, self.log_output))
         self.destroyed.connect(self._abort_worker)
         self.refresh_hosts_status()
         self.refresh_product_hint()
@@ -628,6 +633,7 @@ class BatchInstallTab(QWidget):
             self.version_edit.setPlaceholderText(
                 self.tr("Opcional — vazio usa a versão do instalador")
             )
+            self.install_card.updateGeometry()
             return
         meta = read_exe_metadata(exe)
         identity = identify_product(exe, meta)
@@ -645,6 +651,7 @@ class BatchInstallTab(QWidget):
             bits.append(self.tr(f"ProductName: {meta.product_name}"))
         self.product_lbl.setText("  ·  ".join(bits))
         self.product_lbl.setVisible(True)
+        self.install_card.updateGeometry()
 
     def on_exe_changed(self, _path: str = "") -> None:
         if self._is_busy():
@@ -668,11 +675,13 @@ class BatchInstallTab(QWidget):
         self._hosts_row_wrap.setVisible(visible)
         if not visible:
             self._set_phase_message("")
+        self.install_card.updateGeometry()
 
     def _set_phase_message(self, text: str = "") -> None:
         msg = (text or "").strip()
         self.phase_lbl.setText(msg)
         self.phase_lbl.setVisible(bool(msg))
+        self.install_card.updateGeometry()
 
     def _refresh_progress_ui(self) -> None:
         if self._from_network:
