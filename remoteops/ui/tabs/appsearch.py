@@ -521,6 +521,13 @@ class AppSearchTab(QWidget):
     def _ui_alive(self) -> bool:
         return not sip.isdeleted(self)
 
+    def _log(self, category: str, message: str) -> None:
+        """Console da aba com categoria: INFO, OK, AVISO, FALHA, ERRO, CATALOGO, EXPORTAR."""
+        if not self._ui_alive():
+            return
+        cat = (category or "INFO").strip().upper()
+        self.log_output.append_log(f"[{cat}] {message or ''}")
+
     def _set_hosts_status(self, state: str, text: str, tooltip: str = "") -> None:
         color = _STATUS_COLORS.get(state, _STATUS_COLORS["idle"])
         self.hosts_status_dot.set_color(color)
@@ -729,11 +736,9 @@ class AppSearchTab(QWidget):
                 w.abort()
         self.stop_btn.setEnabled(False)
         self._set_phase_message(self.tr("Interrompendo..."))
-        self.log_output.append_log(
-            self.tr(
-                "[PESQUISA] Interrupção solicitada. "
-                "Consultas ativas estão sendo encerradas."
-            )
+        self._log(
+            "AVISO",
+            self.tr("Interrupção solicitada. Consultas ativas estão sendo encerradas."),
         )
 
     def start_search(self) -> None:
@@ -834,12 +839,13 @@ class AppSearchTab(QWidget):
         self._scan_worker.finished_err.connect(self._on_scan_err)
         self._scan_worker.start()
 
-        self.log_output.append_log(
+        self._log(
+            "INFO",
             self.tr(
-                f"[PESQUISA] Varrendo {cfg.start_ip}–{cfg.end_ip} "
+                f"Varrendo {cfg.start_ip}–{cfg.end_ip} "
                 f"({len(ips)} IP(s), {cfg.scan_threads} threads) "
                 f"e pesquisando '{query}' em cada host encontrado..."
-            )
+            ),
         )
 
     def _on_scan_progress(
@@ -880,11 +886,12 @@ class AppSearchTab(QWidget):
         self._hosts_total = len(names)
         self._scan_ips_done = self._scan_ips_total
         self._refresh_progress_ui()
-        self.log_output.append_log(
+        self._log(
+            "INFO",
             self.tr(
-                f"[PESQUISA] Varredura concluída: {len(names)} host(s) Windows. "
+                f"Varredura concluída: {len(names)} host(s) Windows. "
                 "Consultas em andamento atualizam os resultados."
-            )
+            ),
         )
 
     def _on_scan_aborted(self, generation: int) -> None:
@@ -900,7 +907,7 @@ class AppSearchTab(QWidget):
         self._set_search_busy(False)
         self._set_phase_message(self.tr("Varredura interrompida"))
         self.summary_lbl.setText(self.tr("Varredura de rede interrompida."))
-        self.log_output.append_log(self.tr("[PESQUISA] Varredura de rede interrompida."))
+        self._log("AVISO", self.tr("Varredura de rede interrompida."))
 
     def _on_scan_err(self, generation: int, msg: str) -> None:
         if not self._ui_alive() or int(generation) != int(self._search_generation):
@@ -909,12 +916,12 @@ class AppSearchTab(QWidget):
         if w is not None:
             w.abort()
         if w is not None and w.isRunning():
-            self.log_output.append_log(self.tr(f"[PESQUISA] {msg}"))
+            self._log("ERRO", msg)
             return
         self._accepting_search_results = False
         self._set_search_busy(False)
         self._set_phase_message(self.tr(f"Falha: {msg}"))
-        self.log_output.append_log(self.tr(f"[PESQUISA] {msg}"))
+        self._log("ERRO", msg)
 
     def _begin_streaming_search(self, query: str, generation: int) -> None:
         configured_workers = get_search_max_workers()
@@ -980,12 +987,13 @@ class AppSearchTab(QWidget):
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.start()
 
-        self.log_output.append_log(
+        self._log(
+            "INFO",
             self.tr(
-                f"[PESQUISA] Buscando '{query}' em {len(hosts)} host(s) "
+                f"Buscando '{query}' em {len(hosts)} host(s) "
                 f"({effective_workers} consultas simultâneas, "
                 f"timeout {int(rr_timeout)}s/host)..."
-            )
+            ),
         )
 
     def _on_progress(
@@ -1015,9 +1023,7 @@ class AppSearchTab(QWidget):
                 "internal_error": "erro interno na consulta",
             }
             label = kind_labels.get(error_kind, error_kind)
-            self.log_output.append_log(
-                self.tr(f"[PESQUISA] {host}: {label}")
-            )
+            self._log("FALHA", self.tr(f"{host}: {label}"))
         if self._accepting_search_results:
             self._update_summary(final=False)
 
@@ -1034,7 +1040,7 @@ class AppSearchTab(QWidget):
             return
         self._accepting_search_results = False
         self._set_phase_message(self.tr(f"Falha: {msg}"))
-        self.log_output.append_log(self.tr(f"[PESQUISA] {msg}"))
+        self._log("ERRO", msg)
 
     def _on_hits_found(self, generation: int, hits: list) -> None:
         """Exibe imediatamente as correspondências do host recém-consultado."""
@@ -1058,9 +1064,7 @@ class AppSearchTab(QWidget):
             self._refresh_progress_ui()
             self._set_phase_message(self.tr("Nenhum host Windows encontrado na faixa."))
             self.summary_lbl.setText(self.tr("Nenhum computador encontrado na varredura."))
-            self.log_output.append_log(
-                self.tr("[PESQUISA] Varredura concluída sem hosts Windows.")
-            )
+            self._log("AVISO", self.tr("Varredura concluída sem hosts Windows."))
             QMessageBox.information(
                 self,
                 self.tr("Pesquisa de Aplicativos"),
@@ -1076,12 +1080,13 @@ class AppSearchTab(QWidget):
         self._set_phase_message("")
         self._update_summary(final=True)
         computers = {h.host.casefold() for h in self._hits}
-        self.log_output.append_log(
+        self._log(
+            "OK",
             self.tr(
-                f"[PESQUISA] Concluída: {len(computers)} computador(es) com app, "
+                f"{len(computers)} computador(es) com app, "
                 f"{len(self._hits)} correspondência(s), "
                 f"{failed} host(s) falharam."
-            )
+            ),
         )
 
     def _on_search_aborted(self, generation: int, query: str) -> None:
@@ -1096,13 +1101,14 @@ class AppSearchTab(QWidget):
         self._set_phase_message(self.tr("Pesquisa interrompida"))
         self._update_summary(final=True, interrupted=True)
         computers = {h.host.casefold() for h in self._hits}
-        self.log_output.append_log(
+        self._log(
+            "AVISO",
             self.tr(
-                f"[PESQUISA] Interrompida: {len(computers)} computador(es) com app, "
+                f"Pesquisa interrompida: {len(computers)} computador(es) com app, "
                 f"{len(self._hits)} correspondência(s) até o momento "
                 f"({done} de {total} hosts processados, {failed} falha(s)). "
                 "Consultas ativas foram encerradas."
-            )
+            ),
         )
 
     def _apply_results_filter(self) -> None:
@@ -1320,8 +1326,9 @@ class AppSearchTab(QWidget):
             )
             return
 
-        self.log_output.append_log(
-            self.tr(f"[PESQUISA] hosts.json exportado: {path} ({len(saved)} host(s))")
+        self._log(
+            "EXPORTAR",
+            self.tr(f"hosts.json exportado: {path} ({len(saved)} host(s))"),
         )
 
     def _on_uninstall_clicked(self, hit: SearchHit) -> None:
@@ -1332,14 +1339,15 @@ class AppSearchTab(QWidget):
         try:
             remote_cmd = build_uninstall_remote_cmd(hit.app, extras)
         except ValueError as exc:
-            self.log_output.append_log(self.tr(f"[PESQUISA] {exc}"))
+            self._log("ERRO", str(exc))
             return
 
         if extras and not manual:
-            self.log_output.append_log(
+            self._log(
+                "CATALOGO",
                 self.tr(
-                    f"[PESQUISA] Parametros do catálogo para {hit.app.display_name}: {extras}"
-                )
+                    f"Parametros do catálogo para {hit.app.display_name}: {extras}"
+                ),
             )
 
         self.uninstallRequested.emit(hit.host, remote_cmd, hit.app.display_line)

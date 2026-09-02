@@ -362,20 +362,19 @@ class RemoteUninstallService:
         app_label: str,
         pstools_path: str,
         creds: CredentialContext,
-        log_tag: str = "PSINFO",
         log_fn: Optional[Callable[[str], None]] = None,
     ) -> UninstallLaunchResult:
         log = log_fn or (lambda _m: None)
         host = (host or "").strip().strip("\\")
         remote_cmd = (remote_cmd or "").strip()
         if not host:
-            msg = f"[{log_tag}] Host remoto não informado para desinstalação."
+            msg = "[ERRO] Host remoto não informado para desinstalação."
             log(msg)
             return UninstallLaunchResult(
                 ok=False, display_command="", message=msg, status=OperationStatus.FAILED
             )
         if not remote_cmd:
-            msg = f"[{log_tag}] Comando de desinstalação vazio."
+            msg = "[ERRO] Comando de desinstalação vazio."
             log(msg)
             return UninstallLaunchResult(
                 ok=False, display_command="", message=msg, status=OperationStatus.FAILED
@@ -412,15 +411,15 @@ class RemoteUninstallService:
         )
         display_cmd = redact_command_text(display_cmd, passwords=creds.passwords)
 
-        log(f"[{log_tag}] Desinstalando em {host}: {app_label}")
-        log(f"[{log_tag}] {display_cmd}")
+        log(f"[DESINSTALAR] Desinstalando em {host}: {app_label}")
+        log(f"[COMANDO] {display_cmd}")
         log_operation("uninstall", detail=display_cmd, passwords=creds.passwords)
 
         try:
             # Terminal externo (sem ConPTY): pedido explícito para PsInfo/Pesquisa.
             open_external_console_argv_keep_open(real_argv)
             msg = (
-                f"[{log_tag}] Execução iniciada em terminal externo "
+                "[INFO] Execução iniciada em terminal externo "
                 "(janela permanece aberta); resultado remoto não monitorado."
             )
             log(msg)
@@ -432,7 +431,7 @@ class RemoteUninstallService:
             )
         except OSError as exc:
             safe = redact_command_text(str(exc), passwords=creds.passwords)
-            msg = f"[{log_tag}] Falha ao abrir terminal: {safe}"
+            msg = f"[ERRO] Falha ao abrir terminal: {safe}"
             log(msg)
             return UninstallLaunchResult(
                 ok=False,

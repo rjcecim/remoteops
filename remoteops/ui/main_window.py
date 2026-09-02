@@ -1382,25 +1382,20 @@ class MainWindow(QMainWindow):
         log_fn = None
         if self.hostapps_tab is not None:
             log_fn = self.hostapps_tab.log_output.append_log
-        self._run_remote_uninstall(
-            host, remote_cmd, app_label, log_tag="APPS", log_fn=log_fn
-        )
+        self._run_remote_uninstall(host, remote_cmd, app_label, log_fn=log_fn)
 
     def _on_appsearch_uninstall(self, host: str, remote_cmd: str, app_label: str) -> None:
         """Desinstalação a partir da pesquisa: terminal externo + console da própria aba."""
         log_fn = None
         if self.appsearch_tab is not None:
             log_fn = self.appsearch_tab.log_output.append_log
-        self._run_remote_uninstall(
-            host, remote_cmd, app_label, log_tag="PESQUISA", log_fn=log_fn
-        )
+        self._run_remote_uninstall(host, remote_cmd, app_label, log_fn=log_fn)
 
     def _run_remote_uninstall(
         self,
         host: str,
         remote_cmd: str,
         app_label: str,
-        log_tag: str = "PSINFO",
         log_fn=None,
     ) -> None:
         """Desinstalação remota via serviço (sem senha em arquivos temporários)."""
@@ -1412,7 +1407,6 @@ class MainWindow(QMainWindow):
                 app_label=app_label,
                 pstools_path=get_pstools_dir(),
                 creds=creds,
-                log_tag=log_tag,
                 log_fn=log_fn or self.log_output.append_log,
             )
         finally:
