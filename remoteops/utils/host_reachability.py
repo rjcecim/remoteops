@@ -1,6 +1,9 @@
 """Verificação estruturada de conectividade do host (ICMP + TCP 445).
 
-Sem Qt. Usa PsPing quando disponível; senão ping.exe + socket TCP.
+Sem Qt. Usa PsPing quando disponível. Se um probe do PsPing falhar
+(timeout, inacessível, recusa, erro), tenta ping.exe / socket TCP com a
+mesma classificação — sem marcar verificação limitada. Se o PsPing estiver
+ausente, usa só ping.exe + socket (verificação limitada).
 """
 
 from __future__ import annotations
@@ -255,6 +258,47 @@ def _tcp_from_fallback(host: str, port: int, probe: str) -> PsPingResult:
     )
 
 
+_RETRY_NATIVE_STATES = frozenset(
+    {
+        PsPingState.TIMEOUT,
+        PsPingState.CONNECTIVITY_FAILURE,
+        PsPingState.EXECUTION_ERROR,
+        PsPingState.CONNECTION_REFUSED,
+    }
+)
+
+
+def _can_retry_native(result: PsPingResult) -> bool:
+    return result.state in _RETRY_NATIVE_STATES
+
+
+def _prefer_native_if_ok(original: PsPingResult, native: PsPingResult) -> PsPingResult:
+    if native.ok:
+        return native
+    return original
+
+
+def _native_icmp(
+    host: str, icmp_fallback: Optional[Callable[[str], object]] = None
+) -> PsPingResult:
+    status_fn = icmp_fallback or ping_host_status
+    return _icmp_from_fallback(host, status_fn(host))
+
+
+def _native_tcp(
+    host: str,
+    port: int,
+    tcp_fallback: Optional[Callable[[str, int], str]] = None,
+) -> PsPingResult:
+    if tcp_fallback is not None:
+        probe = tcp_fallback(host, port)
+    else:
+        from remoteops.utils.network_scan import probe_tcp_port
+
+        probe = probe_tcp_port(host, port)
+    return _tcp_from_fallback(host, port, str(probe or "error"))
+
+
 def _classify(icmp: PsPingResult, tcp: Optional[PsPingResult]) -> HostAccessKind:
     if icmp.state == PsPingState.CANCELLED or (
         tcp is not None and tcp.state == PsPingState.CANCELLED
@@ -330,6 +374,20 @@ def probe_host_reachability(
             elif icmp.state == PsPingState.NAME_UNRESOLVED:
                 return _reach(HostAccessKind.UNRESOLVED, icmp=icmp)
             else:
+                if not icmp.ok and _can_retry_native(icmp):
+                    if log:
+                        from remoteops.utils.app_logging import log_operation
+
+                        log_operation(
+                            f"[HOST] {h}: PsPing ICMP falhou — nova tentativa via ping.exe"
+                        )
+                    native_icmp = _native_icmp(h, icmp_fallback)
+                    if _cancelled():
+                        return _reach(HostAccessKind.CANCELLED, icmp=icmp)
+                    icmp = _prefer_native_if_ok(icmp, native_icmp)
+                    if use_cache and icmp.ok:
+                        store_cached_psping(icmp)
+
                 tcp = run_psping(
                     h,
                     mode=PsPingMode.TCP,
@@ -348,6 +406,22 @@ def probe_host_reachability(
                 elif _cancelled() or tcp.state == PsPingState.CANCELLED:
                     return _reach(HostAccessKind.CANCELLED, icmp=icmp, tcp=tcp)
                 else:
+                    if not tcp.ok and _can_retry_native(tcp):
+                        if log:
+                            from remoteops.utils.app_logging import log_operation
+
+                            log_operation(
+                                f"[HOST] {h}: PsPing TCP {port} falhou — "
+                                "nova tentativa via socket"
+                            )
+                        native_tcp = _native_tcp(h, port, tcp_fallback)
+                        if _cancelled():
+                            return _reach(
+                                HostAccessKind.CANCELLED, icmp=icmp, tcp=tcp
+                            )
+                        tcp = _prefer_native_if_ok(tcp, native_tcp)
+                        if use_cache and tcp.ok:
+                            store_cached_psping(tcp)
                     kind = _classify(icmp, tcp)
                     return _reach(kind, icmp=icmp, tcp=tcp)
 
@@ -361,20 +435,12 @@ def probe_host_reachability(
                     f"[HOST] {h}: PsPing ausente em {where} — "
                     "ICMP via ping.exe, TCP 445 via socket"
                 )
-            status_fn = icmp_fallback or ping_host_status
-            icmp_status = status_fn(h)
-            icmp = _icmp_from_fallback(h, icmp_status)
+            icmp = _native_icmp(h, icmp_fallback)
             if _cancelled():
                 return _reach(HostAccessKind.CANCELLED, icmp=icmp, limited=True)
             if icmp.state == PsPingState.NAME_UNRESOLVED:
                 return _reach(HostAccessKind.UNRESOLVED, icmp=icmp, limited=True)
-            if tcp_fallback is not None:
-                probe = tcp_fallback(h, port)
-            else:
-                from remoteops.utils.network_scan import probe_tcp_port
-
-                probe = probe_tcp_port(h, port)
-            tcp = _tcp_from_fallback(h, port, str(probe or "error"))
+            tcp = _native_tcp(h, port, tcp_fallback)
             if _cancelled():
                 return _reach(
                     HostAccessKind.CANCELLED, icmp=icmp, tcp=tcp, limited=True
@@ -414,7 +480,7 @@ def probe_tcp_445(
         )
     present = psping_available(pstools_dir) if psping_present is None else bool(psping_present)
     if present:
-        return run_psping(
+        result = run_psping(
             h,
             mode=PsPingMode.TCP,
             port=PSEXEC_TCP_PORT,
@@ -426,13 +492,29 @@ def probe_tcp_445(
             log=log,
             runner=runner,
         )
-    if tcp_fallback is not None:
-        probe = tcp_fallback(h, PSEXEC_TCP_PORT)
-    else:
-        from remoteops.utils.network_scan import probe_tcp_port
+        if result.state == PsPingState.CANCELLED or result.cancelled:
+            return result
+        if result.ok or result.state == PsPingState.NAME_UNRESOLVED:
+            return result
+        if result.state != PsPingState.TOOL_MISSING and not _can_retry_native(result):
+            return result
+        if log and result.state != PsPingState.TOOL_MISSING:
+            from remoteops.utils.app_logging import log_operation
 
-        probe = probe_tcp_port(h, PSEXEC_TCP_PORT)
-    result = _tcp_from_fallback(h, PSEXEC_TCP_PORT, str(probe or "error"))
+            log_operation(
+                f"[HOST] {h}: PsPing TCP {PSEXEC_TCP_PORT} falhou — "
+                "nova tentativa via socket"
+            )
+        native = _native_tcp(h, PSEXEC_TCP_PORT, tcp_fallback)
+        merged = (
+            native
+            if result.state == PsPingState.TOOL_MISSING
+            else _prefer_native_if_ok(result, native)
+        )
+        if use_cache and (merged.ok or result.state == PsPingState.TOOL_MISSING):
+            store_cached_psping(merged)
+        return merged
+    result = _native_tcp(h, PSEXEC_TCP_PORT, tcp_fallback)
     if use_cache:
         store_cached_psping(result)
     return result
