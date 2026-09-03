@@ -1,5 +1,4 @@
 import re
-from html import escape
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QKeyEvent, QResizeEvent, QTextCursor
@@ -14,34 +13,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from remoteops.ui.style import (
-    COLOR_ACCENT,
-    COLOR_TEXT_SECONDARY,
-    FONT_MONO,
-    HEADER_BTN_SIZE,
-    INPUT_HEIGHT,
-    SIZE_MONO,
-    SIZE_UI_SMALL,
-)
+from remoteops.ui.style import FONT_MONO, HEADER_BTN_SIZE, INPUT_HEIGHT, SIZE_MONO, SIZE_UI_SMALL
 from remoteops.ui.widgets.card import CardWidget
-
-# Prefixo [CATEGORIA] no início da linha — INFO/OK/AVISO/FALHA/ERRO e afins.
-_LOG_TAG_RE = re.compile(
-    r"^\[([A-ZÁÉÍÓÚÂÊÔÃÕÜÇ0-9_+\-]{2,20})\](\s*)(.*)$",
-    re.DOTALL,
-)
-_LOG_TAG_COLORS = {
-    "INFO": COLOR_TEXT_SECONDARY,
-    "OK": "#0B6A0B",
-    "AVISO": "#9A5B00",
-    "FALHA": "#c42b1c",
-    "ERRO": "#c42b1c",
-    "DESINSTALAR": "#c42b1c",
-    "CATALOGO": COLOR_TEXT_SECONDARY,
-    "CATÁLOGO": COLOR_TEXT_SECONDARY,
-    "COMANDO": COLOR_TEXT_SECONDARY,
-    "EXPORTAR": COLOR_ACCENT,
-}
 
 _SESSION_LABELS = {
     "idle": "Desconectado",
@@ -51,23 +24,6 @@ _SESSION_LABELS = {
     "exited": "Encerrado",
     "error": "Erro",
 }
-
-
-def _format_tagged_html(text: str) -> str | None:
-    """Coloriza o prefixo [CATEGORIA] no início da linha; o corpo permanece texto simples."""
-    match = _LOG_TAG_RE.match(text or "")
-    if not match:
-        return None
-    tag, gap, body = match.group(1), match.group(2), match.group(3)
-    color = _LOG_TAG_COLORS.get(tag.upper(), COLOR_TEXT_SECONDARY)
-    if not gap and body:
-        gap = " "
-    return (
-        f'<span style="font-family:{FONT_MONO},monospace;font-size:{SIZE_MONO}pt;">'
-        f'<span style="color:{color};font-weight:600;">[{escape(tag)}]</span>'
-        f"{escape(gap)}{escape(body)}"
-        f"</span>"
-    )
 
 
 class _InteractiveInput(QLineEdit):
@@ -339,8 +295,7 @@ class LogOutputWidget(CardWidget):
             self.text_edit.setTextCursor(cursor)
             self.text_edit.ensureCursorVisible()
             return
-        tagged = _format_tagged_html(text)
-        self.text_edit.append(tagged if tagged is not None else text)
+        self.text_edit.append(text)
         self.text_edit.moveCursor(QTextCursor.MoveOperation.End)
 
     def clear_log(self):
