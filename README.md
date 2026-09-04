@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/RemoteOps-1.8.0%20(Build%2077)-0F2744?style=for-the-badge" alt="RemoteOps 1.8.0 (Build 78)" />
+  <img src="https://img.shields.io/badge/RemoteOps-1.8.0%20(Build%2078)-0F2744?style=for-the-badge" alt="RemoteOps 1.8.0 (Build 78)" />
 </p>
 
 <p align="center">
