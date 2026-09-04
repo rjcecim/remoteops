@@ -1,17 +1,20 @@
 # Changelog
 
 Este arquivo registra as melhorias entregues em cada commit. As versões seguem
-o formato [SemVer](https://semver.org/): `MAJOR.MINOR.PATCH`.
+o formato [SemVer](https://semver.org/): `MAJOR.MINOR.PATCH`. A identidade
+exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
 ## [Unreleased]
+
+Use esta seção para registrar a próxima melhoria antes de criar o commit.
+
+## [2.0.0] (Build 74) - 2026-08-10 a 2026-09-04
+
+Identidade: **RemoteOps 2.0.0 (Build 74)**.
 
 - Add a changelog to track improvements by commit.
 - Document the SemVer-based application versioning workflow.
 - Display the application version and build in the window title.
-
-Use esta seção para registrar a próxima melhoria antes de criar o commit.
-
-## [2.0.0] - 2026-08-10 a 2026-09-04
 
 - 2026-09-04 · `0faa6c1` · Add remote power controls
 - 2026-09-04 · `e020d25` · Add remote printer management

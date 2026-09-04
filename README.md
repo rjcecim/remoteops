@@ -1,68 +1,116 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.0-0063C4?style=flat-square" alt="Version" />
-  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
-  <img src="https://img.shields.io/badge/PyQt6-GUI-41CD52?style=flat-square&logo=qt&logoColor=white" alt="PyQt6" />
-  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows" />
+  <img src="assets/app_icon.png" alt="RemoteOps" width="128" />
 </p>
 
-# RemoteOps 2.0.0
-
-> Operações remotas no Windows via **PsExec**: instaladores, scripts, WinGet, inventário e desinstalação — interface Fluent, preview em tempo real e empacotamento portátil.
+<h1 align="center">RemoteOps 2.0.0 (Build 74)</h1>
 
 <p align="center">
-  <img src="assets/app_icon.png" alt="RemoteOps" width="96" />
+  <strong>Operações remotas no Windows via PsExec</strong><br />
+  Instaladores, scripts, WinGet, inventário e desinstalação — interface Fluent, preview em tempo real e empacotamento portátil.
 </p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/RemoteOps-2.0.0%20(Build%2074)-0F2744?style=for-the-badge" alt="RemoteOps 2.0.0 (Build 74)" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+" />
+  <img src="https://img.shields.io/badge/PyQt6-Fluent%20UI-41CD52?style=flat-square&logo=qt&logoColor=white" alt="PyQt6" />
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?style=flat-square&logo=windows&logoColor=white" alt="Windows 10 | 11" />
+  <img src="https://img.shields.io/github/v/release/rjcecim/RemoteOps?style=flat-square&label=Release&color=0063C4" alt="Release" />
+  <img src="https://img.shields.io/badge/license-privado-5C6166?style=flat-square" alt="Licença" />
+</p>
+
+<p align="center">
+  <a href="#instalação">Instalação</a> ·
+  <a href="#uso-rápido">Uso rápido</a> ·
+  <a href="#capacidades">Capacidades</a> ·
+  <a href="#segurança-de-credenciais">Segurança</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+---
 
 O comando executado é o que está selecionado na aba **PsExec**. A senha nunca aparece no preview nem nos logs (`-p ********`).
 
-Versão: **`2.0.0`** · Build **`74`** (`remoteops.core.version`).
+Identidade do produto: **`RemoteOps 2.0.0 (Build 74)`** — a mesma string da janela, definida em `remoteops.core.version` (`__version__` + `__build__`) e exposta em `remoteops.ui.branding.APP_DISPLAY_NAME`.
 
 ---
 
-## Índice
+## Por que RemoteOps
 
-- [Visão geral](#visão-geral)
-- [Abas](#abas)
-- [Requisitos](#requisitos)
-- [Instalação](#instalação)
-- [Uso rápido](#uso-rápido)
-- [Arquivo EXE](#arquivo-exe)
-- [Segurança de credenciais](#segurança-de-credenciais)
-- [hosts.json e faixa de IP](#hostsjson-e-faixa-de-ip)
-- [Logging](#logging)
-- [Testes](#testes)
-- [Build](#build)
-- [Changelog](CHANGELOG.md)
-- [Estrutura do projeto](#estrutura-do-projeto)
+|  |  |
+|--|--|
+| **Uma superfície, várias operações** | PsExec, MSI, PowerShell, CMD, Robocopy, WinGet, inventário, impressoras, sessões, contas locais e energia no mesmo workspace Fluent. |
+| **O que você vê é o que roda** | Preview em tempo real a partir da UI. Sem flags ocultas de instalador: lote e execução única leem o estado atual do PsExec. |
+| **Portátil de verdade** | `settings.ini`, `hosts.json` e `logs/` ao lado do exe (ou na raiz do repo em desenvolvimento). |
+| **Credenciais com redação** | Senha injetada só na execução, mascarada no preview, nos logs e nos arquivos. |
+
+```mermaid
+flowchart LR
+  A[Fluent UI / PyQt6] --> B[CommandBuilder]
+  B --> C[Executor + ConPTY]
+  C --> D[PsExec e PSTools]
+  D --> E[Host remoto Windows]
+  A --> F[Preview e console]
+  F --> C
+```
 
 ---
 
-## Visão geral
+## Capacidades
 
-| Recurso | Descrição |
-|--------|-----------|
-| **Arquivos** | `.exe`, `.msi`, `.ps1`, `.bat` — arquivo ou pasta no seletor do cabeçalho |
-| **Abas dinâmicas** | MSI, PowerShell, CMD, Robocopy e Instalação em Lote só aparecem quando o tipo de arquivo pede |
-| **PsExec** | Fonte de verdade das flags (`-s`, `-c`, `-f`, `-accepteula`…). O preview e a execução leem a UI |
-| **Host** | Status ICMP + TCP 445; **Executar** só fica disponível com a porta 445 acessível |
-| **Cópia** | Robocopy para `.msi`/`.ps1`/`.bat`/pasta; `.exe` usa a cópia do próprio PsExec (`-c`) |
-| **Lote** | Instala o EXE selecionado em vários hosts (faixa de IP ou `hosts.json`) |
-| **WinGet** | Listar, buscar, instalar, atualizar e desinstalar pacotes no host remoto |
-| **Inventário** | PsInfo (sistema, hotfix, discos) e aplicativos via Remote Registry |
-| **Mensagem** | Aviso interativo na sessão do usuário remoto |
-| **Impressoras** | Catálogo do servidor de impressão e instalação/conexão no host |
-| **Pesquisa** | Aplicativos em vários hosts, com desinstalação quando houver `UninstallString` |
-| **RustDesk** | Coleta o ID no remoto e abre `rustdesk.exe --connect <ID>` localmente |
-| **Sessões e Arquivos** | Usuários conectados via PsLoggedOn, arquivos SMB via PsFile e pesquisa de handles locais via Handle executado pelo PsExec |
-| **Contas Locais** | Listagem de contas locais remotas e alteração de senha via PsPasswd (somente contas locais) |
-| **UI** | Fluent / PyQt6, tooltips em card, tabelas em uma linha com elipse |
-| **Portátil** | `settings.ini`, `hosts.json` e `logs/` ao lado do exe (ou na raiz do repo em dev) |
+<table>
+<tr>
+<td width="50%">
+
+**Entrega de software**
+- `.exe`, `.msi`, `.ps1`, `.bat` ou pasta
+- Instalação em lote por faixa de IP ou `hosts.json`
+- WinGet remoto: listar, buscar, instalar, atualizar, desinstalar
+- Pesquisa multi-host com desinstalação via `UninstallString`
+
+</td>
+<td width="50%">
+
+**Operação do host**
+- Inventário: PsInfo + aplicativos (Remote Registry)
+- Processos, serviços e energia (PsList / PsKill / PsService / PsShutdown)
+- Sessões e arquivos: PsLoggedOn, PsFile, Handle via PsExec
+- Contas locais e rotação de senha com PsPasswd
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Rede e diagnóstico**
+- Status ICMP + TCP 445 — **Executar** só com a 445 acessível
+- Conectividade: ICMP Ping e TCP Ping (PsPing)
+- Robocopy para `.msi` / `.ps1` / `.bat` / pasta; `.exe` usa `-c` do PsExec
+- Impressoras: catálogo do servidor e instalação/conexão no host
+
+</td>
+<td width="50%">
+
+**Experiência**
+- Interface Fluent / PyQt6, tooltips em card
+- Abas dinâmicas: só aparecem quando o tipo de arquivo pede
+- Mensagem interativa na sessão do usuário remoto
+- RustDesk: coleta o ID no remoto e abre `rustdesk.exe --connect <ID>`
+
+</td>
+</tr>
+</table>
 
 ---
 
 ## Abas
 
-Aba **PsExec** está sempre visível. As demais abrem sob demanda.
+A aba **PsExec** está sempre visível. As demais abrem sob demanda.
+
+<details>
+<summary><strong>Quando cada aba aparece</strong></summary>
 
 | Aba | Quando aparece | Função |
 |-----|----------------|--------|
@@ -86,6 +134,8 @@ Aba **PsExec** está sempre visível. As demais abrem sob demanda.
 | **Configurações** | Ícone de engrenagem no cabeçalho | PSTools, Handle, RustDesk, logs, Remote Registry, faixa de IP, servidor de impressão |
 | **Conectividade** | Botão Diagnosticar na linha de Status do PsExec | ICMP Ping e TCP Ping (PsPing); não duplica o console compartilhado |
 
+</details>
+
 ---
 
 ## Requisitos
@@ -101,11 +151,13 @@ Aba **PsExec** está sempre visível. As demais abrem sob demanda.
 | **RustDesk** | Opcional, no host e na máquina local |
 | **Rede** | Ping, SMB (`C$`) e Remote Registry conforme o fluxo |
 
+Os binários Sysinternals **não** são empacotados no `RemoteOps.exe`.
+
 ---
 
 ## Instalação
 
-```bash
+```powershell
 cd RemoteOps
 python -m venv .venv
 .venv\Scripts\activate
@@ -116,7 +168,7 @@ pip install -e ".[build]"
 
 Runtime mínimo:
 
-```bash
+```powershell
 pip install PyQt6
 ```
 
@@ -124,7 +176,7 @@ pip install PyQt6
 
 ## Uso rápido
 
-```bash
+```powershell
 python main.py
 # ou
 python -m remoteops
@@ -173,7 +225,6 @@ A aba **Contas Locais** (botão na aba PsExec) lista somente contas com `LocalAc
 - Preview/logs mascaram **as duas senhas** (administrativa após `-p` e nova senha como último argumento).
 - A alteração de senha é feita **sempre no host atual** da aba PsExec.
 - Para rotação recorrente com senhas diferentes por dispositivo, prefira **Windows LAPS** (não integrado nesta versão).
-- Os binários Sysinternals **não** são empacotados no `RemoteOps.exe`.
 
 ### Limitações
 
@@ -205,14 +256,22 @@ Preferência **Salvar log em arquivo** em Configurações:
 
 ---
 
+## Testes
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+---
+
 ## Build
 
-```bash
+```powershell
 pip install -e ".[build]"
 python -m PyInstaller --noconfirm --clean RemoteOps.spec
 ```
 
-Gera `dist/RemoteOps.exe` (sem console) e copia `dist/config/` (`ApplicationCatalog.json`). Assets e templates WinGet entram no exe. **Não** empacota `hosts.json`, `settings.ini`, credenciais nem logs.
+Ou `build.bat` na raiz do repositório. Gera `dist/RemoteOps.exe` (sem console) e copia `dist/config/` (`ApplicationCatalog.json`). Assets e templates WinGet entram no exe. **Não** empacota `hosts.json`, `settings.ini`, credenciais nem logs.
 
 ---
 
@@ -224,10 +283,10 @@ RemoteOps/
 ├── remoteops/
 │   ├── bootstrap.py             # QApplication, Fluent, MainWindow
 │   ├── paths.py                 # caminhos portáteis (dev / exe)
-│   ├── core/                    # builder, executor, ConPTY, win_cmd, process_runner, console_codec
+│   ├── core/                    # builder, executor, ConPTY, versão
 │   ├── services/                # execução, lote, impressoras, messaging, RustDesk
 │   ├── ui/                      # janela, abas, widgets, estilo Fluent
-│   ├── utils/                   # settings, hosts, catálogo, rede, redação, sessões
+│   ├── utils/                   # settings, hosts, catálogo, rede, redação
 │   └── winget/                  # backend WinGet remoto
 ├── assets/
 ├── config/
@@ -235,3 +294,9 @@ RemoteOps/
 ├── RemoteOps.spec
 └── pyproject.toml
 ```
+
+---
+
+<p align="center">
+  <sub>RemoteOps 2.0.0 (Build 74) · Windows 10 / 11 · PyQt6 Fluent</sub>
+</p>
