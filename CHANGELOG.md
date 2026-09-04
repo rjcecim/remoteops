@@ -12,18 +12,11 @@ Use esta seção para registrar a próxima melhoria antes de criar o commit.
 
 Identidade: **RemoteOps 1.8.0 (Build 77)**.
 
-- Fix the packaged `.exe` still listing only Guest: read remote JSON from a host temp file (`ADMIN$`/`C$`) with a Base64 stdout fallback.
-- Prefer `Get-LocalUser` when enumerating local accounts.
-
-## [1.8.0] (Build 76) - 2026-09-04
-
-Identidade: **RemoteOps 1.8.0 (Build 76)**.
-
-- Return every local account from the packaged `.exe`, not only Guest.
-- Serialize the remote query as a single JSON array (`ConvertTo-Json -InputObject`) and merge concatenated JSON objects.
+- Fix local-account listing in the packaged `.exe` (not only Guest): `Get-LocalUser`, `ConvertTo-Json -InputObject`, JSON via `ADMIN$`/`C$` and a Base64 stdout fallback.
 - Emit only `RemoteOps-<versão>-Build<n>.exe` from the PyInstaller build (do not create `dist/RemoteOps.exe`).
 - Detect the versioned exe in `build.bat` without a nested `python -c` (broken under `cmd.exe`).
 
+- 2026-09-04 · `b783f8d` · Fix packaged exe still returning only the Guest local account.
 - 2026-09-04 · `e4220a3` · Emit only the versioned executable from the PyInstaller build.
 - 2026-09-04 · `00bc8a0` · Document versioned PyInstaller output in the changelog.
 - 2026-09-04 · `437cc4e` · Fix versioned exe detection in `build.bat` under `cmd.exe`.
