@@ -50,7 +50,7 @@ if errorlevel 1 (
 if exist "dist\RemoteOps.exe" del /f /q "dist\RemoteOps.exe"
 
 set "OUT_EXE="
-for /f "usebackq delims=" %%I in (`"%PYTHON%" -c "from remoteops.core.version import __version__, __build__; print(f'dist/RemoteOps-{__version__}-Build{__build__}.exe')"`) do set "OUT_EXE=%%I"
+for %%F in ("dist\RemoteOps-*-Build*.exe") do set "OUT_EXE=%%F"
 
 if not defined OUT_EXE (
     echo.
