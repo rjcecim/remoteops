@@ -188,7 +188,9 @@ class PrinterService:
         Sem servidor nas configurações, devolve erro e não consulta.
         """
         try:
-            host = print_server_host(server) or require_print_server()
+            host = print_server_host(server) or print_server_host(
+                require_print_server()
+            )
         except ValueError as extra:
             return [], str(extra)
         limit = get_print_list_timeout() if timeout_s is None else int(timeout_s)

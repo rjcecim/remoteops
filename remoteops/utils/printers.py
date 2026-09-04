@@ -73,12 +73,12 @@ class NetworkPrinter:
 
 
 def print_server_host(server: str) -> str:
-    """Host sem barras; vazio se não houver servidor."""
+    """Hostname sem prefixo UNC; usar no ponto de consumo (não na persistência)."""
     return (server or "").strip().strip("\\")
 
 
 def print_server_unc(server: str) -> str:
-    """Monta ``\\\\servidor``. ``server`` vazio → ``ValueError``."""
+    """Monta ``\\\\servidor``. Aceita host ou UNC; vazio → ``ValueError``."""
     name = print_server_host(server)
     if not name:
         raise ValueError("Servidor de impressão vazio.")

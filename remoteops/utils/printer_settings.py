@@ -28,9 +28,11 @@ _runtime_timeout: Optional[int] = None
 
 
 def parse_print_server_input(name: str) -> str:
-    """Normaliza o host do servidor de impressão.
+    """Normaliza o servidor de impressão para UNC ``\\\\host``.
 
-    Vazio permanece vazio. ``\\\\servidor\\\\share`` usa só o host.
+    Aceita ``printserver``, ``\\\\printserver`` ou caminho com share;
+    o resultado persistido/exibido é sempre ``\\\\host`` (sem duplicar barras).
+    Vazio permanece vazio — nunca só ``\\\\``.
     Inválido e não vazio → ``ValueError``.
     """
     raw = normalize_host(name)
@@ -39,13 +41,15 @@ def parse_print_server_input(name: str) -> str:
     raw = raw.replace("/", "\\")
     if "\\" in raw:
         raw = raw.split("\\", 1)[0].strip()
+    if not raw:
+        return ""
     if not is_valid_host(raw):
         raise ValueError("Servidor de impressão inválido.")
-    return raw
+    return print_server_unc(raw)
 
 
 def normalize_print_server(name: str) -> str:
-    """Host persistível; vazio e inválidos viram string vazia."""
+    """UNC persistível (``\\\\host``); vazio e inválidos viram string vazia."""
     try:
         return parse_print_server_input(name)
     except ValueError:
@@ -70,7 +74,7 @@ def normalize_print_list_timeout(value: Any) -> int:
 
 
 def get_print_server() -> str:
-    """Servidor de impressão em uso (persistido; vazio até o usuário informar)."""
+    """Servidor de impressão em uso (UNC ``\\\\host``; vazio até informar)."""
     global _runtime_server
     if _runtime_server is None:
         raw = load_setting(KEY_PRINT_SERVER, DEFAULT_PRINT_SERVER)
@@ -79,7 +83,7 @@ def get_print_server() -> str:
 
 
 def set_print_server(name: str) -> str:
-    """Define e persiste o servidor de impressão (snapshot completo)."""
+    """Define e persiste o servidor de impressão em UNC (snapshot completo)."""
     global _runtime_server
     normalized = parse_print_server_input(name)
     save_portable_settings({KEY_PRINT_SERVER: normalized})
@@ -92,7 +96,7 @@ def is_print_server_configured() -> bool:
 
 
 def require_print_server() -> str:
-    """Host persistido; vazio → ``ValueError`` com mensagem para a UI."""
+    """UNC persistido (``\\\\host``); vazio → ``ValueError`` com mensagem para a UI."""
     server = get_print_server()
     if not server:
         raise ValueError(PRINT_SERVER_REQUIRED_MSG)

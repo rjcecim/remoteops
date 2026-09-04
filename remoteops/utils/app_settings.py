@@ -128,6 +128,45 @@ def _to_ini_value(value: Any) -> Any:
     return value
 
 
+def _rewrite_print_server_ini_literal(path: Path, unc_value: str) -> None:
+    """Reescreve ``printers/server`` com UNC legível (``\\\\host``), sem escape do Qt.
+
+    O QSettings IniFormat grava cada ``\\`` como ``\\\\`` no arquivo. Para o
+    servidor de impressão queremos o texto ``\\\\orfeu`` (duas barras) no INI.
+    A leitura via QSettings ainda funciona: ``\\\\host`` no arquivo vira
+    ``\\host`` e ``normalize_print_server`` restaura o UNC completo.
+    """
+    if not path.is_file():
+        return
+    raw = path.read_text(encoding="utf-8")
+    lines = raw.splitlines(keepends=True)
+    if not lines and not raw:
+        return
+    in_printers = False
+    changed = False
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_printers = stripped.casefold() == "[printers]"
+            out.append(line)
+            continue
+        if in_printers and stripped.casefold().startswith("server="):
+            if line.endswith("\r\n"):
+                nl = "\r\n"
+            elif line.endswith("\n"):
+                nl = "\n"
+            else:
+                nl = ""
+            out.append(f"server={unc_value}{nl}")
+            changed = True
+            continue
+        out.append(line)
+    if not changed:
+        return
+    path.write_text("".join(out), encoding="utf-8")
+
+
 def save_portable_settings(updates: Optional[Dict[str, Any]] = None) -> None:
     """
     Grava o snapshot completo em settings.ini.
@@ -140,13 +179,17 @@ def save_portable_settings(updates: Optional[Dict[str, Any]] = None) -> None:
         values.update(updates)
 
     try:
-        get_settings_path().parent.mkdir(parents=True, exist_ok=True)
+        path = get_settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
         settings = create_settings()
         settings.clear()
         for key, value in values.items():
             settings.setValue(key, _to_ini_value(value))
         settings.sync()
         _check_sync_status(settings)
+        # QSettings escapa barras; o servidor de impressão deve aparecer como \\host.
+        print_server = str(values.get(KEY_PRINT_SERVER, "") or "")
+        _rewrite_print_server_ini_literal(path, print_server)
     except SettingsWriteError:
         raise
     except Exception as exc:
