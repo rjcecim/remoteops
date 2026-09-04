@@ -117,7 +117,7 @@ def run_remote_powershell(
 
 
 def parse_json_output(text: str) -> Tuple[Optional[Any], str]:
-    """Tenta parsear JSON; tolera BOM, NULs (UTF-16 mal decodificado) e lixo ao redor."""
+    """Tenta parsear JSON; tolera BOM, NULs, lixo e vários objetos concatenados."""
     raw = (text or "").lstrip("\ufeff").strip()
     if not raw:
         return None, "Resposta vazia."
@@ -129,16 +129,39 @@ def parse_json_output(text: str) -> Tuple[Optional[Any], str]:
         return json.loads(raw), ""
     except json.JSONDecodeError:
         pass
+    values = _decode_all_json_values(raw)
+    if not values:
+        return None, _non_json_error(raw)
+    if len(values) == 1:
+        return values[0], ""
+    merged: List[Any] = []
+    for value in values:
+        if isinstance(value, list):
+            merged.extend(value)
+        else:
+            merged.append(value)
+    return merged, ""
+
+
+def _decode_all_json_values(raw: str) -> List[Any]:
+    """Extrai todos os valores JSON raiz (array, objeto ou vários objetos seguidos)."""
     decoder = json.JSONDecoder()
-    for i, ch in enumerate(raw):
-        if ch not in "{[":
-            continue
+    values: List[Any] = []
+    idx = 0
+    n = len(raw)
+    while idx < n:
+        while idx < n and raw[idx] not in "{[":
+            idx += 1
+        if idx >= n:
+            break
         try:
-            obj, _end = decoder.raw_decode(raw[i:])
-            return obj, ""
+            obj, end = decoder.raw_decode(raw[idx:])
         except json.JSONDecodeError:
+            idx += 1
             continue
-    return None, _non_json_error(raw)
+        values.append(obj)
+        idx += max(end, 1)
+    return values
 
 
 def _non_json_error(raw: str) -> str:

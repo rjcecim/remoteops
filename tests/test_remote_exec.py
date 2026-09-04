@@ -12,7 +12,10 @@ from remoteops.utils.inventory.remote_exec import (
     parse_json_output,
     wrap_remote_ps_script,
 )
-from remoteops.utils.local_accounts import LOCAL_ACCOUNTS_QUERY_SCRIPT
+from remoteops.utils.local_accounts import (
+    LOCAL_ACCOUNTS_QUERY_SCRIPT,
+    parse_local_accounts_payload,
+)
 
 
 class ParseJsonOutputTests(unittest.TestCase):
@@ -37,6 +40,30 @@ class ParseJsonOutputTests(unittest.TestCase):
         self.assertIsNone(data)
         self.assertIn("Resposta não é JSON válido", err)
         self.assertIn("handle is invalid", err.lower())
+
+    def test_concatenated_root_objects_are_merged(self) -> None:
+        raw = '{"Name":"Convidado"}{"Name":"tce_admin"}{"Name":"DefaultAccount"}'
+        data, err = parse_json_output(raw)
+        self.assertEqual(err, "")
+        self.assertEqual(
+            [row["Name"] for row in data],
+            ["Convidado", "tce_admin", "DefaultAccount"],
+        )
+
+
+class LocalAccountsPayloadTests(unittest.TestCase):
+    def test_numeric_keys_from_powershell_hashtable(self) -> None:
+        data = {
+            "0": {"Name": "Convidado", "SID": "S-1-5-21-1-2-3-501", "Domain": "ETSETIN-CAU11"},
+            "1": {"Name": "tce_admin", "SID": "S-1-5-21-1-2-3-500", "Domain": "ETSETIN-CAU11"},
+        }
+        accounts, err = parse_local_accounts_payload(data, host="ETSETIN-CAU11")
+        self.assertEqual(err, "")
+        self.assertEqual([a.name for a in accounts], ["Convidado", "tce_admin"])
+
+    def test_script_uses_inputobject(self) -> None:
+        self.assertIn("ConvertTo-Json -InputObject", LOCAL_ACCOUNTS_QUERY_SCRIPT)
+        self.assertIn("[Console]::Out.Flush()", LOCAL_ACCOUNTS_QUERY_SCRIPT)
 
 
 class WrapAndArgvTests(unittest.TestCase):

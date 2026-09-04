@@ -19,14 +19,14 @@ try {
   $items = @(Get-CimInstance Win32_UserAccount -Filter 'LocalAccount=True' |
     Select-Object Name, FullName, Domain, SID, Disabled, Lockout,
       PasswordChangeable, PasswordExpires, PasswordRequired, Status)
-  if ($null -eq $items -or $items.Count -eq 0) {
-    $json = '[]'
-  } elseif ($items.Count -eq 1) {
-    $json = @($items[0]) | ConvertTo-Json -Compress -Depth 3
-  } else {
-    $json = $items | ConvertTo-Json -Compress -Depth 3
+  # -InputObject evita o PS 5.1 emitir um JSON por conta (Write pegava só a primeira).
+  $json = [string](ConvertTo-Json -InputObject @($items) -Compress -Depth 4)
+  if ([string]::IsNullOrWhiteSpace($json)) { $json = '[]' }
+  elseif (@($items).Count -le 1 -and $json.TrimStart().StartsWith('{')) {
+    $json = '[' + $json + ']'
   }
-  [Console]::Out.Write($json)
+  [Console]::Out.WriteLine($json)
+  [Console]::Out.Flush()
 } catch {
   Write-Error $_.Exception.Message
   exit 1
@@ -141,10 +141,15 @@ def _coerce_bool(value: Any) -> Optional[bool]:
 def _normalize_json_list(data: Any) -> List[dict]:
     if data is None:
         return []
-    if isinstance(data, dict):
-        return [data]
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        if data and all(str(key).isdigit() for key in data.keys()):
+            return [item for item in data.values() if isinstance(item, dict)]
+        nested = data.get("value")
+        if isinstance(nested, list):
+            return [item for item in nested if isinstance(item, dict)]
+        return [data]
     return []
 
 

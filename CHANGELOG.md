@@ -8,6 +8,13 @@ exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
 Use esta seção para registrar a próxima melhoria antes de criar o commit.
 
+## [2.0.2] (Build 76) - 2026-09-04
+
+Identidade: **RemoteOps 2.0.2 (Build 76)**.
+
+- Return every local account from the packaged `.exe`, not only Guest.
+- Serialize the remote query as a single JSON array (`ConvertTo-Json -InputObject`) and merge concatenated JSON objects.
+
 ## [2.0.1] (Build 75) - 2026-09-04
 
 Identidade: **RemoteOps 2.0.1 (Build 75)**.
