@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -60,9 +61,13 @@ from remoteops.ui.style import (
     COLOR_SURFACE_MUTED,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
+    COLOR_TEXT_SECONDARY,
     HEADER_BTN_SIZE,
     RADIUS_MEDIUM,
     SIZE_UI_SMALL,
+    SPACE_MD,
+    SPACE_SM,
+    SPACE_XS,
 )
 from remoteops.ui.widgets.card import (
     CardWidget,
@@ -74,12 +79,95 @@ from remoteops.ui.widgets.card import (
 from remoteops.ui.widgets.combobox import FluentComboBox
 from remoteops.ui.widgets.log import LogOutputWidget
 from remoteops.ui.widgets.spinbox import StepSpinBox
-from remoteops.ui.widgets.status_dot import STATUS_COLORS
 from remoteops.ui.widgets.status_dot import StatusDot
 from remoteops.utils.app_logging import log_operation
+from remoteops.utils.installed_printers import session_account
 from remoteops.utils.ping import is_valid_host, normalize_host
+from remoteops.utils.printers import active_sessions
 from remoteops.utils.pstools import get_pstools_dir
 from remoteops.utils.sessions import RemoteSession, list_remote_sessions
+
+_EMPTY_FACT = "—"
+_CAPTION_QSS = f"""
+QLabel#messageFactCaption {{
+    color: {COLOR_TEXT_SECONDARY};
+    font-size: {SIZE_UI_SMALL}pt;
+    background: transparent;
+    border: none;
+}}
+"""
+
+
+def _caption_label(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setObjectName("messageFactCaption")
+    lbl.setStyleSheet(_CAPTION_QSS)
+    return lbl
+
+
+def _value_label() -> QLabel:
+    lbl = QLabel(_EMPTY_FACT)
+    lbl.setObjectName("messageFactValue")
+    lbl.setWordWrap(True)
+    lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+    lbl.setMinimumHeight(lbl.fontMetrics().height())
+    return lbl
+
+
+def _set_fact_value(label: QLabel, text: str, *, muted: bool | None = None) -> None:
+    value = (text or "").strip() or _EMPTY_FACT
+    label.setText(value)
+    label.setToolTip(value if value != _EMPTY_FACT else "")
+    if muted is None:
+        muted = value == _EMPTY_FACT
+    label.setStyleSheet(
+        f"color: {COLOR_TEXT_MUTED if muted else COLOR_TEXT}; background: transparent;"
+    )
+
+
+def _fact_column(caption: str) -> tuple[QWidget, QLabel]:
+    cell = QWidget()
+    cell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    lay = QVBoxLayout(cell)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(2)
+    lay.addWidget(_caption_label(caption), 0)
+    value = _value_label()
+    lay.addWidget(value, 0)
+    return cell, value
+
+
+def _status_fact(caption: str) -> tuple[QWidget, StatusDot, QLabel]:
+    cell = QWidget()
+    cell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    lay = QVBoxLayout(cell)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(2)
+    lay.addWidget(_caption_label(caption), 0)
+    row = QWidget()
+    row_lay = QHBoxLayout(row)
+    row_lay.setContentsMargins(0, 0, 0, 0)
+    row_lay.setSpacing(SPACE_XS)
+    dot = StatusDot(diameter=8)
+    value = _value_label()
+    row_lay.addWidget(dot, 0, Qt.AlignmentFlag.AlignTop)
+    row_lay.addWidget(value, 1)
+    lay.addWidget(row, 0)
+    return cell, dot, value
+
+
+def _column_grid(card: CardWidget, columns: int) -> QGridLayout:
+    grid = QGridLayout()
+    grid.setContentsMargins(0, 2, 0, 2)
+    grid.setHorizontalSpacing(SPACE_MD + 4)
+    grid.setVerticalSpacing(SPACE_SM)
+    for col in range(columns):
+        grid.setColumnStretch(col, 1)
+        grid.setColumnMinimumWidth(col, 120)
+    card.content_layout.addLayout(grid)
+    return grid
 
 
 class _SessionListWorker(QThread):
@@ -150,59 +238,43 @@ class MessageTab(QWidget):
         if self._host_source is not None:
             self._host_source.textChanged.connect(self.sync_from_host)
         self.sync_from_host()
+        self.refresh_sessions()
         self._refresh_actions()
 
     def _build_destination_card(self) -> CardWidget:
         card = CardWidget("\uEA18", self.tr("Destino"))
         card.set_collapsible(True, collapsed=False)
-        g = grid_in_card(card)
-
-        self.host_label = QLabel("—")
-        self.host_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
+        card.content_layout.setSpacing(SPACE_XS)
+        self.refresh_sessions_btn = card.make_header_button(
+            "\uE72C", self.tr("Atualizar o usuário ativo do host")
         )
-        self.host_label.setWordWrap(True)
+        self.refresh_sessions_btn.clicked.connect(self.refresh_sessions)
+        card.add_header_button(self.refresh_sessions_btn)
 
-        status_row = QHBoxLayout()
-        status_row.setSpacing(8)
-        status_row.setContentsMargins(2, 0, 0, 0)
-        self.host_status_dot = StatusDot()
-        self.host_status_label = QLabel(self.tr("Aguardando host"))
-        self.host_status_label.setObjectName("messageHostStatus")
-        self.host_status_label.setStyleSheet(
-            f"QLabel#messageHostStatus {{ color: palette(mid); font-size: {SIZE_UI_SMALL}pt; }}"
+        g = _column_grid(card, 4)
+        host_cell, self.host_label = _fact_column(self.tr("Host"))
+        estado_cell, self.host_status_dot, self.host_status_label = _status_fact(
+            self.tr("Estado")
         )
-        status_row.addWidget(self.host_status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
-        status_row.addWidget(self.host_status_label, 0, Qt.AlignmentFlag.AlignVCenter)
-        status_row.addStretch()
-        status_wrap = QWidget()
-        status_wrap.setLayout(status_row)
-
-        self.method_label = QLabel(self.tr("PsExec"))
+        metodo_cell, self.method_label = _fact_column(self.tr("Método"))
+        user_cell, self.user_status_dot, self.user_label = _status_fact(
+            self.tr("Usuário ativo")
+        )
+        g.addWidget(host_cell, 0, 0, Qt.AlignmentFlag.AlignTop)
+        g.addWidget(estado_cell, 0, 1, Qt.AlignmentFlag.AlignTop)
+        g.addWidget(metodo_cell, 0, 2, Qt.AlignmentFlag.AlignTop)
+        g.addWidget(user_cell, 0, 3, Qt.AlignmentFlag.AlignTop)
         self.method_label.setToolTip(
             self.tr(
-                "Executa msg.exe no host remoto via PsExec.\n"
+                "Executa msg.exe no host remoto via PsExec. "
                 "Aproveita a pasta PSTools e as credenciais da aba PsExec."
             )
         )
-        self.method_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-
-        add_row(g, 0, self.tr("Host"), self.host_label)
-        add_row(g, 1, self.tr("Estado"), status_wrap)
-        add_row(g, 2, self.tr("Método"), self.method_label)
         return card
 
     def _build_recipient_card(self) -> CardWidget:
         card = CardWidget("\uE716", self.tr("Destinatário"))
         card.set_collapsible(True, collapsed=False)
-        self.refresh_sessions_btn = card.make_header_button(
-            "\uE72C",
-            self.tr("Atualizar sessões do host atual"),
-        )
-        self.refresh_sessions_btn.clicked.connect(self.refresh_sessions)
-        card.add_header_button(self.refresh_sessions_btn)
 
         g = grid_in_card(card)
         self.radio_all = QRadioButton(self.tr("Todos os usuários conectados"))
@@ -424,14 +496,16 @@ class MessageTab(QWidget):
 
     def sync_from_host(self, *_args) -> None:
         host = self._get_host()
-        self.host_label.setText(host or "—")
         if host.casefold() != (self._sessions_host or "").casefold():
             self._invalidate_sessions()
         self._apply_host_status(online=self._is_online())
         self._refresh_actions()
+        if host and is_valid_host(host) and self._is_online() and not self._sessions:
+            self.refresh_sessions()
 
     def _apply_host_status(self, *, online: bool) -> None:
         host = self._get_host()
+        _set_fact_value(self.host_label, host or _EMPTY_FACT, muted=not host)
         if not host:
             state, text = "idle", self.tr("Aguardando host")
         elif not is_valid_host(host):
@@ -440,13 +514,30 @@ class MessageTab(QWidget):
             state, text = "online", self.tr("Online")
         else:
             state, text = "offline", self.tr("Offline")
-        self.host_status_dot.set_color(STATUS_COLORS.get(state, STATUS_COLORS["idle"]))
-        self.host_status_label.setText(text)
+        self.host_status_dot.set_state(state)
+        _set_fact_value(
+            self.host_status_label, text, muted=state in ("idle", "invalid")
+        )
+        tool_ok = psexec_executable_available(get_pstools_dir())
+        _set_fact_value(
+            self.method_label,
+            self.tr("msg.exe") if tool_ok else self.tr("PsExec ausente"),
+            muted=not tool_ok,
+        )
+        self.method_label.setToolTip(
+            self.tr(
+                "Executa msg.exe no host remoto via PsExec. "
+                "Aproveita a pasta PSTools e as credenciais da aba PsExec."
+            )
+        )
+        if not host:
+            self._apply_user_fact()
 
     def _invalidate_sessions(self) -> None:
         self._sessions_host = ""
         self._sessions = []
         self._reset_session_combo()
+        self._apply_user_fact()
 
     def _reset_session_combo(self) -> None:
         self.session_combo.blockSignals(True)
@@ -472,6 +563,7 @@ class MessageTab(QWidget):
         if worker is not None and worker.isRunning():
             return
         user, password = self._creds()
+        self._apply_user_fact(loading=True)
         self._set_op_status("checking", self.tr("Carregando sessões…"))
         self.refresh_sessions_btn.setEnabled(False)
         self._session_worker = _SessionListWorker(
@@ -480,6 +572,45 @@ class MessageTab(QWidget):
         self._session_worker.result.connect(self._on_sessions_result)
         self._session_worker.finished.connect(self._on_session_worker_finished)
         self._session_worker.start()
+
+    def _active_user_names(self) -> list[str]:
+        users: list[str] = []
+        seen: set[str] = set()
+        for session in active_sessions(self._sessions):
+            name = (session_account(session) or session.username or "").strip()
+            key = name.casefold()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            users.append(name)
+        return users
+
+    def _apply_user_fact(self, *, loading: bool = False, error: str = "") -> None:
+        if not hasattr(self, "user_label"):
+            return
+        if loading:
+            _set_fact_value(
+                self.user_label, self.tr("Consultando sessões…"), muted=True
+            )
+            self.user_status_dot.set_state("checking")
+            return
+        if not self._get_host():
+            _set_fact_value(self.user_label, _EMPTY_FACT, muted=True)
+            self.user_status_dot.set_state("idle")
+            return
+        if error and not self._sessions:
+            _set_fact_value(self.user_label, error, muted=True)
+            self.user_status_dot.set_state("err")
+            return
+        users = self._active_user_names()
+        if not users:
+            _set_fact_value(
+                self.user_label, self.tr("Nenhum usuário conectado"), muted=True
+            )
+            self.user_status_dot.set_state("idle")
+            return
+        _set_fact_value(self.user_label, "  ·  ".join(users))
+        self.user_status_dot.set_state("ok")
 
     def _on_sessions_result(self, host: str, sessions, error: str) -> None:
         if self._closing:
@@ -509,6 +640,7 @@ class MessageTab(QWidget):
                 index = found
         self.session_combo.setCurrentIndex(index)
         self.session_combo.blockSignals(False)
+        self._apply_user_fact(error=error or "")
         if error and not valid:
             self._set_op_status("err", error)
         elif not valid:
@@ -527,14 +659,19 @@ class MessageTab(QWidget):
         self._session_worker = None
         if worker is not None:
             worker.deleteLater()
-        self.refresh_sessions_btn.setEnabled(not self._sending)
+        self.refresh_sessions_btn.setEnabled(
+            not self._sending
+            and self._is_online()
+            and bool(self._get_host())
+            and is_valid_host(self._get_host())
+        )
         current = self._get_host()
         if (
             not self._closing
             and current
             and is_valid_host(current)
+            and self._is_online()
             and current.casefold() != (finished_host or "").casefold()
-            and self.radio_specific.isChecked()
         ):
             self.refresh_sessions()
 

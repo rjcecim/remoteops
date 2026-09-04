@@ -401,20 +401,19 @@ class EnergiaTab(QWidget):
         self.refresh_sessions_btn.clicked.connect(self.refresh_sessions)
         card.add_header_button(self.refresh_sessions_btn)
 
-        g = _column_grid(card, 3)
+        g = _column_grid(card, 4)
         host_cell, self.host_label = _fact_column(self.tr("Host"))
         estado_cell, self.host_status_dot, self.host_status_label = _status_fact(
             self.tr("Estado")
         )
         metodo_cell, self.method_label = _fact_column(self.tr("Método"))
-        g.addWidget(host_cell, 0, 0, Qt.AlignmentFlag.AlignTop)
-        g.addWidget(estado_cell, 0, 1, Qt.AlignmentFlag.AlignTop)
-        g.addWidget(metodo_cell, 0, 2, Qt.AlignmentFlag.AlignTop)
-
         user_cell, self.user_status_dot, self.user_label = _status_fact(
             self.tr("Usuário ativo")
         )
-        g.addWidget(user_cell, 1, 0, 1, 2, Qt.AlignmentFlag.AlignTop)
+        g.addWidget(host_cell, 0, 0, Qt.AlignmentFlag.AlignTop)
+        g.addWidget(estado_cell, 0, 1, Qt.AlignmentFlag.AlignTop)
+        g.addWidget(metodo_cell, 0, 2, Qt.AlignmentFlag.AlignTop)
+        g.addWidget(user_cell, 0, 3, Qt.AlignmentFlag.AlignTop)
         self.method_label.setToolTip(
             self.tr(
                 "Executa PsShutdown no host da aba PsExec. "
@@ -936,6 +935,12 @@ class EnergiaTab(QWidget):
             self.method_label,
             self.tr("PsShutdown") if tool_ok else self.tr("PsShutdown ausente"),
             muted=not tool_ok,
+        )
+        self.method_label.setToolTip(
+            self.tr(
+                "Executa PsShutdown no host da aba PsExec. "
+                "Sem destino o utilitário atuaria neste computador."
+            )
         )
         if not host:
             self._apply_user_fact()
