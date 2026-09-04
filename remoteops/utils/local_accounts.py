@@ -14,28 +14,34 @@ from remoteops.utils.ping import is_valid_host, normalize_host
 from remoteops.utils.psshutdown import is_multi_host_target, validate_power_host
 
 LOCAL_ACCOUNTS_QUERY_SCRIPT = r"""
-$ErrorActionPreference = 'Stop'
-$rows = New-Object System.Collections.Generic.List[object]
-if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
-  foreach ($u in @(Get-LocalUser)) {
-    $sid = ''
-    try { $sid = [string]$u.SID.Value } catch { $sid = [string]$u.SID }
-    $rows.Add([pscustomobject]@{
-      Name = [string]$u.Name
-      FullName = [string]$u.FullName
-      Domain = [string]$env:COMPUTERNAME
-      SID = $sid
-      Disabled = -not [bool]$u.Enabled
-      Lockout = $false
-      PasswordChangeable = [bool]$u.UserMayChangePassword
-      PasswordExpires = $null -ne $u.PasswordExpires
-      PasswordRequired = [bool]$u.PasswordRequired
-      Status = $(if ($u.Enabled) { 'OK' } else { 'Degraded' })
-    })
+$ErrorActionPreference = 'Continue'
+$rows = @()
+try {
+  Import-Module Microsoft.PowerShell.LocalAccounts -ErrorAction SilentlyContinue | Out-Null
+} catch {}
+try {
+  if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
+    foreach ($u in @(Get-LocalUser -ErrorAction Stop)) {
+      $sid = ''
+      try { $sid = [string]$u.SID.Value } catch { $sid = [string]$u.SID }
+      $rows += [pscustomobject]@{
+        Name = [string]$u.Name
+        FullName = [string]$u.FullName
+        Domain = [string]$env:COMPUTERNAME
+        SID = $sid
+        Disabled = -not [bool]$u.Enabled
+        Lockout = $false
+        PasswordChangeable = [bool]$u.UserMayChangePassword
+        PasswordExpires = $null -ne $u.PasswordExpires
+        PasswordRequired = [bool]$u.PasswordRequired
+        Status = $(if ($u.Enabled) { 'OK' } else { 'Degraded' })
+      }
+    }
   }
-} else {
+} catch { $rows = @() }
+if (@($rows).Count -eq 0) {
   foreach ($u in @(Get-CimInstance Win32_UserAccount -Filter 'LocalAccount=True')) {
-    $rows.Add([pscustomobject]@{
+    $rows += [pscustomobject]@{
       Name = [string]$u.Name
       FullName = [string]$u.FullName
       Domain = [string]$u.Domain
@@ -46,7 +52,7 @@ if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
       PasswordExpires = [bool]$u.PasswordExpires
       PasswordRequired = [bool]$u.PasswordRequired
       Status = [string]$u.Status
-    })
+    }
   }
 }
 $json = [string](ConvertTo-Json -InputObject @($rows) -Compress -Depth 4)
@@ -54,7 +60,11 @@ if ([string]::IsNullOrWhiteSpace($json)) { $json = '[]' }
 elseif (@($rows).Count -le 1 -and $json.TrimStart().StartsWith('{')) {
   $json = '[' + $json + ']'
 }
-$json
+if (Get-Command Write-RemoteOpsJson -ErrorAction SilentlyContinue) {
+  Write-RemoteOpsJson $json
+} else {
+  $json
+}
 """.strip()
 
 _SID_RID_RE = re.compile(r"-(\d+)$")

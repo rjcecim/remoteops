@@ -8,11 +8,11 @@ exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
 Use esta seção para registrar a próxima melhoria antes de criar o commit.
 
-## [1.8.0] (Build 77) - 2026-09-04
+## [1.8.0] (Build 78) - 2026-09-04
 
-Identidade: **RemoteOps 1.8.0 (Build 77)**.
+Identidade: **RemoteOps 1.8.0 (Build 78)**.
 
-- Fix local-account listing in the packaged `.exe` (not only Guest): `Get-LocalUser`, `ConvertTo-Json -InputObject`, JSON via `ADMIN$`/`C$` and a Base64 stdout fallback.
+- Fix local-account listing in the packaged `.exe` (not only Guest, no `Connecting to…` dialog): `Get-LocalUser` with CIM fallback, JSON via `ADMIN$`/`C$` and Base64, ignore PsExec status lines.
 - Emit only `RemoteOps-<versão>-Build<n>.exe` from the PyInstaller build (do not create `dist/RemoteOps.exe`).
 - Detect the versioned exe in `build.bat` without a nested `python -c` (broken under `cmd.exe`).
 

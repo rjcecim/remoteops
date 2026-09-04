@@ -2,7 +2,7 @@
   <img src="assets/app_icon.png" alt="RemoteOps" width="128" />
 </p>
 
-<h1 align="center">RemoteOps 1.8.0 (Build 77)</h1>
+<h1 align="center">RemoteOps 1.8.0 (Build 78)</h1>
 
 <p align="center">
   <strong>Operações remotas no Windows via PsExec</strong><br />
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/RemoteOps-1.8.0%20(Build%2077)-0F2744?style=for-the-badge" alt="RemoteOps 1.8.0 (Build 77)" />
+  <img src="https://img.shields.io/badge/RemoteOps-1.8.0%20(Build%2077)-0F2744?style=for-the-badge" alt="RemoteOps 1.8.0 (Build 78)" />
 </p>
 
 <p align="center">
@@ -33,7 +33,7 @@
 
 O comando executado é o que está selecionado na aba **PsExec**. A senha nunca aparece no preview nem nos logs (`-p ********`).
 
-Identidade do produto: **`RemoteOps 1.8.0 (Build 77)`** — a mesma string da janela, definida em `remoteops.core.version` (`__version__` + `__build__`) e exposta em `remoteops.ui.branding.APP_DISPLAY_NAME`.
+Identidade do produto: **`RemoteOps 1.8.0 (Build 78)`** — a mesma string da janela, definida em `remoteops.core.version` (`__version__` + `__build__`) e exposta em `remoteops.ui.branding.APP_DISPLAY_NAME`.
 
 ---
 
@@ -298,5 +298,5 @@ RemoteOps/
 ---
 
 <p align="center">
-  <sub>RemoteOps 1.8.0 (Build 77) · Windows 10 / 11 · PyQt6 Fluent</sub>
+  <sub>RemoteOps 1.8.0 (Build 78) · Windows 10 / 11 · PyQt6 Fluent</sub>
 </p>

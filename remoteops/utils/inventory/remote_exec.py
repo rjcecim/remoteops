@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import subprocess
 import uuid
 from typing import Any, List, Optional, Sequence, Tuple
@@ -26,45 +27,32 @@ _PS_STDOUT_PREAMBLE = (
 )
 
 
+_PSEXEC_NOISE_RE = re.compile(
+    r"^(connecting to\b|starting\b|copyright\b|sysinternals\b|psexec v)",
+    re.IGNORECASE,
+)
+
+
 def wrap_remote_ps_script(script: str, result_path: str = "") -> str:
-    """Garante UTF-8, silencia progresso e, se houver caminho, grava JSON em arquivo."""
+    """Garante UTF-8, silencia progresso e, se houver caminho, expõe Write-RemoteOpsJson."""
     body = (script or "").strip()
-    text = _PS_STDOUT_PREAMBLE + body
+    extra = ""
     path = (result_path or "").strip()
-    if not path:
-        return text
-    lit = "'" + path.replace("'", "''") + "'"
-    return (
-        _PS_STDOUT_PREAMBLE
-        + f"$__roFile = {lit}\n"
-        "$__roBuf = New-Object System.IO.StringWriter\n"
-        "$__roPrev = $null\n"
-        "try { $__roPrev = [Console]::Out; [Console]::SetOut($__roBuf) } catch {}\n"
-        "$__roPipe = $null\n"
-        "try {\n"
-        "  $__roPipe = . {\n"
-        f"{body}\n"
-        "  }\n"
-        "} finally {\n"
-        "  try { if ($null -ne $__roPrev) { [Console]::SetOut($__roPrev) } } catch {}\n"
-        "}\n"
-        "$__roFromPipe = ''\n"
-        "if ($null -ne $__roPipe) {\n"
-        "  $__roFromPipe = (($__roPipe | ForEach-Object { [string]$_ })"
-        " -join [Environment]::NewLine).Trim()\n"
-        "}\n"
-        "$__roFromConsole = $__roBuf.ToString().Trim()\n"
-        "$__roText = $__roFromPipe\n"
-        "if (-not $__roText) { $__roText = $__roFromConsole }\n"
-        "if ($__roText) {\n"
-        "  try {\n"
-        "    [System.IO.File]::WriteAllText("
-        "$__roFile, $__roText, [System.Text.UTF8Encoding]::new($false))\n"
-        "  } catch {}\n"
-        f"  Write-Output ('{_B64_MARK}' + "
-        "[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($__roText)))\n"
-        "}\n"
-    )
+    if path:
+        lit = "'" + path.replace("'", "''") + "'"
+        extra = (
+            f"$__roFile = {lit}\n"
+            "function Write-RemoteOpsJson([string]$Json) {\n"
+            "  if ([string]::IsNullOrWhiteSpace($Json)) { $Json = '[]' }\n"
+            "  try {\n"
+            "    [System.IO.File]::WriteAllText("
+            "$__roFile, $Json, [System.Text.UTF8Encoding]::new($false))\n"
+            "  } catch {}\n"
+            f"  Write-Output ('{_B64_MARK}' + "
+            "[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Json)))\n"
+            "}\n"
+        )
+    return _PS_STDOUT_PREAMBLE + extra + body
 
 
 def build_remote_powershell_argv(
@@ -147,8 +135,8 @@ def run_remote_powershell(
     except OSError as exc:
         return None, f"Falha ao iniciar PsExec: {exc}"
 
-    out = decode_best_effort(proc.stdout or b"").strip()
-    err = decode_best_effort(proc.stderr or b"").strip()
+    out = _strip_psexec_noise(decode_best_effort(proc.stdout or b""))
+    err = _strip_psexec_noise(decode_best_effort(proc.stderr or b""))
     file_json = read_remote_result_file(
         artifacts.json_admin,
         artifacts.json_c,
@@ -166,7 +154,8 @@ def run_remote_powershell(
     if parse_err:
         if proc.returncode != 0:
             return None, _shorten_ps_error(err or parse_err)
-        return None, parse_err
+        cleaned = _strip_psexec_noise(parse_err)
+        return None, cleaned or parse_err
     if proc.returncode != 0 and data is None:
         return None, _shorten_ps_error(err or f"PowerShell remoto falhou (exit {proc.returncode}).")
     return data, err.strip()
@@ -189,7 +178,7 @@ def extract_b64_json(text: str) -> str:
 
 def parse_json_output(text: str) -> Tuple[Optional[Any], str]:
     """Tenta parsear JSON; tolera BOM, NULs, lixo e vários objetos concatenados."""
-    raw = (text or "").lstrip("\ufeff").strip()
+    raw = _strip_psexec_noise((text or "").lstrip("\ufeff").strip())
     if not raw:
         return None, "Resposta vazia."
     marked = extract_b64_json(raw)
@@ -245,8 +234,21 @@ def _non_json_error(raw: str) -> str:
     return f"Resposta não é JSON válido: {preview[:180]}"
 
 
+def _strip_psexec_noise(text: str) -> str:
+    """Remove linhas de status do PsExec (Connecting to / Starting / banner)."""
+    kept: List[str] = []
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if _PSEXEC_NOISE_RE.search(s):
+            continue
+        kept.append(s)
+    return "\n".join(kept)
+
+
 def _shorten_ps_error(err: str) -> str:
-    t = (err or "").strip()
+    t = _strip_psexec_noise(err)
     if not t:
         return "Não foi possível consultar."
     low = t.lower()

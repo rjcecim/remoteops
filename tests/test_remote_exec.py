@@ -8,6 +8,7 @@ import unittest
 from remoteops.core.console_codec import decode_console_bytes
 from remoteops.core.powershell_options import decode_encoded_command
 from remoteops.utils.inventory.remote_exec import (
+    _shorten_ps_error,
     build_remote_powershell_argv,
     extract_b64_json,
     parse_json_output,
@@ -78,6 +79,7 @@ class LocalAccountsPayloadTests(unittest.TestCase):
     def test_script_uses_inputobject(self) -> None:
         self.assertIn("ConvertTo-Json -InputObject", LOCAL_ACCOUNTS_QUERY_SCRIPT)
         self.assertIn("Get-LocalUser", LOCAL_ACCOUNTS_QUERY_SCRIPT)
+        self.assertIn("Write-RemoteOpsJson", LOCAL_ACCOUNTS_QUERY_SCRIPT)
         self.assertNotIn("[Console]::Out.Write", LOCAL_ACCOUNTS_QUERY_SCRIPT)
 
 
@@ -104,9 +106,11 @@ class WrapAndArgvTests(unittest.TestCase):
 
     def test_wrap_with_result_path_emits_file_and_b64(self) -> None:
         wrapped = wrap_remote_ps_script("'[]'", result_path=r"C:\Windows\Temp\ro.json")
+        self.assertIn("Write-RemoteOpsJson", wrapped)
         self.assertIn("WriteAllText", wrapped)
         self.assertIn("__REMOTEOPS_B64__", wrapped)
         self.assertIn(r"C:\Windows\Temp\ro.json", wrapped)
+        self.assertNotIn("$__roPipe = . {", wrapped)
 
     def test_extract_b64_json(self) -> None:
         payload = '[{"Name":"tce_admin"},{"Name":"Convidado"}]'
@@ -118,6 +122,17 @@ class WrapAndArgvTests(unittest.TestCase):
         data, err = parse_json_output(marked)
         self.assertEqual(err, "")
         self.assertEqual([row["Name"] for row in data], ["tce_admin", "Convidado"])
+
+
+class PsExecNoiseTests(unittest.TestCase):
+    def test_connecting_line_is_not_the_user_error(self) -> None:
+        msg = _shorten_ps_error("Connecting to ETSETIN-CAU11...\r\nAccess is denied.")
+        self.assertIn("Acesso negado", msg)
+        self.assertNotIn("Connecting", msg)
+
+    def test_only_connecting_line_falls_back(self) -> None:
+        msg = _shorten_ps_error("Connecting to ETSETIN-CAU11...")
+        self.assertEqual(msg, "Não foi possível consultar.")
 
 
 class ConsoleCodecTests(unittest.TestCase):
