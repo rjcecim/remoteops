@@ -1,5 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller: gera RemoteOps.exe sem console
+# PyInstaller: gera RemoteOps-<versão>-Build<n>.exe sem console (sem RemoteOps.exe).
+
+from pathlib import Path
+
+from remoteops.core.version import __build__, __version__
+
+EXE_BASENAME = f"RemoteOps-{__version__}-Build{__build__}"
 
 block_cipher = None
 
@@ -82,7 +88,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='RemoteOps',
+    name=EXE_BASENAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -99,7 +105,6 @@ exe = EXE(
 )
 
 import shutil
-from pathlib import Path
 
 _src_config = Path(SPECPATH) / 'config'
 _dst_config = Path(DISTPATH) / 'config'
@@ -107,3 +112,8 @@ if _src_config.is_dir():
     if _dst_config.exists():
         shutil.rmtree(_dst_config)
     shutil.copytree(_src_config, _dst_config)
+
+# Não deixar o nome legado RemoteOps.exe no dist (builds antigos ou cópia de release).
+_stale = Path(DISTPATH) / 'RemoteOps.exe'
+if _stale.is_file():
+    _stale.unlink()

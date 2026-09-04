@@ -39,7 +39,7 @@ if errorlevel 1 (
     echo.
 )
 
-echo Gerando RemoteOps.exe...
+echo Gerando RemoteOps-<versao>-Build<n>.exe...
 "%PYTHON%" -m PyInstaller --noconfirm --clean RemoteOps.spec
 if errorlevel 1 (
     echo.
@@ -47,14 +47,24 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist "dist\RemoteOps.exe" (
+if exist "dist\RemoteOps.exe" del /f /q "dist\RemoteOps.exe"
+
+set "OUT_EXE="
+for /f "usebackq delims=" %%I in (`"%PYTHON%" -c "from remoteops.core.version import __version__, __build__; print(f'dist/RemoteOps-{__version__}-Build{__build__}.exe')"`) do set "OUT_EXE=%%I"
+
+if not defined OUT_EXE (
     echo.
-    echo O PyInstaller terminou, mas dist\RemoteOps.exe nao foi gerado.
+    echo Nao foi possivel resolver o nome do executavel.
+    exit /b 1
+)
+if not exist "%OUT_EXE%" (
+    echo.
+    echo O PyInstaller terminou, mas %OUT_EXE% nao foi gerado.
     exit /b 1
 )
 
 echo.
-echo Pronto: %cd%\dist\RemoteOps.exe
-dir "dist\RemoteOps.exe"
+echo Pronto: %cd%\%OUT_EXE%
+dir "%OUT_EXE%"
 endlocal
 exit /b 0

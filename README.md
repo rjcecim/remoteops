@@ -271,7 +271,7 @@ pip install -e ".[build]"
 python -m PyInstaller --noconfirm --clean RemoteOps.spec
 ```
 
-Ou `build.bat` na raiz do repositório. Gera `dist/RemoteOps.exe` (sem console) e copia `dist/config/` (`ApplicationCatalog.json`). Assets e templates WinGet entram no exe. **Não** empacota `hosts.json`, `settings.ini`, credenciais nem logs.
+Ou `build.bat` na raiz do repositório. Gera `dist/RemoteOps-<versão>-Build<n>.exe` (sem console; **não** gera `RemoteOps.exe`) e copia `dist/config/` (`ApplicationCatalog.json`). Assets e templates WinGet entram no exe. **Não** empacota `hosts.json`, `settings.ini`, credenciais nem logs.
 
 ---
 
