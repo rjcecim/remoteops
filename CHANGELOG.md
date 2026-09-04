@@ -8,6 +8,13 @@ exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
 Use esta seção para registrar a próxima melhoria antes de criar o commit.
 
+## [2.0.1] (Build 75) - 2026-09-04
+
+Identidade: **RemoteOps 2.0.1 (Build 75)**.
+
+- Fix remote local-account queries in the packaged `.exe` (`Resposta não é JSON válido`).
+- Run remote PowerShell via `-EncodedCommand` with UTF-8 stdout so windowed builds match `python main.py`.
+
 ## [2.0.0] (Build 74) - 2026-08-10 a 2026-09-04
 
 Identidade: **RemoteOps 2.0.0 (Build 74)**.

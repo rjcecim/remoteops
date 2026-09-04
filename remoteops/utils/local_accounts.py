@@ -16,16 +16,17 @@ from remoteops.utils.psshutdown import is_multi_host_target, validate_power_host
 LOCAL_ACCOUNTS_QUERY_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
 try {
-  $items = @(Get-CimInstance Win32_UserAccount -Filter "LocalAccount=True" |
+  $items = @(Get-CimInstance Win32_UserAccount -Filter 'LocalAccount=True' |
     Select-Object Name, FullName, Domain, SID, Disabled, Lockout,
       PasswordChangeable, PasswordExpires, PasswordRequired, Status)
   if ($null -eq $items -or $items.Count -eq 0) {
-    '[]'
+    $json = '[]'
   } elseif ($items.Count -eq 1) {
-    @($items[0]) | ConvertTo-Json -Compress -Depth 3
+    $json = @($items[0]) | ConvertTo-Json -Compress -Depth 3
   } else {
-    $items | ConvertTo-Json -Compress -Depth 3
+    $json = $items | ConvertTo-Json -Compress -Depth 3
   }
+  [Console]::Out.Write($json)
 } catch {
   Write-Error $_.Exception.Message
   exit 1

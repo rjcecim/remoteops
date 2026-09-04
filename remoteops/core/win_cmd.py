@@ -196,6 +196,7 @@ def run_captured(
     flags = CREATE_NO_WINDOW if creationflags is None else creationflags
     return subprocess.run(
         list(argv),
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=False,
         timeout=timeout,

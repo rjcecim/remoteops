@@ -39,7 +39,14 @@ def decode_console_bytes(data: bytes) -> str:
         except Exception:
             pass
     try:
-        return data.decode("utf-8")
+        text = data.decode("utf-8")
+        # ASCII intercalado com NUL é UTF-8 válido, mas é UTF-16LE mal decodificado.
+        if text.count("\x00") >= max(2, len(text) // 8):
+            try:
+                return data.decode("utf-16le", errors="replace")
+            except Exception:
+                return text.replace("\x00", "")
+        return text
     except UnicodeDecodeError:
         pass
     oem = _oem_encoding()

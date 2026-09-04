@@ -5,6 +5,7 @@ import subprocess
 from typing import Any, List, Optional, Sequence, Tuple
 
 from remoteops.core.console_codec import decode_best_effort
+from remoteops.core.powershell_options import encode_powershell_command
 from remoteops.core.win_cmd import run_captured
 from remoteops.services.ops import CredentialContext, build_psexec_argv, resolve_psexec_exe
 from remoteops.utils.pstools import get_pstools_dir
@@ -12,6 +13,18 @@ from remoteops.utils.pstools import get_pstools_dir
 DEFAULT_REMOTE_PS_TIMEOUT = 90.0
 
 _PSEXEC_EXTRA_FLAGS = ["-accepteula", "-nobanner", "-h", "-s"]
+
+# Sem console (PyInstaller windowed) o PowerShell 5 mistura progresso/encoding no stdout.
+_PS_STDOUT_PREAMBLE = (
+    "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
+    "$OutputEncoding = [Console]::OutputEncoding\n"
+    "$ProgressPreference = 'SilentlyContinue'\n"
+)
+
+
+def wrap_remote_ps_script(script: str) -> str:
+    """Garante UTF-8 estável e silencia progresso que polui o JSON no .exe."""
+    return _PS_STDOUT_PREAMBLE + (script or "").strip()
 
 
 def build_remote_powershell_argv(
@@ -23,8 +36,13 @@ def build_remote_powershell_argv(
     pstools_dir: str = "",
     extra_flags: Optional[Sequence[str]] = None,
 ) -> List[str]:
-    """Monta argv PsExec → powershell.exe -Command <script> (execução local no remoto)."""
+    """Monta argv PsExec → powershell.exe -EncodedCommand (execução local no remoto).
+
+    ``-EncodedCommand`` evita que aspas do script (ex.: ``-Filter "…"``) sejam
+    destruídas pelo PsExec quando o app roda como .exe sem console.
+    """
     psexec = resolve_psexec_exe(pstools_dir or get_pstools_dir())
+    encoded = encode_powershell_command(wrap_remote_ps_script(script))
     remote_argv = [
         "powershell.exe",
         "-NoLogo",
@@ -32,8 +50,8 @@ def build_remote_powershell_argv(
         "-NonInteractive",
         "-ExecutionPolicy",
         "Bypass",
-        "-Command",
-        script,
+        "-EncodedCommand",
+        encoded,
     ]
     creds = CredentialContext(user=user or "", password=password or "")
     return build_psexec_argv(
@@ -99,27 +117,35 @@ def run_remote_powershell(
 
 
 def parse_json_output(text: str) -> Tuple[Optional[Any], str]:
-    """Tenta parsear JSON; tolera BOM e lixo antes/depois."""
-    raw = (text or "").strip()
+    """Tenta parsear JSON; tolera BOM, NULs (UTF-16 mal decodificado) e lixo ao redor."""
+    raw = (text or "").lstrip("\ufeff").strip()
     if not raw:
         return None, "Resposta vazia."
-    if raw.startswith("\ufeff"):
-        raw = raw[1:].strip()
+    if "\x00" in raw:
+        raw = raw.replace("\x00", "").strip()
+        if not raw:
+            return None, "Resposta vazia."
     try:
         return json.loads(raw), ""
     except json.JSONDecodeError:
         pass
-    # Alguns cmdlets emitem warnings antes do JSON
-    start = raw.find("{")
-    alt = raw.find("[")
-    if alt >= 0 and (start < 0 or alt < start):
-        start = alt
-    if start > 0:
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(raw):
+        if ch not in "{[":
+            continue
         try:
-            return json.loads(raw[start:]), ""
-        except json.JSONDecodeError as exc:
-            return None, f"JSON inválido: {exc}"
-    return None, "Resposta não é JSON válido."
+            obj, _end = decoder.raw_decode(raw[i:])
+            return obj, ""
+        except json.JSONDecodeError:
+            continue
+    return None, _non_json_error(raw)
+
+
+def _non_json_error(raw: str) -> str:
+    preview = " ".join((raw or "").split())
+    if not preview:
+        return "Resposta não é JSON válido."
+    return f"Resposta não é JSON válido: {preview[:180]}"
 
 
 def _shorten_ps_error(err: str) -> str:
