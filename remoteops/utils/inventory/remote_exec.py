@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
 import subprocess
+import uuid
 from typing import Any, List, Optional, Sequence, Tuple
 
 from remoteops.core.console_codec import decode_best_effort
@@ -9,10 +11,12 @@ from remoteops.core.powershell_options import encode_powershell_command
 from remoteops.core.win_cmd import run_captured
 from remoteops.services.ops import CredentialContext, build_psexec_argv, resolve_psexec_exe
 from remoteops.utils.pstools import get_pstools_dir
+from remoteops.winget.result_file import build_remote_paths, read_remote_result_file
 
 DEFAULT_REMOTE_PS_TIMEOUT = 90.0
 
 _PSEXEC_EXTRA_FLAGS = ["-accepteula", "-nobanner", "-h", "-s"]
+_B64_MARK = "__REMOTEOPS_B64__"
 
 # Sem console (PyInstaller windowed) o PowerShell 5 mistura progresso/encoding no stdout.
 _PS_STDOUT_PREAMBLE = (
@@ -22,9 +26,45 @@ _PS_STDOUT_PREAMBLE = (
 )
 
 
-def wrap_remote_ps_script(script: str) -> str:
-    """Garante UTF-8 estável e silencia progresso que polui o JSON no .exe."""
-    return _PS_STDOUT_PREAMBLE + (script or "").strip()
+def wrap_remote_ps_script(script: str, result_path: str = "") -> str:
+    """Garante UTF-8, silencia progresso e, se houver caminho, grava JSON em arquivo."""
+    body = (script or "").strip()
+    text = _PS_STDOUT_PREAMBLE + body
+    path = (result_path or "").strip()
+    if not path:
+        return text
+    lit = "'" + path.replace("'", "''") + "'"
+    return (
+        _PS_STDOUT_PREAMBLE
+        + f"$__roFile = {lit}\n"
+        "$__roBuf = New-Object System.IO.StringWriter\n"
+        "$__roPrev = $null\n"
+        "try { $__roPrev = [Console]::Out; [Console]::SetOut($__roBuf) } catch {}\n"
+        "$__roPipe = $null\n"
+        "try {\n"
+        "  $__roPipe = . {\n"
+        f"{body}\n"
+        "  }\n"
+        "} finally {\n"
+        "  try { if ($null -ne $__roPrev) { [Console]::SetOut($__roPrev) } } catch {}\n"
+        "}\n"
+        "$__roFromPipe = ''\n"
+        "if ($null -ne $__roPipe) {\n"
+        "  $__roFromPipe = (($__roPipe | ForEach-Object { [string]$_ })"
+        " -join [Environment]::NewLine).Trim()\n"
+        "}\n"
+        "$__roFromConsole = $__roBuf.ToString().Trim()\n"
+        "$__roText = $__roFromPipe\n"
+        "if (-not $__roText) { $__roText = $__roFromConsole }\n"
+        "if ($__roText) {\n"
+        "  try {\n"
+        "    [System.IO.File]::WriteAllText("
+        "$__roFile, $__roText, [System.Text.UTF8Encoding]::new($false))\n"
+        "  } catch {}\n"
+        f"  Write-Output ('{_B64_MARK}' + "
+        "[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($__roText)))\n"
+        "}\n"
+    )
 
 
 def build_remote_powershell_argv(
@@ -35,6 +75,7 @@ def build_remote_powershell_argv(
     password: str = "",
     pstools_dir: str = "",
     extra_flags: Optional[Sequence[str]] = None,
+    result_path: str = "",
 ) -> List[str]:
     """Monta argv PsExec → powershell.exe -EncodedCommand (execução local no remoto).
 
@@ -42,7 +83,9 @@ def build_remote_powershell_argv(
     destruídas pelo PsExec quando o app roda como .exe sem console.
     """
     psexec = resolve_psexec_exe(pstools_dir or get_pstools_dir())
-    encoded = encode_powershell_command(wrap_remote_ps_script(script))
+    encoded = encode_powershell_command(
+        wrap_remote_ps_script(script, result_path=result_path)
+    )
     remote_argv = [
         "powershell.exe",
         "-NoLogo",
@@ -76,18 +119,24 @@ def run_remote_powershell(
     """
     Executa PowerShell no host remoto via PsExec e tenta interpretar stdout como JSON.
 
+    No .exe sem console o stdout do PsExec corta JSON longo. O script grava o
+    resultado em arquivo (ADMIN$/C$) e também emite Base64 ASCII.
+
     Retorna (dados, erro). ``dados`` é dict/list ou None.
     """
     h = (host or "").strip().strip("\\")
     if not h:
         return None, "Host inválido."
 
+    run_id = "RemoteOps_" + uuid.uuid4().hex[:16]
+    artifacts = build_remote_paths(h, run_id)
     argv = build_remote_powershell_argv(
         h,
         script,
         user=user,
         password=password,
         pstools_dir=pstools_dir,
+        result_path=artifacts.json_path,
     )
     try:
         proc = run_captured(argv, timeout=max(5.0, float(timeout)))
@@ -100,13 +149,20 @@ def run_remote_powershell(
 
     out = decode_best_effort(proc.stdout or b"").strip()
     err = decode_best_effort(proc.stderr or b"").strip()
+    file_json = read_remote_result_file(
+        artifacts.json_admin,
+        artifacts.json_c,
+        attempts=8,
+        sleep_s=0.15,
+    )
+    raw = (file_json or "").strip() or extract_b64_json(out) or out
 
-    if not out:
+    if not raw:
         if proc.returncode != 0:
             return None, _shorten_ps_error(err or f"PowerShell remoto falhou (exit {proc.returncode}).")
         return None, _shorten_ps_error(err or "Resposta vazia do PowerShell remoto.")
 
-    data, parse_err = parse_json_output(out)
+    data, parse_err = parse_json_output(raw)
     if parse_err:
         if proc.returncode != 0:
             return None, _shorten_ps_error(err or parse_err)
@@ -116,11 +172,29 @@ def run_remote_powershell(
     return data, err.strip()
 
 
+def extract_b64_json(text: str) -> str:
+    """Extrai JSON UTF-8 de um marcador ASCII ``__REMOTEOPS_B64__``."""
+    raw = text or ""
+    idx = raw.find(_B64_MARK)
+    if idx < 0:
+        return ""
+    blob = raw[idx + len(_B64_MARK) :].strip().splitlines()[0].strip()
+    if not blob:
+        return ""
+    try:
+        return base64.b64decode(blob).decode("utf-8")
+    except Exception:
+        return ""
+
+
 def parse_json_output(text: str) -> Tuple[Optional[Any], str]:
     """Tenta parsear JSON; tolera BOM, NULs, lixo e vários objetos concatenados."""
     raw = (text or "").lstrip("\ufeff").strip()
     if not raw:
         return None, "Resposta vazia."
+    marked = extract_b64_json(raw)
+    if marked:
+        raw = marked.lstrip("\ufeff").strip()
     if "\x00" in raw:
         raw = raw.replace("\x00", "").strip()
         if not raw:

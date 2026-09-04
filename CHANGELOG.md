@@ -8,6 +8,13 @@ exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
 Use esta seção para registrar a próxima melhoria antes de criar o commit.
 
+## [1.8.0] (Build 77) - 2026-09-04
+
+Identidade: **RemoteOps 1.8.0 (Build 77)**.
+
+- Fix the packaged `.exe` still listing only Guest: read remote JSON from a host temp file (`ADMIN$`/`C$`) with a Base64 stdout fallback.
+- Prefer `Get-LocalUser` when enumerating local accounts.
+
 ## [1.8.0] (Build 76) - 2026-09-04
 
 Identidade: **RemoteOps 1.8.0 (Build 76)**.

@@ -15,22 +15,46 @@ from remoteops.utils.psshutdown import is_multi_host_target, validate_power_host
 
 LOCAL_ACCOUNTS_QUERY_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
-try {
-  $items = @(Get-CimInstance Win32_UserAccount -Filter 'LocalAccount=True' |
-    Select-Object Name, FullName, Domain, SID, Disabled, Lockout,
-      PasswordChangeable, PasswordExpires, PasswordRequired, Status)
-  # -InputObject evita o PS 5.1 emitir um JSON por conta (Write pegava só a primeira).
-  $json = [string](ConvertTo-Json -InputObject @($items) -Compress -Depth 4)
-  if ([string]::IsNullOrWhiteSpace($json)) { $json = '[]' }
-  elseif (@($items).Count -le 1 -and $json.TrimStart().StartsWith('{')) {
-    $json = '[' + $json + ']'
+$rows = New-Object System.Collections.Generic.List[object]
+if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
+  foreach ($u in @(Get-LocalUser)) {
+    $sid = ''
+    try { $sid = [string]$u.SID.Value } catch { $sid = [string]$u.SID }
+    $rows.Add([pscustomobject]@{
+      Name = [string]$u.Name
+      FullName = [string]$u.FullName
+      Domain = [string]$env:COMPUTERNAME
+      SID = $sid
+      Disabled = -not [bool]$u.Enabled
+      Lockout = $false
+      PasswordChangeable = [bool]$u.UserMayChangePassword
+      PasswordExpires = $null -ne $u.PasswordExpires
+      PasswordRequired = [bool]$u.PasswordRequired
+      Status = $(if ($u.Enabled) { 'OK' } else { 'Degraded' })
+    })
   }
-  [Console]::Out.WriteLine($json)
-  [Console]::Out.Flush()
-} catch {
-  Write-Error $_.Exception.Message
-  exit 1
+} else {
+  foreach ($u in @(Get-CimInstance Win32_UserAccount -Filter 'LocalAccount=True')) {
+    $rows.Add([pscustomobject]@{
+      Name = [string]$u.Name
+      FullName = [string]$u.FullName
+      Domain = [string]$u.Domain
+      SID = [string]$u.SID
+      Disabled = [bool]$u.Disabled
+      Lockout = [bool]$u.Lockout
+      PasswordChangeable = [bool]$u.PasswordChangeable
+      PasswordExpires = [bool]$u.PasswordExpires
+      PasswordRequired = [bool]$u.PasswordRequired
+      Status = [string]$u.Status
+    })
+  }
 }
+$json = [string](ConvertTo-Json -InputObject @($rows) -Compress -Depth 4)
+if ([string]::IsNullOrWhiteSpace($json)) { $json = '[]' }
+elseif (@($rows).Count -le 1 -and $json.TrimStart().StartsWith('{')) {
+  $json = '[' + $json + ']'
+}
+$json
 """.strip()
 
 _SID_RID_RE = re.compile(r"-(\d+)$")
@@ -138,6 +162,14 @@ def _coerce_bool(value: Any) -> Optional[bool]:
     return None
 
 
+def _coerce_sid(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return str(value.get("Value") or value.get("value") or "").strip()
+    return str(value).strip()
+
+
 def _normalize_json_list(data: Any) -> List[dict]:
     if data is None:
         return []
@@ -170,7 +202,7 @@ def parse_local_accounts_payload(
         if not name:
             continue
         domain = str(item.get("Domain") or "").strip()
-        sid = str(item.get("SID") or "").strip()
+        sid = _coerce_sid(item.get("SID"))
         rid = extract_rid_from_sid(sid)
         builtin = classify_builtin_kind(rid)
         if domain and not _domain_matches_host(domain, host_norm):

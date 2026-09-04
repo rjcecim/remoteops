@@ -9,6 +9,7 @@ from remoteops.core.console_codec import decode_console_bytes
 from remoteops.core.powershell_options import decode_encoded_command
 from remoteops.utils.inventory.remote_exec import (
     build_remote_powershell_argv,
+    extract_b64_json,
     parse_json_output,
     wrap_remote_ps_script,
 )
@@ -61,9 +62,23 @@ class LocalAccountsPayloadTests(unittest.TestCase):
         self.assertEqual(err, "")
         self.assertEqual([a.name for a in accounts], ["Convidado", "tce_admin"])
 
+    def test_sid_object_from_powershell(self) -> None:
+        data = [
+            {
+                "Name": "tce_admin",
+                "SID": {"Value": "S-1-5-21-1-2-3-500"},
+                "Domain": "ETSETIN-CAU01",
+            }
+        ]
+        accounts, err = parse_local_accounts_payload(data, host="ETSETIN-CAU01")
+        self.assertEqual(err, "")
+        self.assertEqual(accounts[0].sid, "S-1-5-21-1-2-3-500")
+        self.assertEqual(accounts[0].rid, 500)
+
     def test_script_uses_inputobject(self) -> None:
         self.assertIn("ConvertTo-Json -InputObject", LOCAL_ACCOUNTS_QUERY_SCRIPT)
-        self.assertIn("[Console]::Out.Flush()", LOCAL_ACCOUNTS_QUERY_SCRIPT)
+        self.assertIn("Get-LocalUser", LOCAL_ACCOUNTS_QUERY_SCRIPT)
+        self.assertNotIn("[Console]::Out.Write", LOCAL_ACCOUNTS_QUERY_SCRIPT)
 
 
 class WrapAndArgvTests(unittest.TestCase):
@@ -84,8 +99,25 @@ class WrapAndArgvTests(unittest.TestCase):
         blob = argv[argv.index("-EncodedCommand") + 1]
         text, err = decode_encoded_command(blob)
         self.assertIsNone(err)
-        self.assertIn("LocalAccount=True", text or "")
+        self.assertIn("Get-LocalUser", text or "")
         self.assertIn("UTF8Encoding", text or "")
+
+    def test_wrap_with_result_path_emits_file_and_b64(self) -> None:
+        wrapped = wrap_remote_ps_script("'[]'", result_path=r"C:\Windows\Temp\ro.json")
+        self.assertIn("WriteAllText", wrapped)
+        self.assertIn("__REMOTEOPS_B64__", wrapped)
+        self.assertIn(r"C:\Windows\Temp\ro.json", wrapped)
+
+    def test_extract_b64_json(self) -> None:
+        payload = '[{"Name":"tce_admin"},{"Name":"Convidado"}]'
+        import base64
+
+        marked = "__REMOTEOPS_B64__" + base64.b64encode(payload.encode("utf-8")).decode("ascii")
+        decoded = extract_b64_json("noise\n" + marked + "\n")
+        self.assertEqual(decoded, payload)
+        data, err = parse_json_output(marked)
+        self.assertEqual(err, "")
+        self.assertEqual([row["Name"] for row in data], ["tce_admin", "Convidado"])
 
 
 class ConsoleCodecTests(unittest.TestCase):
