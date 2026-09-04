@@ -14,6 +14,9 @@ Identidade: **RemoteOps 2.0.2 (Build 76)**.
 
 - Return every local account from the packaged `.exe`, not only Guest.
 - Serialize the remote query as a single JSON array (`ConvertTo-Json -InputObject`) and merge concatenated JSON objects.
+- Emit only `RemoteOps-<versão>-Build<n>.exe` from the PyInstaller build (do not create `dist/RemoteOps.exe`).
+
+- 2026-09-04 · `e4220a3` · Emit only the versioned executable from the PyInstaller build.
 
 ## [2.0.1] (Build 75) - 2026-09-04
 
