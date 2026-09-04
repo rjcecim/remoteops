@@ -5,11 +5,12 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon, QPixmap
 
+from remoteops.core.version import __build__ as APP_BUILD
 from remoteops.core.version import __version__ as APP_VERSION
 from remoteops.paths import assets_dir
 
 APP_NAME = "RemoteOps"
-APP_DISPLAY_NAME = "RemoteOps — Operações remotas"
+APP_DISPLAY_NAME = f"{APP_NAME} {APP_VERSION} (Build {APP_BUILD})"
 ORG_NAME = "RemoteOps"
 
 BRAND_NAVY = "#0F2744"

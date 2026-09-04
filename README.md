@@ -15,7 +15,7 @@
 
 O comando executado é o que está selecionado na aba **PsExec**. A senha nunca aparece no preview nem nos logs (`-p ********`).
 
-Versão: **`2.0.0`** (`remoteops.core.version.__version__`).
+Versão: **`2.0.0`** · Build **`74`** (`remoteops.core.version`).
 
 ---
 

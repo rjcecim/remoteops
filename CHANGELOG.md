@@ -7,6 +7,7 @@ o formato [SemVer](https://semver.org/): `MAJOR.MINOR.PATCH`.
 
 - Add a changelog to track improvements by commit.
 - Document the SemVer-based application versioning workflow.
+- Display the application version and build in the window title.
 
 Use esta seção para registrar a próxima melhoria antes de criar o commit.
 
