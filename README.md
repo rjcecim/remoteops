@@ -32,6 +32,7 @@ Versão: **`2.0.0`** (`remoteops.core.version.__version__`).
 - [Logging](#logging)
 - [Testes](#testes)
 - [Build](#build)
+- [Changelog](CHANGELOG.md)
 - [Estrutura do projeto](#estrutura-do-projeto)
 
 ---
