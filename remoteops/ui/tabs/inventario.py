@@ -48,6 +48,7 @@ from remoteops.ui.style import (
     SPACE_SM,
     make_icon_button,
 )
+from remoteops.utils.inventory.cache import normalize_inventory_host
 from remoteops.utils.inventory.models import (
     HardwareData,
     IdentityData,
@@ -56,6 +57,7 @@ from remoteops.utils.inventory.models import (
     MemorySummary,
     NetworkData,
     OverviewData,
+    QueryContext,
     QueryStatus,
     SectionResult,
     SecurityData,
@@ -87,13 +89,14 @@ _SECTION_SUBTITLES: dict[InventorySection, str] = {
 
 class _InventoryWorker(QThread):
     finished_ok = pyqtSignal(object)
-    finished_err = pyqtSignal(str)
+    finished_err = pyqtSignal(object)
 
     def __init__(
         self,
         service: InventoryService,
         section: InventorySection,
         host: str,
+        query: QueryContext,
         user: str = "",
         password: str = "",
         pstools_dir: str = "",
@@ -103,6 +106,7 @@ class _InventoryWorker(QThread):
         self.service = service
         self.section = section
         self.host = host
+        self.query = query
         self.user = user or ""
         self.password = password or ""
         self.pstools_dir = pstools_dir
@@ -122,13 +126,21 @@ class _InventoryWorker(QThread):
                 pstools_dir=self.pstools_dir,
                 force=self.force,
                 should_abort=lambda: self._abort,
+                query=self.query,
             )
             if self._abort:
                 return
             self.finished_ok.emit(result)
         except Exception as exc:
             if not self._abort:
-                self.finished_err.emit(str(exc))
+                self.finished_err.emit(
+                    SectionResult(
+                        section=self.section,
+                        status=QueryStatus.ERROR,
+                        error=str(exc),
+                        query=self.query,
+                    )
+                )
         finally:
             self.password = ""
 
@@ -144,14 +156,18 @@ class InventarioTab(QWidget):
         log_output=None,
         host_source: Optional[QLineEdit] = None,
         creds_provider: Optional[Callable[[], Tuple[str, str]]] = None,
+        service: Optional[InventoryService] = None,
     ):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.log_output = log_output
         self._host_source = host_source
         self._creds_provider = creds_provider
-        self._service = InventoryService()
+        self._service = service or InventoryService()
         self._worker: Optional[_InventoryWorker] = None
+        self._stale_workers: List[_InventoryWorker] = []
+        self._active_query: Optional[QueryContext] = None
+        self._closed = False
         self._current_section = InventorySection.OVERVIEW
         self._section_pages: Dict[InventorySection, QWidget] = {}
         self._loading_overlay: Optional[QWidget] = None
@@ -222,7 +238,28 @@ class InventarioTab(QWidget):
         self._update_host_chip()
 
     def _ui_alive(self) -> bool:
-        return not sip.isdeleted(self)
+        return not self._closed and not sip.isdeleted(self)
+
+    def _is_active_query(self, query: Optional[QueryContext]) -> bool:
+        if not self._ui_alive() or query is None or self._active_query is None:
+            return False
+        if query.host != normalize_inventory_host(self._get_host()):
+            return False
+        return query.matches(self._active_query)
+
+    def _idle_section_body(self) -> QWidget:
+        body = muted_label(self.tr("Nenhum dado para este host."))
+        body.setObjectName("inventoryIdleState")
+        return body
+
+    def _reset_section_page(self, section: InventorySection) -> None:
+        if not self._ui_alive():
+            return
+        self._present_section(section, self._idle_section_body())
+
+    def _reset_all_section_pages(self) -> None:
+        for section in list(self._section_pages):
+            self._reset_section_page(section)
 
     def _get_host(self) -> str:
         if self._host_source is None:
@@ -271,8 +308,13 @@ class InventarioTab(QWidget):
         self._present_section(InventorySection.OVERVIEW, panel, align_top=True)
 
     def _on_host_changed(self, _text: str) -> None:
+        self._retire_worker()
+        self._active_query = None
         self._service.bind_host(self._get_host())
         self._service.invalidate_all()
+        self._reset_all_section_pages()
+        self._set_loading(False)
+        self._status_lbl.setText("")
         self._update_host_chip()
 
     def _on_section_selected(self, section: InventorySection) -> None:
@@ -289,11 +331,7 @@ class InventarioTab(QWidget):
         if self.log_output:
             self.log_output.append_log(self.tr(f"[INVENTÁRIO] {msg}"))
 
-    def _abort_worker(self, _obj=None) -> None:
-        w = self._worker
-        if w is None:
-            return
-        self._worker = None
+    def _disconnect_worker(self, w: _InventoryWorker) -> None:
         for sig, slot in (
             (w.finished_ok, self._on_collect_ok),
             (w.finished_err, self._on_collect_err),
@@ -303,16 +341,65 @@ class InventarioTab(QWidget):
                 sig.disconnect(slot)
             except TypeError:
                 pass
+
+    def _retire_worker(self) -> Optional[InventorySection]:
+        w = self._worker
+        if w is None:
+            return None
+        self._worker = None
+        old_section = w.section
         w.abort()
-        if w.isRunning():
-            w.wait(max(3000, int(PSINFO_TIMEOUT_SECONDS * 1000)))
+        self._stale_workers.append(w)
+        return old_section
+
+    def _cleanup_worker(self, w: Optional[_InventoryWorker]) -> None:
+        if w is None:
+            return
+        if w is self._worker:
+            self._worker = None
+        if w in self._stale_workers:
+            self._stale_workers.remove(w)
+        self._disconnect_worker(w)
         w.deleteLater()
 
+    def _iter_workers(self) -> List[_InventoryWorker]:
+        workers: List[_InventoryWorker] = []
+        if self._worker is not None:
+            workers.append(self._worker)
+        workers.extend(self._stale_workers)
+        return workers
+
+    def _abort_worker(self, _obj=None) -> None:
+        self._active_query = None
+        workers = self._iter_workers()
+        self._worker = None
+        self._stale_workers = []
+        for w in workers:
+            try:
+                w.abort()
+            except Exception:
+                pass
+            self._disconnect_worker(w)
+            if w.isRunning():
+                w.wait(max(3000, int(PSINFO_TIMEOUT_SECONDS * 1000)))
+            w.deleteLater()
+
     def shutdown(self, wait_ms: int = 8000) -> None:
-        self._abort_worker()
-        w = self._worker
-        if w and w.isRunning():
-            w.wait(max(0, int(wait_ms)))
+        self._closed = True
+        self._active_query = None
+        workers = self._iter_workers()
+        self._worker = None
+        self._stale_workers = []
+        for w in workers:
+            try:
+                w.abort()
+            except Exception:
+                pass
+            self._disconnect_worker(w)
+        for w in workers:
+            if w.isRunning():
+                w.wait(max(0, int(wait_ms)))
+            w.deleteLater()
 
     def _set_loading(self, loading: bool, message: str = "") -> None:
         if not self._ui_alive():
@@ -330,6 +417,8 @@ class InventarioTab(QWidget):
                         item = lay.takeAt(0)
                         w = item.widget()
                         if w:
+                            w.hide()
+                            w.setParent(None)
                             w.deleteLater()
                     lay.addWidget(section_loading_widget(message or self.tr("Coletando...")))
         else:
@@ -360,8 +449,13 @@ class InventarioTab(QWidget):
         host = self._get_host()
         if not host:
             return
-        if self._worker and self._worker.isRunning():
-            return
+
+        retired = self._retire_worker()
+        if retired is not None and retired != section:
+            self._reset_section_page(retired)
+
+        query = self._service.begin_query(host, section)
+        self._active_query = query
 
         labels = {s: section_label(s) for s in all_sections()}
         self._set_loading(True, self.tr(f"Coletando {labels.get(section, '')}..."))
@@ -371,6 +465,7 @@ class InventarioTab(QWidget):
             self._service,
             section,
             host,
+            query=query,
             user=user,
             password=password,
             pstools_dir=get_pstools_dir(),
@@ -382,31 +477,54 @@ class InventarioTab(QWidget):
         self._worker.start()
         self._log(f"Coletando {labels.get(section, section.value)} de {host}...")
 
-    def _on_worker_finished(self) -> None:
+    def _on_worker_finished(self, worker: Optional[_InventoryWorker] = None) -> None:
+        w = worker if worker is not None else self.sender()
+        if w is not self._worker:
+            if isinstance(w, _InventoryWorker):
+                self._cleanup_worker(w)
+            return
         self._set_loading(False)
+        self._cleanup_worker(w)
 
-    def _on_collect_err(self, msg: str) -> None:
+    def _on_collect_err(self, result_obj: object) -> None:
         if not self._ui_alive():
+            return
+        query: Optional[QueryContext] = None
+        section = self._current_section
+        msg = ""
+        if isinstance(result_obj, SectionResult):
+            query = result_obj.query
+            section = result_obj.section
+            msg = result_obj.error
+        elif isinstance(result_obj, str):
+            msg = result_obj
+        if not self._is_active_query(query):
             return
         self._set_loading(False)
         self._log(msg)
         err_page = wrap_section_page(
-            self._make_header(self._current_section),
+            self._make_header(section),
             section_error_widget(msg),
         )
-        self._set_page_content(self._current_section, err_page)
+        self._set_page_content(section, err_page)
 
     def _on_collect_ok(self, result_obj: object) -> None:
         if not self._ui_alive():
             return
-        self._set_loading(False)
         if not isinstance(result_obj, SectionResult):
             return
+        if not self._is_active_query(result_obj.query):
+            return
+        self._set_loading(False)
         payload = result_obj.payload
         if payload is not None:
             self._render_section(result_obj.section, payload)
         elif result_obj.error:
-            self._set_page_content(result_obj.section, section_error_widget(result_obj.error))
+            err_page = wrap_section_page(
+                self._make_header(result_obj.section),
+                section_error_widget(result_obj.error),
+            )
+            self._set_page_content(result_obj.section, err_page)
 
     def _set_page_content(self, section: InventorySection, widget: QWidget) -> None:
         page = self._section_pages.get(section)
@@ -419,6 +537,8 @@ class InventarioTab(QWidget):
             item = lay.takeAt(0)
             w = item.widget()
             if w:
+                w.hide()
+                w.setParent(None)
                 w.deleteLater()
         lay.addWidget(widget, 1)
 

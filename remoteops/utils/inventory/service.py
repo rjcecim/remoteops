@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 from remoteops.utils.inventory.cache import InventoryCache
 from remoteops.utils.inventory.collectors import (
@@ -19,6 +19,7 @@ from remoteops.utils.inventory.collectors import (
 from remoteops.utils.inventory.models import (
     InventorySection,
     OverviewData,
+    QueryContext,
     QueryStatus,
     SectionResult,
 )
@@ -33,11 +34,19 @@ from remoteops.utils.psinfo import (
 class InventoryService:
     """Orquestra coleta sob demanda com cache por host."""
 
-    def __init__(self, cache: Optional[InventoryCache] = None) -> None:
+    def __init__(
+        self,
+        cache: Optional[InventoryCache] = None,
+        collectors: Optional[Dict[InventorySection, Callable[..., Any]]] = None,
+    ) -> None:
         self.cache = cache or InventoryCache()
+        self._collector_overrides = collectors or {}
 
     def bind_host(self, host: str) -> None:
         self.cache.set_host(host)
+
+    def begin_query(self, host: str, section: InventorySection) -> QueryContext:
+        return self.cache.begin_query(host, section)
 
     def collect_section(
         self,
@@ -49,17 +58,81 @@ class InventoryService:
         pstools_dir: str = "",
         force: bool = False,
         should_abort: Optional[Callable[[], bool]] = None,
+        query: Optional[QueryContext] = None,
     ) -> SectionResult:
-        self.bind_host(host)
+        if query is None:
+            query = self.cache.begin_query(host, section)
+        elif not self.cache.is_current(query):
+            return SectionResult(
+                section=section,
+                status=QueryStatus.ERROR,
+                error="Consulta obsoleta.",
+                query=query,
+            )
+
         if not force:
-            cached = self.cache.get(section)
+            cached = self.cache.get_if_current(query)
             if cached is not None:
-                return SectionResult(section=section, status=QueryStatus.OK, payload=cached)
+                return SectionResult(
+                    section=section,
+                    status=QueryStatus.OK,
+                    payload=cached,
+                    query=query,
+                )
 
         if should_abort and should_abort():
-            return SectionResult(section=section, status=QueryStatus.ERROR, error="Cancelado.")
+            return SectionResult(
+                section=section,
+                status=QueryStatus.ERROR,
+                error="Cancelado.",
+                query=query,
+            )
 
-        collectors = {
+        fn = self._collector_for(section)
+        if fn is None:
+            return SectionResult(
+                section=section,
+                status=QueryStatus.ERROR,
+                error="Seção desconhecida.",
+                query=query,
+            )
+
+        payload = fn(
+            host,
+            user=user,
+            password=password,
+            pstools_dir=pstools_dir,
+        )
+        if should_abort and should_abort():
+            return SectionResult(
+                section=section,
+                status=QueryStatus.ERROR,
+                error="Cancelado.",
+                query=query,
+            )
+
+        status = getattr(payload, "status", QueryStatus.OK)
+        error = getattr(payload, "error", "") or ""
+        if not self.cache.put_if_current(query, payload):
+            return SectionResult(
+                section=section,
+                status=QueryStatus.ERROR,
+                error="Consulta obsoleta.",
+                query=query,
+            )
+        return SectionResult(
+            section=section,
+            status=status,
+            error=error,
+            payload=payload,
+            query=query,
+        )
+
+    def _collector_for(self, section: InventorySection) -> Optional[Callable[..., Any]]:
+        override = self._collector_overrides.get(section)
+        if override is not None:
+            return override
+        collectors: Dict[InventorySection, Callable[..., Any]] = {
             InventorySection.OVERVIEW: self._collect_overview,
             InventorySection.SYSTEM: lambda h, **kw: collect_system(h, **kw),
             InventorySection.HARDWARE: lambda h, **kw: collect_hardware(h, **kw),
@@ -72,20 +145,7 @@ class InventoryService:
             InventorySection.IDENTITY: lambda h, **kw: collect_identity(h, **kw),
             InventorySection.UPDATES: lambda h, **kw: collect_updates(h, **kw),
         }
-        fn = collectors.get(section)
-        if fn is None:
-            return SectionResult(section=section, status=QueryStatus.ERROR, error="Seção desconhecida.")
-
-        payload = fn(
-            host,
-            user=user,
-            password=password,
-            pstools_dir=pstools_dir,
-        )
-        status = getattr(payload, "status", QueryStatus.OK)
-        error = getattr(payload, "error", "") or ""
-        self.cache.put(section, payload)
-        return SectionResult(section=section, status=status, error=error, payload=payload)
+        return collectors.get(section)
 
     def _collect_overview(
         self,

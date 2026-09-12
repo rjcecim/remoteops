@@ -220,9 +220,34 @@ class SystemData:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class QueryContext:
+    """Identidade estável de uma consulta de inventário.
+
+    Capturada na criação da solicitação. Não deve ser reconstruída a partir
+    do host da interface quando a consulta terminar.
+    """
+
+    host: str
+    section: InventorySection
+    request_id: int
+    generation: int
+
+    def matches(self, other: Optional["QueryContext"]) -> bool:
+        if other is None:
+            return False
+        return (
+            self.host == other.host
+            and self.section == other.section
+            and self.request_id == other.request_id
+            and self.generation == other.generation
+        )
+
+
 @dataclass
 class SectionResult:
     section: InventorySection
     status: QueryStatus = QueryStatus.OK
     error: str = ""
     payload: Any = None
+    query: Optional[QueryContext] = None
