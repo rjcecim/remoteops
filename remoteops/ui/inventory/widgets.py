@@ -59,6 +59,7 @@ from remoteops.utils.inventory.models import (
     NetworkData,
     VideoAdapter,
     VideoData,
+    MonitorInfo,
     FirmwareData,
     IdentityData,
     UpdatesData,
@@ -1182,9 +1183,47 @@ def _video_adapter_row(gpu: VideoAdapter, *, striped: bool = False) -> QFrame:
     return frame
 
 
+def _monitor_row(monitor: MonitorInfo, *, striped: bool = False) -> QFrame:
+    frame = QFrame()
+    bg = COLOR_SURFACE_MUTED if striped else "transparent"
+    frame.setStyleSheet(f"background: {bg}; border-radius: {RADIUS_SMALL}px;")
+    lay = QVBoxLayout(frame)
+    lay.setContentsMargins(8, 6, 8, 6)
+    lay.setSpacing(3)
+
+    model = monitor.model if monitor.model and monitor.model != "—" else ""
+    manufacturer = monitor.manufacturer if monitor.manufacturer and monitor.manufacturer != "—" else ""
+    serial = monitor.serial if monitor.serial and monitor.serial != "—" else ""
+    title = model or manufacturer or serial or "Monitor"
+
+    top = QHBoxLayout()
+    name = value_label(title, bold=True)
+    name.setStyleSheet(f"color: {COLOR_TEXT}; font-size: 9pt;")
+    name.setWordWrap(True)
+    top.addWidget(name, 1)
+    if serial and serial != title:
+        serial_lbl = value_label(serial)
+        serial_lbl.setStyleSheet(f"color: {COLOR_TEXT}; font-size: 9pt; font-weight: 600;")
+        serial_lbl.setToolTip("Número de série")
+        top.addWidget(serial_lbl, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+    lay.addLayout(top)
+
+    detail_parts = []
+    if manufacturer and manufacturer != title:
+        detail_parts.append(manufacturer)
+    if model and model != title:
+        detail_parts.append(model)
+    if detail_parts:
+        detail = muted_label(" · ".join(detail_parts))
+        detail.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 8.5pt;")
+        lay.addWidget(detail)
+
+    return frame
+
+
 class VideoPanel(QWidget):
     """
-    Seção Vídeo — Win32_VideoController via PsExec.
+    Seção Vídeo — Win32_VideoController e WmiMonitorID via PsExec.
     Layout compacto alinhado ao topo (não estica para preencher a janela).
     """
 
@@ -1193,6 +1232,7 @@ class VideoPanel(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         adapters = list(data.adapters)
+        monitors = list(data.monitors)
         primary = _pick_primary_gpu(adapters)
 
         root = QVBoxLayout(self)
@@ -1213,16 +1253,25 @@ class VideoPanel(QWidget):
                 sub.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 9pt;")
                 root.addWidget(sub)
 
+        meta_parts: List[str] = []
         if adapters:
-            meta = muted_label(
+            meta_parts.append(
                 f"{len(adapters)} adaptador{'es' if len(adapters) != 1 else ''} de vídeo"
             )
+        if monitors:
+            meta_parts.append(
+                f"{len(monitors)} monitor{'es' if len(monitors) != 1 else ''}"
+            )
+        if meta_parts:
+            meta = muted_label(" · ".join(meta_parts))
             meta.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 8.5pt;")
             root.addWidget(meta)
 
         tiles: List[Tuple[str, str]] = []
         if adapters:
             tiles.append(("GPUs", str(len(adapters))))
+        if monitors:
+            tiles.append(("Monitores", str(len(monitors))))
         if primary and primary.resolution and primary.resolution != "—":
             tiles.append(("Resolução", primary.resolution))
         if primary and primary.video_memory and primary.video_memory != "—":
@@ -1247,7 +1296,22 @@ class VideoPanel(QWidget):
             empty.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 9pt;")
             root.addWidget(empty)
 
-        foot = QLabel("Fonte: Win32_VideoController via PsExec")
+        div_mon = QFrame()
+        div_mon.setFrameShape(QFrame.Shape.HLine)
+        div_mon.setStyleSheet(f"color: {COLOR_BORDER}; max-height: 1px;")
+        root.addWidget(div_mon)
+
+        mon_block = _StorageListBlock("\uE7F4", "Monitores")
+        if monitors:
+            for i, monitor in enumerate(monitors):
+                mon_block.add_row(_monitor_row(monitor, striped=i % 2 == 0))
+        else:
+            empty_mon = muted_label("Nenhum monitor detectado.")
+            empty_mon.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 9pt;")
+            mon_block.add_row(empty_mon)
+        root.addWidget(mon_block)
+
+        foot = QLabel("Fonte: Win32_VideoController e WmiMonitorID via PsExec")
         foot.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 7.5pt;")
         root.addWidget(foot)
 

@@ -136,8 +136,16 @@ class VideoAdapter:
 
 
 @dataclass
+class MonitorInfo:
+    manufacturer: str = ""
+    model: str = ""
+    serial: str = ""
+
+
+@dataclass
 class VideoData:
     adapters: List[VideoAdapter] = field(default_factory=list)
+    monitors: List[MonitorInfo] = field(default_factory=list)
     status: QueryStatus = QueryStatus.OK
     error: str = ""
 

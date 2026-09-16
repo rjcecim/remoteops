@@ -79,7 +79,7 @@ _SECTION_SUBTITLES: dict[InventorySection, str] = {
     InventorySection.MEMORY: "Módulos instalados e slots",
     InventorySection.STORAGE: "Discos físicos e volumes",
     InventorySection.NETWORK: "Adaptadores de rede ativos",
-    InventorySection.VIDEO: "Placas de vídeo e drivers",
+    InventorySection.VIDEO: "Placas de vídeo, monitores e drivers",
     InventorySection.FIRMWARE: "BIOS, Secure Boot e TPM",
     InventorySection.SECURITY: "BitLocker, Defender, firewall e UAC",
     InventorySection.IDENTITY: "SID do computador e usuário no console",

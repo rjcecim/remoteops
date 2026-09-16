@@ -221,13 +221,18 @@ _UPTIME_ERROR_MARKERS = (
 
 _SCRIPT_UPTIME = r"""
 $ErrorActionPreference = 'SilentlyContinue'
+$result = @{ seconds = $null }
 $os = Get-CimInstance Win32_OperatingSystem | Select-Object -First 1 LastBootUpTime
-if (-not $os -or -not $os.LastBootUpTime) {
-  @{ seconds = $null } | ConvertTo-Json -Compress
-  exit
+if ($os -and $os.LastBootUpTime) {
+  $result.seconds = [int64]((Get-Date) - [datetime]$os.LastBootUpTime).TotalSeconds
 }
-$seconds = [int64]((Get-Date) - [datetime]$os.LastBootUpTime).TotalSeconds
-@{ seconds = $seconds } | ConvertTo-Json -Compress
+$json = [string](ConvertTo-Json -InputObject $result -Depth 6 -Compress)
+if ([string]::IsNullOrWhiteSpace($json)) { $json = '{}' }
+if (Get-Command Write-RemoteOpsJson -ErrorAction SilentlyContinue) {
+  Write-RemoteOpsJson $json
+} else {
+  $json
+}
 """
 
 

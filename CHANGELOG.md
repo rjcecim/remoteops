@@ -8,15 +8,18 @@ exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
 Use esta seção para registrar a próxima melhoria antes de criar o commit.
 
-## [1.8.0] (Build 79) - 2026-09-04 a 2026-09-12
+## [1.8.0] (Build 80) - 2026-09-04 a 2026-09-16
 
-Identidade: **RemoteOps 1.8.0 (Build 79)**.
+Identidade: **RemoteOps 1.8.0 (Build 80)**.
 
+- Return complete inventory JSON via remote result file (`ADMIN$`/`C$`) and Base64 so Hardware, Network, Video and other inventory queries no longer fail with truncated stdout (`Resposta não é JSON válido`) in the windowed `.exe`.
+- Show connected monitor manufacturer, model and serial in the Video inventory section (`WmiMonitorID`).
 - Bind remote inventory results to the originating request (host, section and request id) so a stale query cannot display or cache another computer's data after a host change.
 - Fix local-account listing in the packaged `.exe` (not only Guest, no `Connecting to…` dialog): `Get-LocalUser` with CIM fallback, JSON via `ADMIN$`/`C$` and Base64, ignore PsExec status lines.
 - Emit only `RemoteOps-<versão>-Build<n>.exe` from the PyInstaller build (do not create `dist/RemoteOps.exe`).
 - Detect the versioned exe in `build.bat` without a nested `python -c` (broken under `cmd.exe`).
 
+- 2026-09-16 · Fix truncated inventory JSON from remote PowerShell and list monitors in Video.
 - 2026-09-12 · Inventory request identity: reject stale results, errors and worker completion after host or request changes.
 - 2026-09-04 · `b783f8d` · Fix packaged exe still returning only the Guest local account.
 - 2026-09-04 · `e4220a3` · Emit only the versioned executable from the PyInstaller build.

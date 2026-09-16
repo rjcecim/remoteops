@@ -35,6 +35,7 @@ from remoteops.utils.inventory.models import (
     UpdatesData,
     VideoAdapter,
     VideoData,
+    MonitorInfo,
     VolumeInfo,
 )
 from remoteops.utils.inventory.remote_exec import run_remote_powershell
@@ -101,6 +102,17 @@ def collect_system(
 
 
 # ── Scripts PowerShell (executados LOCALMENTE no remoto via PsExec) ─────────
+# ConvertTo-Json vai para $json + Write-RemoteOpsJson (arquivo/ADMIN$/Base64).
+# stdout do PsExec no .exe windowed trunca JSON longo.
+
+_PS_EMIT_JSON = r"""
+if (Get-Command Write-RemoteOpsJson -ErrorAction SilentlyContinue) {
+  Write-RemoteOpsJson $json
+} else {
+  $json
+}
+"""
+
 
 _SCRIPT_HARDWARE = r"""
 $ErrorActionPreference = 'SilentlyContinue'
@@ -110,8 +122,9 @@ $result = @{
   Processors = @(Get-CimInstance Win32_Processor | Select-Object Name, Manufacturer, SocketDesignation, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed, CurrentClockSpeed, Architecture, ProcessorId)
   BaseBoard = Get-CimInstance Win32_BaseBoard | Select-Object -First 1 Manufacturer, Product, SerialNumber, Version
 }
-$result | ConvertTo-Json -Depth 6 -Compress
-"""
+$json = [string](ConvertTo-Json -InputObject $result -Depth 6 -Compress)
+if ([string]::IsNullOrWhiteSpace($json)) { $json = '{}' }
+""" + _PS_EMIT_JSON
 
 _SCRIPT_MEMORY = r"""
 $ErrorActionPreference = 'SilentlyContinue'
@@ -119,8 +132,9 @@ $result = @{
   Arrays = @(Get-CimInstance Win32_PhysicalMemoryArray | Select-Object MemoryDevices, MaxCapacity)
   Modules = @(Get-CimInstance Win32_PhysicalMemory | Select-Object DeviceLocator, BankLabel, Capacity, SMBIOSMemoryType, Speed, ConfiguredClockSpeed, Manufacturer, PartNumber, SerialNumber)
 }
-$result | ConvertTo-Json -Depth 6 -Compress
-"""
+$json = [string](ConvertTo-Json -InputObject $result -Depth 6 -Compress)
+if ([string]::IsNullOrWhiteSpace($json)) { $json = '{}' }
+""" + _PS_EMIT_JSON
 
 _SCRIPT_STORAGE = r"""
 $ErrorActionPreference = 'SilentlyContinue'
@@ -132,8 +146,9 @@ if (Get-Command Get-PhysicalDisk -ErrorAction SilentlyContinue) {
 if (Get-Command Get-Volume -ErrorAction SilentlyContinue) {
   $result.Volumes = @(Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -or $_.FileSystemLabel } | Select-Object DriveLetter, FileSystemLabel, FileSystem, Size, SizeRemaining)
 }
-$result | ConvertTo-Json -Depth 6 -Compress
-"""
+$json = [string](ConvertTo-Json -InputObject $result -Depth 6 -Compress)
+if ([string]::IsNullOrWhiteSpace($json)) { $json = '{}' }
+""" + _PS_EMIT_JSON
 
 _SCRIPT_NETWORK = r"""
 $ErrorActionPreference = 'SilentlyContinue'
@@ -153,13 +168,37 @@ Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object {
     IPv4 = $ipv4; IPv6 = $ipv6; Prefix = $prefix; Gateway = $gw; DNS = $dns; DHCP = $dhcp
   }
 }
-$result | ConvertTo-Json -Depth 5 -Compress
-"""
+$json = [string](ConvertTo-Json -InputObject @($result) -Depth 6 -Compress)
+if ([string]::IsNullOrWhiteSpace($json)) { $json = '[]' }
+""" + _PS_EMIT_JSON
 
 _SCRIPT_VIDEO = r"""
 $ErrorActionPreference = 'SilentlyContinue'
-Get-CimInstance Win32_VideoController | Select-Object Name, AdapterCompatibility, DriverVersion, DriverDate, CurrentHorizontalResolution, CurrentVerticalResolution, AdapterRAM, VideoProcessor | ConvertTo-Json -Depth 4 -Compress
-"""
+function Convert-WmiMonitorString($Value) {
+  if ($null -eq $Value) { return '' }
+  $sb = New-Object System.Text.StringBuilder
+  foreach ($n in @($Value)) {
+    $code = 0
+    try { $code = [int]$n } catch { continue }
+    if ($code -eq 0) { break }
+    if ($code -ge 32 -and $code -le 126) { [void]$sb.Append([char]$code) }
+  }
+  return $sb.ToString().Trim()
+}
+$result = @{ Adapters = @(); Monitors = @() }
+$result.Adapters = @(Get-CimInstance Win32_VideoController | Select-Object Name, AdapterCompatibility, DriverVersion, DriverDate, CurrentHorizontalResolution, CurrentVerticalResolution, AdapterRAM, VideoProcessor)
+$mons = @()
+Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID -ErrorAction SilentlyContinue | ForEach-Object {
+  $mons += [PSCustomObject]@{
+    Manufacturer = Convert-WmiMonitorString $_.ManufacturerName
+    Model = Convert-WmiMonitorString $_.UserFriendlyName
+    Serial = Convert-WmiMonitorString $_.SerialNumberID
+  }
+}
+$result.Monitors = @($mons)
+$json = [string](ConvertTo-Json -InputObject $result -Depth 6 -Compress)
+if ([string]::IsNullOrWhiteSpace($json)) { $json = '{}' }
+""" + _PS_EMIT_JSON
 
 _SCRIPT_FIRMWARE = r"""
 $ErrorActionPreference = 'SilentlyContinue'
@@ -167,8 +206,9 @@ $result = @{ BIOS = $null; SecureBoot = $null; TPM = $null }
 $result.BIOS = Get-CimInstance Win32_BIOS | Select-Object -First 1 Manufacturer, SMBIOSBIOSVersion, ReleaseDate, SerialNumber, BIOSVersion
 try { $result.SecureBoot = Confirm-SecureBootUEFI } catch { $result.SecureBoot = $null }
 try { $result.TPM = Get-Tpm -ErrorAction SilentlyContinue | Select-Object TpmPresent, TpmReady, ManufacturerIdTxt, ManufacturerVersion, SpecVersion } catch { $result.TPM = $null }
-$result | ConvertTo-Json -Depth 5 -Compress
-"""
+$json = [string](ConvertTo-Json -InputObject $result -Depth 6 -Compress)
+if ([string]::IsNullOrWhiteSpace($json)) { $json = '{}' }
+""" + _PS_EMIT_JSON
 
 _SCRIPT_SECURITY = r"""
 $ErrorActionPreference = 'SilentlyContinue'
@@ -189,8 +229,9 @@ try { $result.SecureBoot = Confirm-SecureBootUEFI } catch { $result.SecureBoot =
 try {
   $result.TPM = Get-Tpm -ErrorAction SilentlyContinue | Select-Object TpmPresent, TpmReady, ManufacturerVersion, SpecVersion
 } catch { $result.TPM = $null }
-$result | ConvertTo-Json -Depth 6 -Compress
-"""
+$json = [string](ConvertTo-Json -InputObject $result -Depth 6 -Compress)
+if ([string]::IsNullOrWhiteSpace($json)) { $json = '{}' }
+""" + _PS_EMIT_JSON
 
 
 def collect_hardware(
@@ -486,22 +527,12 @@ def collect_network(
     return NetworkData(adapters=adapters, status=QueryStatus.OK)
 
 
-def collect_video(
-    host: str,
-    *,
-    user: str = "",
-    password: str = "",
-    pstools_dir: str = "",
-) -> VideoData:
-    data, err = run_remote_powershell(
-        host, _SCRIPT_VIDEO, user=user, password=password, pstools_dir=pstools_dir
-    )
-    if data is None:
-        return VideoData(status=QueryStatus.ERROR, error=err)
-
+def _parse_video_adapters(rows: Any) -> List[VideoAdapter]:
     adapters: List[VideoAdapter] = []
-    for row in _as_list(data):
+    for row in _as_list(rows):
         if not isinstance(row, dict):
+            continue
+        if "Name" not in row and "AdapterCompatibility" not in row:
             continue
         hres = row.get("CurrentHorizontalResolution")
         vres = row.get("CurrentVerticalResolution")
@@ -526,7 +557,50 @@ def collect_video(
                 video_memory=vram,
             )
         )
-    return VideoData(adapters=adapters, status=QueryStatus.OK)
+    return adapters
+
+
+def _parse_monitors(rows: Any) -> List[MonitorInfo]:
+    monitors: List[MonitorInfo] = []
+    for row in _as_list(rows):
+        if not isinstance(row, dict):
+            continue
+        manufacturer = safe_str(row.get("Manufacturer") or row.get("Fabricante"), default="")
+        model = safe_str(row.get("Model") or row.get("Modelo"), default="")
+        serial = safe_str(row.get("Serial"), default="")
+        if not (manufacturer or model or serial):
+            continue
+        monitors.append(
+            MonitorInfo(
+                manufacturer=safe_str(row.get("Manufacturer") or row.get("Fabricante")),
+                model=safe_str(row.get("Model") or row.get("Modelo")),
+                serial=safe_str(row.get("Serial")),
+            )
+        )
+    return monitors
+
+
+def collect_video(
+    host: str,
+    *,
+    user: str = "",
+    password: str = "",
+    pstools_dir: str = "",
+) -> VideoData:
+    data, err = run_remote_powershell(
+        host, _SCRIPT_VIDEO, user=user, password=password, pstools_dir=pstools_dir
+    )
+    if data is None:
+        return VideoData(status=QueryStatus.ERROR, error=err)
+
+    if isinstance(data, dict) and ("Adapters" in data or "Monitors" in data):
+        adapters = _parse_video_adapters(data.get("Adapters"))
+        monitors = _parse_monitors(data.get("Monitors"))
+    else:
+        adapters = _parse_video_adapters(data)
+        monitors = []
+
+    return VideoData(adapters=adapters, monitors=monitors, status=QueryStatus.OK)
 
 
 def collect_firmware(
@@ -686,8 +760,10 @@ def collect_security(
 _SCRIPT_IDENTITY = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $cs = Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 Name, Domain, UserName
-@{ Name = $cs.Name; Domain = $cs.Domain; UserName = $cs.UserName } | ConvertTo-Json -Compress
-"""
+$result = @{ Name = $cs.Name; Domain = $cs.Domain; UserName = $cs.UserName }
+$json = [string](ConvertTo-Json -InputObject $result -Depth 6 -Compress)
+if ([string]::IsNullOrWhiteSpace($json)) { $json = '{}' }
+""" + _PS_EMIT_JSON
 
 
 def _split_account(account: str) -> tuple[str, str]:
@@ -848,5 +924,7 @@ $os = Get-CimInstance Win32_OperatingSystem | Select-Object -First 1 LastBootUpT
 if ($os -and $os.LastBootUpTime) {
   $uptimeSeconds = [int64]((Get-Date) - [datetime]$os.LastBootUpTime).TotalSeconds
 }
-@{ ComputerSystem = $cs; Network = $net; UptimeSeconds = $uptimeSeconds } | ConvertTo-Json -Depth 4 -Compress
-"""
+$result = @{ ComputerSystem = $cs; Network = $net; UptimeSeconds = $uptimeSeconds }
+$json = [string](ConvertTo-Json -InputObject $result -Depth 6 -Compress)
+if ([string]::IsNullOrWhiteSpace($json)) { $json = '{}' }
+""" + _PS_EMIT_JSON

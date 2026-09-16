@@ -11,14 +11,18 @@ from PyQt6.QtCore import QEventLoop, QTimer
 from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QWidget
 
 from remoteops.ui.inventory.nav import all_sections
+from remoteops.ui.inventory.widgets import VideoPanel
 from remoteops.ui.tabs.inventario import InventarioTab, _InventoryWorker
 from remoteops.utils.inventory.models import (
     InventorySection,
+    MonitorInfo,
     OverviewData,
     QueryContext,
     QueryStatus,
     SectionResult,
     SystemData,
+    VideoAdapter,
+    VideoData,
 )
 from remoteops.utils.inventory.service import InventoryService
 
@@ -347,6 +351,33 @@ class InventarioTabIdentityTests(unittest.TestCase):
             )
         )
         self.assertNotIn("STALE", _section_texts(tab, InventorySection.OVERVIEW))
+
+
+class VideoPanelMonitorTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = _ensure_app()
+
+    def test_renders_manufacturer_model_and_serial(self) -> None:
+        panel = VideoPanel(
+            VideoData(
+                adapters=[VideoAdapter(name="Intel(R) UHD Graphics 630")],
+                monitors=[
+                    MonitorInfo(manufacturer="HPN", model="HP P24a G4", serial="BRC22707B4"),
+                    MonitorInfo(manufacturer="HPN", model="HP E24mv G4", serial="CNC2271M97"),
+                ],
+            )
+        )
+        text = " ".join(lbl.text() for lbl in panel.findChildren(QLabel) if lbl.text())
+        self.assertIn("HP P24a G4", text)
+        self.assertIn("BRC22707B4", text)
+        self.assertIn("HP E24mv G4", text)
+        self.assertIn("CNC2271M97", text)
+        self.assertIn("HPN", text)
+        self.assertIn("Monitores", text)
+        self.assertIn("2 monitores", text)
+        panel.deleteLater()
+        self.app.processEvents()
 
 
 if __name__ == "__main__":

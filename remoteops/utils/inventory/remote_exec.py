@@ -207,21 +207,25 @@ def parse_json_output(text: str) -> Tuple[Optional[Any], str]:
 
 
 def _decode_all_json_values(raw: str) -> List[Any]:
-    """Extrai todos os valores JSON raiz (array, objeto ou vários objetos seguidos)."""
+    """Extrai valores JSON raiz concatenados. Não recupera objetos aninhados de JSON truncado."""
     decoder = json.JSONDecoder()
     values: List[Any] = []
     idx = 0
     n = len(raw)
+    while idx < n and raw[idx] not in "{[":
+        idx += 1
     while idx < n:
-        while idx < n and raw[idx] not in "{[":
+        while idx < n and raw[idx].isspace():
             idx += 1
         if idx >= n:
+            break
+        if raw[idx] not in "{[":
             break
         try:
             obj, end = decoder.raw_decode(raw[idx:])
         except json.JSONDecodeError:
-            idx += 1
-            continue
+            # Truncado ou inválido neste ponto raiz — não vasculhar objetos internos.
+            break
         values.append(obj)
         idx += max(end, 1)
     return values
