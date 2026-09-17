@@ -84,6 +84,7 @@ class FileSelectorWidget(CardWidget):
     fileSelected = pyqtSignal(dict)  # Emite dict: {'mode': 'file'|'folder', 'file': ..., 'folder': ...}
     fileCleared = pyqtSignal()  # Seleção removida (reset do card)
     appSearchRequested = pyqtSignal()  # Abre a tela de pesquisa de aplicativos nos hosts
+    hostSearchRequested = pyqtSignal()  # Abre a tela de pesquisa de hosts
     settingsRequested = pyqtSignal()  # Abre a aba Configurações
 
     def __init__(self, parent=None):
@@ -104,6 +105,12 @@ class FileSelectorWidget(CardWidget):
         )
         self.search_button.clicked.connect(self.appSearchRequested.emit)
         self.add_header_button(self.search_button)
+
+        self.host_search_button = self.make_header_button(
+            "\uE968", self.tr("Pesquisar hosts")
+        )
+        self.host_search_button.clicked.connect(self.hostSearchRequested.emit)
+        self.add_header_button(self.host_search_button)
 
         self.browse_button = self.make_header_button(
             "\uED25", self.tr("Selecionar arquivo ou pasta")

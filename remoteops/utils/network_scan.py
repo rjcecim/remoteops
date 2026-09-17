@@ -27,6 +27,7 @@ NBTSTAT_TIMEOUT_SEC = 3.0
 
 ProgressCallback = Callable[[int, int, str, int], None]
 HostCallback = Callable[[str], None]
+HostHitCallback = Callable[[str, str], None]
 CancelCallback = Callable[[], bool]
 
 
@@ -200,6 +201,56 @@ def scan_windows_hosts(
                     found.append(name)
                     if on_host:
                         on_host(name)
+            if on_progress:
+                on_progress(done, total, ip, len(found))
+            if _cancelled():
+                break
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    return found
+
+
+def scan_windows_host_hits(
+    ips: Sequence[str],
+    *,
+    max_workers: int = DEFAULT_SCAN_THREADS,
+    should_cancel: Optional[CancelCallback] = None,
+    on_progress: Optional[ProgressCallback] = None,
+    on_hit: Optional[HostHitCallback] = None,
+) -> list[tuple[str, str]]:
+    """Varre IPs e devolve ``(ip, hostname)`` de quem responder nas portas Windows.
+
+    Um IP por linha (sem deduplicar hostname). ICMP não exclui o alvo.
+    ``on_hit(ip, hostname)`` corre na thread da varredura a cada hit.
+    """
+    targets = [str(ip).strip() for ip in ips if str(ip).strip()]
+    total = len(targets)
+    if total == 0:
+        return []
+
+    workers = normalize_scan_workers(max_workers, total)
+    found: list[tuple[str, str]] = []
+    done = 0
+
+    def _cancelled() -> bool:
+        return bool(should_cancel and should_cancel())
+
+    executor = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures = {executor.submit(probe_windows_host, ip, _cancelled): ip for ip in targets}
+        for fut in as_completed(futures):
+            ip = futures[fut]
+            name: Optional[str] = None
+            try:
+                name = None if _cancelled() else fut.result()
+            except Exception:
+                name = None
+            done += 1
+            if name:
+                found.append((ip, name))
+                if on_hit:
+                    on_hit(ip, name)
             if on_progress:
                 on_progress(done, total, ip, len(found))
             if _cancelled():

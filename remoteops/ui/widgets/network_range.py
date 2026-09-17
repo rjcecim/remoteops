@@ -328,6 +328,7 @@ class NetworkRangeConfigWidget(CardWidget):
                 self.tr(
                     "Faixa desativada: a Pesquisa de Aplicativos e a "
                     "Instalação em Lote usam o hosts.json. "
+                    "A Pesquisa de Host exige a faixa ativa. "
                     "Os IPs configurados permanecem salvos."
                 )
             )
@@ -336,8 +337,9 @@ class NetworkRangeConfigWidget(CardWidget):
         if mode == "network":
             self.mode_caption.setText(
                 self.tr(
-                    f"Faixa ativa ({count} IP(s)): a Pesquisa de Aplicativos e a "
-                    "Instalação em Lote varrem a rede e não usam o hosts.json."
+                    f"Faixa ativa ({count} IP(s)): a Pesquisa de Aplicativos, a "
+                    "Pesquisa de Host e a Instalação em Lote varrem a rede e "
+                    "não usam o hosts.json."
                 )
             )
         elif mode == "invalid":
@@ -346,7 +348,8 @@ class NetworkRangeConfigWidget(CardWidget):
             self.mode_caption.setText(
                 self.tr(
                     "Sem faixa válida: a Pesquisa de Aplicativos e a "
-                    "Instalação em Lote usam o hosts.json."
+                    "Instalação em Lote usam o hosts.json. "
+                    "A Pesquisa de Host exige a faixa ativa."
                 )
             )
 

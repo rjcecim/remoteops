@@ -24,17 +24,18 @@ from remoteops.ui.style import SPACE_SM
 from remoteops.ui.tabs.appsearch import AppSearchTab
 from remoteops.ui.tabs.batchinstall import BatchInstallTab
 from remoteops.ui.tabs.cmd import CmdTab
-from remoteops.ui.tabs.contas_locais import ContasLocaisTab
 from remoteops.ui.tabs.connectivity import ConnectivityTab
+from remoteops.ui.tabs.contas_locais import ContasLocaisTab
 from remoteops.ui.tabs.energia import EnergiaTab
 from remoteops.ui.tabs.hostapps import HostAppsTab
+from remoteops.ui.tabs.hostsearch import HostSearchTab
+from remoteops.ui.tabs.inventario import InventarioTab
 from remoteops.ui.tabs.message import MessageTab
 from remoteops.ui.tabs.msi import MsiTab
 from remoteops.ui.tabs.powershell import PowerShellTab
 from remoteops.ui.tabs.printers import PrintersTab
 from remoteops.ui.tabs.processos import ProcessosTab
 from remoteops.ui.tabs.psexec import PsExecTab
-from remoteops.ui.tabs.inventario import InventarioTab
 from remoteops.ui.tabs.robocopy import RobocopyTab
 from remoteops.ui.tabs.servicos import ServicosTab
 from remoteops.ui.tabs.sessoes_arquivos import SessoesArquivosTab
@@ -109,6 +110,7 @@ class MainWindow(QMainWindow):
         self.contas_locais_tab = None
         self.sessoes_arquivos_tab = None
         self.appsearch_tab = None
+        self.hostsearch_tab = None
         self.settings_tab = None
         self.connectivity_tab = None
         self._run_after_precheck = False
@@ -171,6 +173,7 @@ class MainWindow(QMainWindow):
         self.file_selector.fileSelected.connect(self.on_file_selected)
         self.file_selector.fileCleared.connect(self.on_file_cleared)
         self.file_selector.appSearchRequested.connect(self.open_appsearch_tab)
+        self.file_selector.hostSearchRequested.connect(self.open_hostsearch_tab)
         self.file_selector.settingsRequested.connect(self.open_settings_tab)
         self.psexec_tab.host_edit.textChanged.connect(self.update_command)
         self.psexec_tab.openHostAppsRequested.connect(self.open_hostapps_tab)
@@ -953,6 +956,47 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(idx)
         self._update_psinfo_mode_ui()
 
+    def open_hostsearch_tab(self) -> None:
+        """Cria a aba Pesquisa de Host sob demanda e foca nela."""
+        self._remember_window_size()
+        if self.hostsearch_tab is not None:
+            idx = self.tabs.indexOf(self.hostsearch_tab)
+            if idx != -1:
+                self.tabs.setCurrentIndex(idx)
+                self._update_psinfo_mode_ui()
+                return
+
+        self.hostsearch_tab = HostSearchTab(
+            creds_provider=lambda: (
+                self.psexec_tab.auth_username(),
+                self.psexec_tab.pass_edit.text() or "",
+            )
+        )
+        self.hostsearch_tab.openHostRequested.connect(self._open_psexec_for_host)
+        self._wire_network_range_status()
+        self.tabs.addTab(self.hostsearch_tab, self.tr("Pesquisa de Host"))
+        idx = self.tabs.indexOf(self.hostsearch_tab)
+        bar = self.tabs.tabBar()
+        if isinstance(bar, Mdl2TabBar):
+            bar.set_tab_meta(idx, "\uE968", closable=True)
+        else:
+            bar.setTabData(idx, "\uE968")
+        self._refresh_tab_bar_layout()
+        self.tabs.setCurrentIndex(idx)
+        self._update_psinfo_mode_ui()
+
+    def _open_psexec_for_host(self, host: str) -> None:
+        """Preenche o Host remoto, troca para PsExec e foca o campo."""
+        target = (host or "").strip()
+        if target:
+            self.psexec_tab.host_edit.setText(target)
+        self.tabs.setCurrentWidget(self.psexec_tab)
+        self.psexec_tab.host_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.psexec_tab.host_edit.setCursorPosition(
+            len(self.psexec_tab.host_edit.text())
+        )
+        self._update_psinfo_mode_ui()
+
     def _wire_network_range_status(self) -> None:
         """Atualiza o status da Pesquisa/Lote quando a faixa de IP é salva."""
         settings = self.settings_tab
@@ -965,6 +1009,13 @@ class MainWindow(QMainWindow):
             except TypeError:
                 pass
             settings.networkRangeChanged.connect(search.refresh_hosts_status)
+        host_search = self.hostsearch_tab
+        if host_search is not None:
+            try:
+                settings.networkRangeChanged.disconnect(host_search.refresh_hosts_status)
+            except TypeError:
+                pass
+            settings.networkRangeChanged.connect(host_search.refresh_hosts_status)
         batch = getattr(self, "batchinstall_tab", None)
         if batch is not None:
             try:
@@ -1037,6 +1088,7 @@ class MainWindow(QMainWindow):
         self._close_contas_locais_tab()
         self._close_sessoes_arquivos_tab()
         self._close_appsearch_tab()
+        self._close_hostsearch_tab()
         self._close_settings_tab()
 
         self.file_selector.clear_selection()
@@ -1101,6 +1153,8 @@ class MainWindow(QMainWindow):
             self._close_sessoes_arquivos_tab()
         elif widget is self.appsearch_tab:
             self._close_appsearch_tab()
+        elif widget is self.hostsearch_tab:
+            self._close_hostsearch_tab()
         elif widget is self.settings_tab:
             self._close_settings_tab()
         elif widget is self.connectivity_tab:
@@ -1313,6 +1367,23 @@ class MainWindow(QMainWindow):
             pass
         self.appsearch_tab.deleteLater()
         self.appsearch_tab = None
+        self._update_psinfo_mode_ui()
+        self._last_tab_widget = self.tabs.currentWidget()
+        self._refresh_tab_bar_layout()
+
+    def _close_hostsearch_tab(self) -> None:
+        """Fecha a Pesquisa de Host somente pelo X ao lado do título da aba."""
+        if self.hostsearch_tab is None:
+            return
+        idx = self.tabs.indexOf(self.hostsearch_tab)
+        if idx != -1:
+            self.tabs.removeTab(idx)
+        try:
+            self.hostsearch_tab.shutdown()
+        except Exception:
+            pass
+        self.hostsearch_tab.deleteLater()
+        self.hostsearch_tab = None
         self._update_psinfo_mode_ui()
         self._last_tab_widget = self.tabs.currentWidget()
         self._refresh_tab_bar_layout()
@@ -1709,6 +1780,7 @@ class MainWindow(QMainWindow):
         contas_locais_widget = self.contas_locais_tab
         sessoes_arquivos_widget = self.sessoes_arquivos_tab
         appsearch_widget = self.appsearch_tab
+        hostsearch_widget = self.hostsearch_tab
         settings_widget = self.settings_tab
         connectivity_widget = self.connectivity_tab
         for i in range(self.tabs.count() - 1, -1, -1):
@@ -1742,6 +1814,8 @@ class MainWindow(QMainWindow):
                 continue
             if appsearch_widget is not None and w is appsearch_widget:
                 continue
+            if hostsearch_widget is not None and w is hostsearch_widget:
+                continue
             if settings_widget is not None and w is settings_widget:
                 continue
             if connectivity_widget is not None and w is connectivity_widget:
@@ -1762,6 +1836,7 @@ class MainWindow(QMainWindow):
             contas_locais_widget,
             sessoes_arquivos_widget,
             appsearch_widget,
+            hostsearch_widget,
             settings_widget,
             connectivity_widget,
         ):
@@ -2148,6 +2223,7 @@ class MainWindow(QMainWindow):
         # "QThread: Destroyed while thread is still running").
         for tab in (
             getattr(self, "appsearch_tab", None),
+            getattr(self, "hostsearch_tab", None),
             getattr(self, "hostapps_tab", None),
             getattr(self, "winget_tab", None),
             getattr(self, "message_tab", None),

@@ -8,6 +8,17 @@ exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
 Use esta seção para registrar a próxima melhoria antes de criar o commit.
 
+## [1.9.0] (Build 81) - 2026-09-17
+
+Identidade: **RemoteOps 1.9.0 (Build 81)**.
+
+- Add a standalone Host Search tab, independent of Application Search, opened from a header host button (`E968`).
+- Scan the active Settings IP range over TCP 445/135/139 (NetBIOS then DNS; ICMP does not exclude the host) with no `hosts.json` fallback.
+- List IP, hostname, active WTS user (`DOMAIN\user` via the same sessions/IPC$ backend as Power/Message) and an eye action that fills PsExec and focuses the host field.
+- Filter discovered rows live without restarting the scan.
+
+- 2026-09-17 · Add standalone Host Search with active-user lookup and PsExec handoff.
+
 ## [1.8.0] (Build 80) - 2026-09-04 a 2026-09-16
 
 Identidade: **RemoteOps 1.8.0 (Build 80)**.
