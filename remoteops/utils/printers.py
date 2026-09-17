@@ -48,8 +48,10 @@ TASK_NAME_PREFIX = "RemoteOps_Printer_"
 _ACTIVE_STATES = frozenset(
     {
         "ativa",
+        "ativo",
         "active",
         "conectada",
+        "conectado",
         "connected",
     }
 )

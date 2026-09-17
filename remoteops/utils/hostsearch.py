@@ -66,22 +66,47 @@ def format_active_session_users(sessions: Sequence[RemoteSession]) -> str:
     return "  ·  ".join(users) if users else EMPTY_CELL
 
 
+def lookup_targets(ip: str, hostname: str = "") -> list[str]:
+    """Hostname (quser/WTS) primeiro; IP se for diferente."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in (hostname, ip):
+        target = normalize_host(item)
+        if not target:
+            continue
+        key = target.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(target)
+    return out
+
+
 def lookup_active_session_users(
     host: str,
     user: str = "",
     password: str = "",
+    *,
+    hostname: str = "",
 ) -> str:
-    """Consulta WTS + IPC$ (mesmo backend de Energia/Mensagem). Falha → em-dash."""
-    target = normalize_host(host)
-    if not target:
-        return EMPTY_CELL
-    try:
-        sessions, error = list_remote_sessions(target, user=user, password=password)
-    except Exception:
-        return EMPTY_CELL
-    if error or not sessions:
-        return EMPTY_CELL
-    return format_active_session_users(sessions)
+    """Consulta WTS + IPC$ (mesmo backend de Energia/Mensagem). Falha → em-dash.
+
+    Tenta o hostname (como o ``quser /server:NOME``) e depois o IP. Logins
+    numéricos (0101526) vêm do qwinsta/quser quando a API WTS omite o usuário.
+    """
+    for target in lookup_targets(host, hostname):
+        try:
+            sessions, error = list_remote_sessions(
+                target, user=user, password=password
+            )
+        except Exception:
+            continue
+        if error and not sessions:
+            continue
+        text = format_active_session_users(sessions)
+        if text != EMPTY_CELL:
+            return text
+    return EMPTY_CELL
 
 
 def snapshot_creds(provider: Optional[object]) -> tuple[str, str]:

@@ -13,7 +13,7 @@ import ctypes
 import re
 from ctypes import wintypes
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from remoteops.core.console_codec import decode_console_bytes
 from remoteops.core.win_cmd import run_captured
@@ -40,6 +40,32 @@ _HEADER_RE = re.compile(
 _NOISE_RE = re.compile(
     r"connecting to|starting |exited on|error code|connecting\.\.\.|started",
     re.IGNORECASE,
+)
+# qwinsta / quser: o ID da sessão é pequeno. Matrículas tipo 0101526 são
+# só dígitos e NÃO podem ser lidas como ID (senão o usuário some).
+_MAX_SESSION_ID = 65536
+_SESSION_STATE_TOKENS = frozenset(
+    {
+        "ativa",
+        "ativo",
+        "active",
+        "conectada",
+        "conectado",
+        "connected",
+        "connectquery",
+        "shadow",
+        "desconectada",
+        "desconectado",
+        "disc",
+        "disconnected",
+        "ociosa",
+        "ocioso",
+        "idle",
+        "listen",
+        "reset",
+        "down",
+        "init",
+    }
 )
 
 
@@ -84,6 +110,34 @@ class WTS_SESSION_INFOW(ctypes.Structure):
     ]
 
 
+def _is_session_id_token(token: str) -> bool:
+    if not (token or "").isdigit():
+        return False
+    try:
+        value = int(token, 10)
+    except ValueError:
+        return False
+    return 0 <= value <= _MAX_SESSION_ID
+
+
+def _is_state_token(token: str) -> bool:
+    return (token or "").strip().casefold() in _SESSION_STATE_TOKENS
+
+
+def _session_id_index(tokens: Sequence[str]) -> Optional[int]:
+    """Índice do ID da sessão — não confundir com login numérico (0101526)."""
+    preferred: Optional[int] = None
+    for i, tok in enumerate(tokens):
+        if not _is_session_id_token(tok):
+            continue
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+        if _is_state_token(nxt):
+            return i
+        if preferred is None:
+            preferred = i
+    return preferred
+
+
 def parse_query_session_output(text: str) -> List[RemoteSession]:
     """Interpreta a saída de ``query session`` / ``qwinsta`` (EN/PT)."""
     sessions: List[RemoteSession] = []
@@ -98,15 +152,57 @@ def parse_query_session_output(text: str) -> List[RemoteSession]:
             continue
         line = line.lstrip(">").strip()
         tokens = line.split()
-        id_idx = next((i for i, tok in enumerate(tokens) if tok.isdigit()), None)
+        id_idx = _session_id_index(tokens)
         if id_idx is None:
             continue
-        session_id = int(tokens[id_idx])
+        session_id = int(tokens[id_idx], 10)
         if session_id in seen:
             continue
         seen.add(session_id)
         name = tokens[0] if id_idx > 0 else ""
         username = " ".join(tokens[1:id_idx]) if id_idx > 1 else ""
+        state = tokens[id_idx + 1] if id_idx + 1 < len(tokens) else ""
+        domain = ""
+        if "\\" in username:
+            domain, username = username.split("\\", 1)
+        sessions.append(
+            RemoteSession(
+                session_id=session_id,
+                name=name,
+                username=username,
+                state=state,
+                domain=domain,
+            )
+        )
+    return sessions
+
+
+def parse_quser_output(text: str) -> List[RemoteSession]:
+    """Interpreta ``quser`` / ``query user`` (usuário na 1ª coluna; pode ser só dígitos)."""
+    sessions: List[RemoteSession] = []
+    seen: set[int] = set()
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or _NOISE_RE.search(line):
+            continue
+        lower = line.lower()
+        if ("username" in lower or "nome de usu" in lower) and "idle" in lower:
+            continue
+        if lower.startswith("username") or lower.startswith("nome de usu"):
+            continue
+        line = line.lstrip(">").strip()
+        tokens = line.split()
+        if len(tokens) < 3:
+            continue
+        id_idx = _session_id_index(tokens)
+        if id_idx is None or id_idx < 1:
+            continue
+        session_id = int(tokens[id_idx], 10)
+        if session_id in seen:
+            continue
+        seen.add(session_id)
+        username = tokens[0]
+        name = " ".join(tokens[1:id_idx]) if id_idx > 1 else ""
         state = tokens[id_idx + 1] if id_idx + 1 < len(tokens) else ""
         domain = ""
         if "\\" in username:
@@ -262,10 +358,14 @@ def _query_session_psexec(
 
 def _query_session_cli(host: str) -> Tuple[List[RemoteSession], str]:
     last_error = ""
-    for argv in (
-        ["query", "session", f"/server:{host}"],
-        ["qwinsta", f"/server:{host}"],
-    ):
+    parsers = (
+        (["query", "session", f"/server:{host}"], parse_query_session_output),
+        (["qwinsta", f"/server:{host}"], parse_query_session_output),
+        (["quser", f"/server:{host}"], parse_quser_output),
+        (["query", "user", f"/server:{host}"], parse_quser_output),
+    )
+    unnamed: List[RemoteSession] = []
+    for argv, parser in parsers:
         try:
             result = run_captured(argv, timeout=8)
         except Exception as exc:
@@ -275,12 +375,47 @@ def _query_session_cli(host: str) -> Tuple[List[RemoteSession], str]:
             decode_console_bytes(result.stdout or b"")
             + decode_console_bytes(result.stderr or b"")
         )
-        found = parse_query_session_output(text)
-        if found:
+        found = parser(text)
+        if _has_interactive_user(found):
             return found, ""
+        if found and not unnamed:
+            unnamed = found
         if text.strip():
             last_error = text.strip()[:240]
+    if unnamed:
+        return unnamed, ""
     return [], last_error
+
+
+def _has_interactive_user(sessions: Sequence[RemoteSession]) -> bool:
+    return any((item.username or "").strip() for item in sessions)
+
+
+def _merge_session_usernames(
+    primary: Sequence[RemoteSession],
+    secondary: Sequence[RemoteSession],
+) -> List[RemoteSession]:
+    """Completa username/domínio da API WTS com qwinsta/quser quando o WTS omite o login."""
+    by_id = {item.session_id: item for item in primary}
+    for item in secondary:
+        current = by_id.get(item.session_id)
+        if current is None:
+            by_id[item.session_id] = item
+            continue
+        extra_user = (item.username or "").strip()
+        extra_domain = (item.domain or "").strip()
+        if (current.username or "").strip() and (current.domain or "").strip():
+            continue
+        if not extra_user and not extra_domain:
+            continue
+        by_id[item.session_id] = RemoteSession(
+            session_id=current.session_id,
+            name=current.name or item.name,
+            username=current.username or extra_user,
+            state=current.state or item.state,
+            domain=current.domain or extra_domain,
+        )
+    return sorted(by_id.values(), key=lambda item: item.session_id)
 
 
 def list_remote_sessions(
@@ -308,15 +443,22 @@ def list_remote_sessions(
         if auth.conflict:
             return [], auth.error
         sessions, wts_error = _enumerate_wts(host)
-        if sessions:
-            return sessions, ""
-        sessions, cli_error = _query_session_cli(host)
-        if sessions:
+        if not _has_interactive_user(sessions):
+            cli_sessions, cli_error = _query_session_cli(host)
+            sessions = _merge_session_usernames(sessions, cli_sessions)
+        else:
+            cli_error = ""
+        if _has_interactive_user(sessions):
             return sessions, ""
         if allow_psexec_fallback:
-            sessions = _query_session_psexec(host, user=user, password=password)
-            if sessions:
+            sessions = _merge_session_usernames(
+                sessions,
+                _query_session_psexec(host, user=user, password=password),
+            )
+            if _has_interactive_user(sessions):
                 return sessions, ""
+        if sessions and not _has_interactive_user(sessions):
+            return sessions, ""
         if user and not auth.connected and auth.error:
             return [], auth.error
         if wts_error:

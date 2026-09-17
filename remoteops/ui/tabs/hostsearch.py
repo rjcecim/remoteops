@@ -500,23 +500,28 @@ class HostSearchTab(QWidget):
         self._apply_results_filter()
         self._update_summary()
         if queue_user_lookup:
-            self._queue_user_lookup(addr)
+            self._queue_user_lookup(addr, name)
 
-    def _queue_user_lookup(self, ip: str) -> None:
+    def _queue_user_lookup(self, ip: str, hostname: str = "") -> None:
         pool = self._session_pool
         if pool is None:
             return
         generation = int(self._search_generation)
         try:
-            pool.submit(self._lookup_user, generation, ip)
+            pool.submit(self._lookup_user, generation, ip, hostname)
         except RuntimeError:
             return
 
-    def _lookup_user(self, generation: int, ip: str) -> None:
+    def _lookup_user(self, generation: int, ip: str, hostname: str = "") -> None:
         if int(generation) != int(self._search_generation):
             return
         user, password = snapshot_creds(self._creds_provider)
-        text = lookup_active_session_users(ip, user, password)
+        try:
+            text = lookup_active_session_users(
+                ip, user, password, hostname=hostname
+            )
+        except Exception:
+            text = EMPTY_CELL
         if int(generation) != int(self._search_generation):
             return
         self._user_bridge.userReady.emit(int(generation), ip, text)

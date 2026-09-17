@@ -68,7 +68,11 @@ class HostSearchHelpersTests(unittest.TestCase):
         ]
         self.assertEqual(format_active_session_users(sessions), r"ACME\bob")
 
-    def test_active_users_empty_or_missing_is_dash(self) -> None:
+    def test_ativo_numeric_login_is_listed(self) -> None:
+        sessions = [
+            RemoteSession(2, "rdp-tcp#3", "0101526", "Ativo", "TCE-PA"),
+        ]
+        self.assertEqual(format_active_session_users(sessions), r"TCE-PA\0101526")
         self.assertEqual(format_active_session_users([]), EMPTY_CELL)
         disconnected = [RemoteSession(4, "rdp-tcp", "bob", "Desconectada", "ACME")]
         self.assertEqual(format_active_session_users(disconnected), EMPTY_CELL)
@@ -165,7 +169,7 @@ class HostSearchTabTests(unittest.TestCase):
         self.tab._session_pool = ThreadPoolExecutor(max_workers=1)
         gate = threading.Event()
 
-        def _lookup(host, user="", password=""):
+        def _lookup(host, user="", password="", hostname=""):
             gate.wait(timeout=2)
             return r"ACME\bob"
 
@@ -184,6 +188,7 @@ class HostSearchTabTests(unittest.TestCase):
             self.app.processEvents()
             lookup.assert_called()
             self.assertEqual(lookup.call_args.args[0], "10.0.0.8")
+            self.assertEqual(lookup.call_args.kwargs.get("hostname"), "HOST8")
         self.assertEqual(self.tab.table.item(0, COL_USER).text(), r"ACME\bob")
 
     def test_start_search_requires_ip_range_not_hosts_json(self) -> None:
