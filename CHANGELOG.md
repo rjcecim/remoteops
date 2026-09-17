@@ -16,7 +16,7 @@ Identidade: **RemoteOps 1.9.0 (Build 82)**.
 - Scan the active Settings IP range over TCP 445/135/139 (NetBIOS then DNS; ICMP does not exclude the host) with no `hosts.json` fallback.
 - List IP, hostname, active WTS user (`DOMAIN\user` via the same sessions/IPC$ backend as Power/Message) and an eye action that fills PsExec and focuses the host field.
 - Filter discovered rows live without restarting the scan.
-- Show active users with numeric logins (for example `0101526`): parse qwinsta/quser without treating the account as a session id, fall back when WTS omits the username, accept Portuguese `Ativo`, and query the hostname before the IP.
+- Show active users whose login is numeric: parse qwinsta/quser without treating the account as a session id, fall back when WTS omits the username, accept Portuguese `Ativo`, and query the hostname before the IP.
 
 - 2026-09-17 · Add standalone Host Search with active-user lookup and PsExec handoff.
 - 2026-09-17 · Fix Host Search omitting active users whose login is numeric.

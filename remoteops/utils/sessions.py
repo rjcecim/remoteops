@@ -41,8 +41,8 @@ _NOISE_RE = re.compile(
     r"connecting to|starting |exited on|error code|connecting\.\.\.|started",
     re.IGNORECASE,
 )
-# qwinsta / quser: o ID da sessão é pequeno. Matrículas tipo 0101526 são
-# só dígitos e NÃO podem ser lidas como ID (senão o usuário some).
+# qwinsta / quser: o ID da sessão é pequeno. Logins só com dígitos
+# NÃO podem ser lidos como ID (senão o usuário some).
 _MAX_SESSION_ID = 65536
 _SESSION_STATE_TOKENS = frozenset(
     {
@@ -125,7 +125,7 @@ def _is_state_token(token: str) -> bool:
 
 
 def _session_id_index(tokens: Sequence[str]) -> Optional[int]:
-    """Índice do ID da sessão — não confundir com login numérico (0101526)."""
+    """Índice do ID da sessão — não confundir com login só numérico."""
     preferred: Optional[int] = None
     for i, tok in enumerate(tokens):
         if not _is_session_id_token(tok):

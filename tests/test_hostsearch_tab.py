@@ -70,9 +70,9 @@ class HostSearchHelpersTests(unittest.TestCase):
 
     def test_ativo_numeric_login_is_listed(self) -> None:
         sessions = [
-            RemoteSession(2, "rdp-tcp#3", "0101526", "Ativo", "TCE-PA"),
+            RemoteSession(2, "rdp-tcp#3", "1234567", "Ativo", "TCE-PA"),
         ]
-        self.assertEqual(format_active_session_users(sessions), r"TCE-PA\0101526")
+        self.assertEqual(format_active_session_users(sessions), r"TCE-PA\1234567")
         self.assertEqual(format_active_session_users([]), EMPTY_CELL)
         disconnected = [RemoteSession(4, "rdp-tcp", "bob", "Desconectada", "ACME")]
         self.assertEqual(format_active_session_users(disconnected), EMPTY_CELL)

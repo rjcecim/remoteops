@@ -23,14 +23,14 @@ from remoteops.utils.sessions import (
 QWINSTA_NUMERIC = """
  SESSIONNAME       USERNAME                 ID  STATE   TYPE        DEVICE
  services                                    0  Disc
- console           0101526                   1  Ativo
+ console           1234567                   1  Ativo
  rdp-tcp                                 65536  Listen
- rdp-tcp#3         0101526                   2  Active
+ rdp-tcp#3         1234567                   2  Active
 """
 
 QUSER_NUMERIC = """
  USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME
->0101526               rdp-tcp#3           2  Active          .  17/09/2026 08:12
+>1234567               rdp-tcp#3           2  Active          .  17/09/2026 08:12
 """
 
 
@@ -38,24 +38,24 @@ class QuerySessionParseTests(unittest.TestCase):
     def test_numeric_username_is_not_session_id(self) -> None:
         sessions = parse_query_session_output(QWINSTA_NUMERIC)
         by_id = {item.session_id: item for item in sessions}
-        self.assertEqual(by_id[1].username, "0101526")
+        self.assertEqual(by_id[1].username, "1234567")
         self.assertEqual(by_id[1].name, "console")
         self.assertEqual(by_id[1].state.casefold(), "ativo")
-        self.assertEqual(by_id[2].username, "0101526")
+        self.assertEqual(by_id[2].username, "1234567")
         self.assertEqual(by_id[2].session_id, 2)
         self.assertEqual(by_id[0].username, "")
 
     def test_quser_numeric_login(self) -> None:
         sessions = parse_quser_output(QUSER_NUMERIC)
         self.assertEqual(len(sessions), 1)
-        self.assertEqual(sessions[0].username, "0101526")
+        self.assertEqual(sessions[0].username, "1234567")
         self.assertEqual(sessions[0].session_id, 2)
         self.assertEqual(sessions[0].name, "rdp-tcp#3")
         self.assertEqual(sessions[0].state.casefold(), "active")
 
     def test_ativo_counts_as_active_user(self) -> None:
         sessions = parse_query_session_output(QWINSTA_NUMERIC)
-        self.assertEqual(format_active_session_users(sessions), "0101526")
+        self.assertEqual(format_active_session_users(sessions), "1234567")
 
 
 class SessionFallbackTests(unittest.TestCase):
@@ -67,17 +67,17 @@ class SessionFallbackTests(unittest.TestCase):
         self.assertFalse(_has_interactive_user(wts_only))
         filled = _merge_session_usernames(
             wts_only,
-            [RemoteSession(1, "console", "0101526", "Ativo", "")],
+            [RemoteSession(1, "console", "1234567", "Ativo", "")],
         )
-        self.assertEqual(filled[1].username, "0101526")
-        self.assertEqual(format_active_session_users(filled), "0101526")
+        self.assertEqual(filled[1].username, "1234567")
+        self.assertEqual(format_active_session_users(filled), "1234567")
 
     def test_list_remote_sessions_falls_back_to_quser(self) -> None:
         wts_only = [
             RemoteSession(0, "Services", "", "Desconectada", ""),
             RemoteSession(2, "rdp-tcp#3", "", "Ativa", ""),
         ]
-        quser = [RemoteSession(2, "rdp-tcp#3", "0101526", "Active", "")]
+        quser = [RemoteSession(2, "rdp-tcp#3", "1234567", "Active", "")]
 
         class _Auth:
             conflict = False
@@ -93,7 +93,7 @@ class SessionFallbackTests(unittest.TestCase):
         ):
             sessions, error = list_remote_sessions("ETPRES-ACRP01", user="u", password="p")
         self.assertEqual(error, "")
-        self.assertEqual(format_active_session_users(sessions), "0101526")
+        self.assertEqual(format_active_session_users(sessions), "1234567")
 
     def test_lookup_tries_hostname_before_ip(self) -> None:
         calls: list[str] = []
@@ -102,7 +102,7 @@ class SessionFallbackTests(unittest.TestCase):
             calls.append(host)
             if host == "ETPRES-ACRP01":
                 return (
-                    [RemoteSession(2, "rdp-tcp#3", "0101526", "Active", "TCE-PA")],
+                    [RemoteSession(2, "rdp-tcp#3", "1234567", "Active", "TCE-PA")],
                     "",
                 )
             return ([], "falha")
@@ -112,7 +112,7 @@ class SessionFallbackTests(unittest.TestCase):
                 "192.168.31.97",
                 hostname="ETPRES-ACRP01",
             )
-        self.assertEqual(text, r"TCE-PA\0101526")
+        self.assertEqual(text, r"TCE-PA\1234567")
         self.assertEqual(calls[0], "ETPRES-ACRP01")
         self.assertEqual(lookup_targets("192.168.31.97", "ETPRES-ACRP01"), [
             "ETPRES-ACRP01",

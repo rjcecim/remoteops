@@ -92,7 +92,7 @@ def lookup_active_session_users(
     """Consulta WTS + IPC$ (mesmo backend de Energia/Mensagem). Falha → em-dash.
 
     Tenta o hostname (como o ``quser /server:NOME``) e depois o IP. Logins
-    numéricos (0101526) vêm do qwinsta/quser quando a API WTS omite o usuário.
+    só numéricos vêm do qwinsta/quser quando a API WTS omite o usuário.
     """
     for target in lookup_targets(host, hostname):
         try:
