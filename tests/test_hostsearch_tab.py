@@ -9,14 +9,28 @@ from unittest.mock import patch
 from PyQt6.QtCore import QEventLoop, QTimer
 from PyQt6.QtWidgets import QApplication, QMessageBox, QToolButton
 
-from remoteops.ui.tabs.hostsearch import COL_HOSTNAME, COL_IP, COL_USER, HostSearchTab
+from remoteops.ui.tabs.hostsearch import (
+    COL_EYE,
+    COL_FULLNAME,
+    COL_HOSTNAME,
+    COL_IP,
+    COL_USER,
+    HostSearchTab,
+)
 from remoteops.ui.tabs.psexec import PsExecTab
 from remoteops.ui.widgets.selector import FileSelectorWidget
+from remoteops.utils.domain_users import (
+    clear_domain_user_cache,
+    lookup_domain_user_full_name,
+    query_netapi_full_name,
+    sam_account_name,
+)
 from remoteops.utils.hostsearch import (
     EMPTY_CELL,
     display_hostname,
     format_active_session_users,
     lookup_active_session_users,
+    lookup_full_names_for_users,
     psexec_target,
     require_active_network_range_message,
     row_matches_filter,
@@ -32,7 +46,7 @@ def _ensure_app() -> QApplication:
 
 
 def _eye_button(tab: HostSearchTab, row: int) -> QToolButton:
-    cell = tab.table.cellWidget(row, 3)
+    cell = tab.table.cellWidget(row, COL_EYE)
     btn = cell.findChild(QToolButton) if cell is not None else None
     if btn is None:
         raise AssertionError(f"olho ausente na linha {row}")
@@ -59,6 +73,16 @@ class HostSearchHelpersTests(unittest.TestCase):
         self.assertTrue(row_matches_filter("10.0.0.8", "PC-LAB", r"ACME\bob", "bob"))
         self.assertFalse(row_matches_filter("10.0.0.8", "PC-LAB", r"ACME\bob", "alice"))
         self.assertTrue(row_matches_filter("10.0.0.8", "10.0.0.8", EMPTY_CELL, ""))
+        self.assertTrue(
+            row_matches_filter(
+                "10.0.0.8", "PC-LAB", r"TCEPE-PA\7700228", "silva", "JOAO DA SILVA"
+            )
+        )
+        self.assertFalse(
+            row_matches_filter(
+                "10.0.0.8", "PC-LAB", r"TCEPE-PA\7700228", "maria", "JOAO DA SILVA"
+            )
+        )
 
     def test_active_users_domain_backslash_user(self) -> None:
         sessions = [
@@ -83,6 +107,78 @@ class HostSearchHelpersTests(unittest.TestCase):
             return_value=([], "falha WTS"),
         ):
             self.assertEqual(lookup_active_session_users("10.0.0.8", "u", "p"), EMPTY_CELL)
+
+    def test_sam_from_domain_account(self) -> None:
+        self.assertEqual(sam_account_name(r"TCEPE-PA\7700228"), "7700228")
+
+    def test_lookup_full_name_uses_netapi_not_net_exe(self) -> None:
+        seen: list[tuple[str, str]] = []
+
+        def query(sam: str, domain: str) -> str:
+            seen.append((sam, domain))
+            return "JOAO DA SILVA"
+
+        clear_domain_user_cache()
+        name = lookup_domain_user_full_name(r"TCEPE-PA\7700228", query=query)
+        self.assertEqual(name, "JOAO DA SILVA")
+        self.assertEqual(seen, [("7700228", "TCEPE-PA")])
+        self.assertEqual(
+            lookup_domain_user_full_name(r"TCEPE-PA\7700228", query=query),
+            "JOAO DA SILVA",
+        )
+        self.assertEqual(len(seen), 1, "segunda consulta deve vir do cache")
+
+    def test_netapi_tries_domain_then_dc(self) -> None:
+        calls: list[str] = []
+
+        def fake_info(server, sam):
+            calls.append(server or "")
+            if server == r"\\DC01":
+                return "JOAO DA SILVA"
+            return ""
+
+        with patch(
+            "remoteops.utils.domain_users._user_info_full_name",
+            side_effect=fake_info,
+        ), patch(
+            "remoteops.utils.domain_users._primary_dc",
+            return_value=r"\\DC01",
+        ):
+            self.assertEqual(
+                query_netapi_full_name("7700228", "TCEPE-PA"), "JOAO DA SILVA"
+            )
+        self.assertEqual(calls[0], "TCEPE-PA")
+        self.assertIn(r"\\DC01", calls)
+
+    def test_local_hostname_account_skips_domain_lookup(self) -> None:
+        def query(*_a, **_k):
+            raise AssertionError("conta local da máquina não consulta o domínio")
+
+        clear_domain_user_cache()
+        self.assertEqual(
+            lookup_domain_user_full_name(
+                r"ETSEADM-CAPL10\tce_adminin",
+                hostname="ETSEADM-CAPL10",
+                query=query,
+            ),
+            "",
+        )
+        self.assertEqual(
+            lookup_full_names_for_users(
+                r"ETSEADM-CAPL10\tce_adminin", hostname="ETSEADM-CAPL10"
+            ),
+            EMPTY_CELL,
+        )
+
+    def test_multiple_users_join_full_names(self) -> None:
+        with patch(
+            "remoteops.utils.hostsearch.lookup_domain_full_names",
+            return_value=["JOAO DA SILVA", "MARIA OLIVEIRA"],
+        ):
+            self.assertEqual(
+                lookup_full_names_for_users(r"TCEPE-PA\1  ·  TCEPE-PA\2"),
+                "JOAO DA SILVA  ·  MARIA OLIVEIRA",
+            )
 
     def test_range_required_no_hosts_json_fallback(self) -> None:
         self.assertIsNone(require_active_network_range_message("network"))
@@ -126,14 +222,15 @@ class HostSearchTabTests(unittest.TestCase):
 
     def test_tab_columns_and_hostname_dash(self) -> None:
         self.assertEqual(
-            [self.tab.table.horizontalHeaderItem(i).text() for i in range(3)],
-            ["IP", "Hostname", "Usuário ativo"],
+            [self.tab.table.horizontalHeaderItem(i).text() for i in range(4)],
+            ["IP", "Hostname", "Usuário ativo", "Nome completo"],
         )
         self.tab.add_discovered_host("192.168.1.10", "192.168.1.10", queue_user_lookup=False)
         self.tab.add_discovered_host("192.168.1.11", "HOST-11", queue_user_lookup=False)
         self.assertEqual(self.tab.table.item(0, COL_IP).text(), "192.168.1.10")
         self.assertEqual(self.tab.table.item(0, COL_HOSTNAME).text(), EMPTY_CELL)
         self.assertEqual(self.tab.table.item(0, COL_USER).text(), EMPTY_CELL)
+        self.assertEqual(self.tab.table.item(0, COL_FULLNAME).text(), EMPTY_CELL)
         self.assertEqual(self.tab.table.item(1, COL_HOSTNAME).text(), "HOST-11")
         self.assertIsNotNone(_eye_button(self.tab, 0))
 
@@ -153,12 +250,17 @@ class HostSearchTabTests(unittest.TestCase):
         self.tab.filter_edit.setText("alpha")
         self.assertFalse(self.tab.table.isRowHidden(0))
         self.assertTrue(self.tab.table.isRowHidden(1))
+        self.tab.set_full_name("10.0.0.1", "JOAO DA SILVA")
+        self.tab.filter_edit.setText("silva")
+        self.assertFalse(self.tab.table.isRowHidden(0))
+        self.assertTrue(self.tab.table.isRowHidden(1))
 
     def test_user_column_updates_without_blocking_list(self) -> None:
         self.tab.add_discovered_host("10.9.9.9", "NINE", queue_user_lookup=False)
         self.assertEqual(self.tab.table.item(0, COL_USER).text(), EMPTY_CELL)
-        self.tab.set_active_user("10.9.9.9", r"DOM\jane")
+        self.tab.set_active_user("10.9.9.9", r"DOM\jane", "Jane Doe")
         self.assertEqual(self.tab.table.item(0, COL_USER).text(), r"DOM\jane")
+        self.assertEqual(self.tab.table.item(0, COL_FULLNAME).text(), "Jane Doe")
         self.assertEqual(self.tab.table.item(0, COL_IP).text(), "10.9.9.9")
 
     def test_user_lookup_runs_after_hit_not_in_probe(self) -> None:
@@ -176,7 +278,10 @@ class HostSearchTabTests(unittest.TestCase):
         with patch(
             "remoteops.ui.tabs.hostsearch.lookup_active_session_users",
             side_effect=_lookup,
-        ) as lookup:
+        ) as lookup, patch(
+            "remoteops.ui.tabs.hostsearch.lookup_full_names_for_users",
+            return_value="Bob Silva",
+        ):
             loop = QEventLoop()
             QTimer.singleShot(3000, loop.quit)
             self.tab._user_bridge.userReady.connect(lambda *_a: loop.quit())
@@ -190,6 +295,7 @@ class HostSearchTabTests(unittest.TestCase):
             self.assertEqual(lookup.call_args.args[0], "10.0.0.8")
             self.assertEqual(lookup.call_args.kwargs.get("hostname"), "HOST8")
         self.assertEqual(self.tab.table.item(0, COL_USER).text(), r"ACME\bob")
+        self.assertEqual(self.tab.table.item(0, COL_FULLNAME).text(), "Bob Silva")
 
     def test_start_search_requires_ip_range_not_hosts_json(self) -> None:
         with patch(

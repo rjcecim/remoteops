@@ -55,6 +55,7 @@ a = Analysis(
         'remoteops.utils.printer_settings',
         'remoteops.utils.sessions',
         'remoteops.utils.hostsearch',
+        'remoteops.utils.domain_users',
         'remoteops.utils.network_scan',
         'remoteops.utils.remote_registry_query',
         'remoteops.utils.app_catalog',

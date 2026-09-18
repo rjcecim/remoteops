@@ -47,6 +47,7 @@ from remoteops.utils.hostsearch import (
     SESSION_LOOKUP_WORKERS,
     display_hostname,
     lookup_active_session_users,
+    lookup_full_names_for_users,
     psexec_target,
     require_active_network_range_message,
     row_matches_filter,
@@ -63,7 +64,8 @@ from remoteops.utils.ping import normalize_host
 COL_IP = 0
 COL_HOSTNAME = 1
 COL_USER = 2
-COL_EYE = 3
+COL_FULLNAME = 3
+COL_EYE = 4
 
 
 class _HostScanWorker(QThread):
@@ -117,7 +119,7 @@ class _HostScanWorker(QThread):
 
 
 class _UserLookupBridge(QObject):
-    userReady = pyqtSignal(int, str, str)  # generation, ip, display
+    userReady = pyqtSignal(int, str, str, str)  # generation, ip, user, full_name
 
 
 class HostSearchTab(QWidget):
@@ -139,6 +141,7 @@ class HostSearchTab(QWidget):
         self._user_bridge.userReady.connect(self._on_user_ready)
         self._hits: list[tuple[str, str]] = []
         self._users: dict[str, str] = {}
+        self._full_names: dict[str, str] = {}
         self._scan_ips_done = 0
         self._scan_ips_total = 0
         self._scan_hosts_found = 0
@@ -232,7 +235,7 @@ class HostSearchTab(QWidget):
         filter_row.setSpacing(8)
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText(
-            self.tr("Filtrar por IP, hostname ou usuário…")
+            self.tr("Filtrar por IP, hostname, usuário ou nome…")
         )
         self.filter_edit.setToolTip(
             self.tr(
@@ -250,20 +253,21 @@ class HostSearchTab(QWidget):
         self.filter_edit.textChanged.connect(self._apply_results_filter)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(4)
+        self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(
             [
                 self.tr("IP"),
                 self.tr("Hostname"),
                 self.tr("Usuário ativo"),
+                self.tr("Nome completo"),
                 "",
             ]
         )
         configure_standard_table(
             self.table,
-            stretch_columns=(2,),
-            fixed_columns={3: 48},
-            skip_sort_columns=(3,),
+            stretch_columns=(2, 3),
+            fixed_columns={4: 48},
+            skip_sort_columns=(4,),
         )
         self.table.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -427,6 +431,7 @@ class HostSearchTab(QWidget):
 
         self._hits = []
         self._users = {}
+        self._full_names = {}
         self._scan_ips_done = 0
         self._scan_ips_total = len(ips)
         self._scan_hosts_found = 0
@@ -495,6 +500,7 @@ class HostSearchTab(QWidget):
             return
         self._hits.append((addr, name))
         self._users[key] = EMPTY_CELL
+        self._full_names[key] = EMPTY_CELL
         self._scan_hosts_found = max(self._scan_hosts_found, len(self._hits))
         self._append_hit_row(addr, name)
         self._apply_results_filter()
@@ -522,29 +528,59 @@ class HostSearchTab(QWidget):
             )
         except Exception:
             text = EMPTY_CELL
+        full_name = EMPTY_CELL
+        if text != EMPTY_CELL:
+            try:
+                full_name = lookup_full_names_for_users(text, hostname=hostname)
+            except Exception:
+                full_name = EMPTY_CELL
         if int(generation) != int(self._search_generation):
             return
-        self._user_bridge.userReady.emit(int(generation), ip, text)
+        self._user_bridge.userReady.emit(int(generation), ip, text, full_name)
 
-    def _on_user_ready(self, generation: int, ip: str, display: str) -> None:
+    def _on_user_ready(
+        self, generation: int, ip: str, display: str, full_name: str = ""
+    ) -> None:
         if not self._ui_alive() or int(generation) != int(self._search_generation):
             return
-        self.set_active_user(ip, display)
+        self.set_active_user(ip, display, full_name)
 
-    def set_active_user(self, ip: str, display: str) -> None:
+    def set_active_user(
+        self, ip: str, display: str, full_name: Optional[str] = None
+    ) -> None:
         addr = normalize_host(ip)
         if not addr:
             return
         text = (display or "").strip() or EMPTY_CELL
         self._users[addr.casefold()] = text
         row = self._row_for_ip(addr)
+        if row is not None:
+            with pause_table_sorting(self.table):
+                item = self.table.item(row, COL_USER)
+                if item is None:
+                    item = QTableWidgetItem(text)
+                    self.table.setItem(row, COL_USER, item)
+                else:
+                    item.setText(text)
+        if full_name is not None:
+            self.set_full_name(ip, full_name)
+            return
+        self._apply_results_filter()
+
+    def set_full_name(self, ip: str, display: str) -> None:
+        addr = normalize_host(ip)
+        if not addr:
+            return
+        text = (display or "").strip() or EMPTY_CELL
+        self._full_names[addr.casefold()] = text
+        row = self._row_for_ip(addr)
         if row is None:
             return
         with pause_table_sorting(self.table):
-            item = self.table.item(row, COL_USER)
+            item = self.table.item(row, COL_FULLNAME)
             if item is None:
                 item = QTableWidgetItem(text)
-                self.table.setItem(row, COL_USER, item)
+                self.table.setItem(row, COL_FULLNAME, item)
             else:
                 item.setText(text)
         self._apply_results_filter()
@@ -563,6 +599,7 @@ class HostSearchTab(QWidget):
     def _append_hit_row(self, ip: str, hostname: str) -> None:
         shown = display_hostname(ip, hostname)
         user = self._users.get(ip.casefold(), EMPTY_CELL)
+        full_name = self._full_names.get(ip.casefold(), EMPTY_CELL)
         with pause_table_sorting(self.table):
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -571,10 +608,12 @@ class HostSearchTab(QWidget):
             ip_item.setData(Qt.ItemDataRole.UserRole, ip)
             host_item = QTableWidgetItem(shown)
             user_item = QTableWidgetItem(user)
+            full_item = QTableWidgetItem(full_name)
 
             self.table.setItem(row, COL_IP, ip_item)
             self.table.setItem(row, COL_HOSTNAME, host_item)
             self.table.setItem(row, COL_USER, user_item)
+            self.table.setItem(row, COL_FULLNAME, full_item)
 
             eye = QToolButton()
             eye.setObjectName("hostSearchEye")
@@ -624,11 +663,13 @@ class HostSearchTab(QWidget):
             ip_item = self.table.item(row, COL_IP)
             host_item = self.table.item(row, COL_HOSTNAME)
             user_item = self.table.item(row, COL_USER)
+            full_item = self.table.item(row, COL_FULLNAME)
             ip = ip_item.text() if ip_item else ""
             hostname = host_item.text() if host_item else ""
             user = user_item.text() if user_item else ""
+            full_name = full_item.text() if full_item else ""
             raw_hostname = hostname if hostname != EMPTY_CELL else ip
-            ok = row_matches_filter(ip, raw_hostname, user, query)
+            ok = row_matches_filter(ip, raw_hostname, user, query, full_name)
             self.table.setRowHidden(row, not ok)
             if ok:
                 visible += 1

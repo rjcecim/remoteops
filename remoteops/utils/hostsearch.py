@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from typing import Optional, Sequence
 
+from remoteops.utils.domain_users import lookup_domain_full_names
 from remoteops.utils.installed_printers import session_account
 from remoteops.utils.ping import normalize_host
 from remoteops.utils.printers import active_sessions
 from remoteops.utils.sessions import RemoteSession, list_remote_sessions
 
 EMPTY_CELL = "—"
+ACTIVE_USER_SEPARATOR = "  ·  "
 SESSION_LOOKUP_WORKERS = 8
 
 
@@ -37,8 +39,9 @@ def row_matches_filter(
     hostname: str,
     user: str,
     query: str,
+    full_name: str = "",
 ) -> bool:
-    """Filtro ao vivo: substring em IP, hostname exibido ou usuário (sem nova varredura)."""
+    """Filtro ao vivo: substring em IP, hostname, usuário ou nome completo."""
     text = (query or "").strip().casefold()
     if not text:
         return True
@@ -47,6 +50,7 @@ def row_matches_filter(
             normalize_host(ip),
             display_hostname(ip, hostname),
             (user or "").strip() or EMPTY_CELL,
+            (full_name or "").strip() or EMPTY_CELL,
         )
     ).casefold()
     return text in haystack
@@ -63,7 +67,20 @@ def format_active_session_users(sessions: Sequence[RemoteSession]) -> str:
             continue
         seen.add(key)
         users.append(name)
-    return "  ·  ".join(users) if users else EMPTY_CELL
+    return ACTIVE_USER_SEPARATOR.join(users) if users else EMPTY_CELL
+
+
+def lookup_full_names_for_users(user_display: str, hostname: str = "") -> str:
+    """Nome completo AD (NetUserGetInfo) para cada conta do usuário ativo."""
+    names = lookup_domain_full_names(
+        user_display, hostname=hostname, empty=EMPTY_CELL
+    )
+    if not names:
+        return EMPTY_CELL
+    shown = [name.strip() or EMPTY_CELL for name in names]
+    if all(item == EMPTY_CELL for item in shown):
+        return EMPTY_CELL
+    return ACTIVE_USER_SEPARATOR.join(shown)
 
 
 def lookup_targets(ip: str, hostname: str = "") -> list[str]:
