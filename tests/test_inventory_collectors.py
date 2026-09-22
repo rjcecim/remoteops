@@ -46,6 +46,7 @@ class InventoryScriptEmitTests(unittest.TestCase):
             "_SCRIPT_FIRMWARE",
             "_SCRIPT_SECURITY",
             "_SCRIPT_IDENTITY",
+            "_SCRIPT_SYSTEM_ENRICH",
             "_SCRIPT_OVERVIEW_ENRICH",
         )
         for name in object_scripts:

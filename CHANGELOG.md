@@ -8,19 +8,21 @@ exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
 Use esta seção para registrar a próxima melhoria antes de criar o commit.
 
-## [1.9.0] (Build 83) - 2026-09-17 a 2026-09-18
+## [1.9.0] (Build 84) - 2026-09-17 a 2026-09-22
 
-Identidade: **RemoteOps 1.9.0 (Build 83)**.
+Identidade: **RemoteOps 1.9.0 (Build 84)**.
 
 - Add a standalone Host Search tab, independent of Application Search, opened from a header host button (`E968`).
 - Scan the active Settings IP range over TCP 445/135/139 (NetBIOS then DNS; ICMP does not exclude the host) with no `hosts.json` fallback.
 - List IP, hostname, active WTS user (`DOMAIN\user` via the same sessions/IPC$ backend as Power/Message), domain full name (`NetUserGetInfo`, cached, no `net.exe`) and an eye action that fills PsExec and focuses the host field.
 - Filter discovered rows live by IP, hostname, user or full name, without restarting the scan.
 - Show active users whose login is numeric: parse qwinsta/quser without treating the account as a session id, fall back when WTS omits the username, accept Portuguese `Ativo`, and query the hostname before the IP.
+- Correct Inventory Overview and System on the selected host: identify Windows 10/11 from `Win32_OperatingSystem.Caption` (not PsInfo Product type), convert `TotalPhysicalMemory` from bytes once, show version/build/architecture/user/network details, and reject data from another computer.
 
-- 2026-09-17 · Add standalone Host Search with active-user lookup and PsExec handoff.
-- 2026-09-17 · Fix Host Search omitting active users whose login is numeric.
+- 2026-09-22 · Correct inventory Overview and System OS/memory from CIM instead of stale PsInfo fields.
 - 2026-09-18 · Show Host Search full names from AD via NetUserGetInfo (no net.exe).
+- 2026-09-17 · Fix Host Search omitting active users whose login is numeric.
+- 2026-09-17 · Add standalone Host Search with active-user lookup and PsExec handoff.
 
 ## [1.8.0] (Build 80) - 2026-09-04 a 2026-09-16
 

@@ -4,7 +4,6 @@ from typing import Any, Callable, Dict, Optional
 
 from remoteops.utils.inventory.cache import InventoryCache
 from remoteops.utils.inventory.collectors import (
-    _SCRIPT_OVERVIEW_ENRICH,
     collect_firmware,
     collect_hardware,
     collect_identity,
@@ -18,17 +17,11 @@ from remoteops.utils.inventory.collectors import (
 )
 from remoteops.utils.inventory.models import (
     InventorySection,
-    OverviewData,
     QueryContext,
     QueryStatus,
     SectionResult,
 )
-from remoteops.utils.inventory.remote_exec import run_remote_powershell
-from remoteops.utils.psinfo import (
-    build_overview_from_psinfo,
-    collect_psinfo_raw,
-    parse_psinfo_output,
-)
+from remoteops.utils.inventory.overview import collect_overview
 
 
 class InventoryService:
@@ -133,7 +126,7 @@ class InventoryService:
         if override is not None:
             return override
         collectors: Dict[InventorySection, Callable[..., Any]] = {
-            InventorySection.OVERVIEW: self._collect_overview,
+            InventorySection.OVERVIEW: lambda h, **kw: collect_overview(h, **kw),
             InventorySection.SYSTEM: lambda h, **kw: collect_system(h, **kw),
             InventorySection.HARDWARE: lambda h, **kw: collect_hardware(h, **kw),
             InventorySection.MEMORY: lambda h, **kw: collect_memory(h, **kw),
@@ -146,55 +139,6 @@ class InventoryService:
             InventorySection.UPDATES: lambda h, **kw: collect_updates(h, **kw),
         }
         return collectors.get(section)
-
-    def _collect_overview(
-        self,
-        host: str,
-        *,
-        user: str = "",
-        password: str = "",
-        pstools_dir: str = "",
-    ) -> OverviewData:
-        stdout, err = collect_psinfo_raw(
-            host,
-            include_disks=True,
-            include_hotfixes=False,
-            user=user,
-            password=password,
-            pstools_dir=pstools_dir,
-        )
-        if not stdout:
-            return OverviewData(status=QueryStatus.ERROR, error=err or "PsInfo sem dados.")
-
-        parsed = parse_psinfo_output(stdout, host=host)
-        enrich, _ = run_remote_powershell(
-            host, _SCRIPT_OVERVIEW_ENRICH, user=user, password=password, pstools_dir=pstools_dir
-        )
-        summary = build_overview_from_psinfo(parsed, host, enrich=enrich if isinstance(enrich, dict) else None)
-
-        overview = OverviewData(
-            hostname=summary["hostname"],
-            manufacturer=summary["manufacturer"],
-            model=summary["model"],
-            os_summary=summary["os_summary"],
-            domain=summary["domain"],
-            uptime=summary["uptime"],
-            cpu_summary=summary["cpu_summary"],
-            cpu_detail=summary["cpu_detail"],
-            memory_summary=summary["memory_summary"],
-            memory_detail=summary["memory_detail"],
-            storage_summary=summary["storage_summary"],
-            storage_detail=summary["storage_detail"],
-            network_summary=summary["network_summary"],
-            network_detail=summary["network_detail"],
-            security_summary=summary["security_summary"],
-            security_detail=summary["security_detail"],
-            updates_summary=summary["updates_summary"],
-            updates_detail=summary["updates_detail"],
-            psinfo=summary["psinfo"],
-            status=QueryStatus.OK,
-        )
-        return overview
 
     def invalidate_all(self) -> None:
         self.cache.invalidate()

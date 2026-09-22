@@ -10,9 +10,13 @@ from remoteops.utils.inventory.formatters import (
     architecture_label,
     bytes_to_gb,
     format_link_speed_bps,
+    format_memory_from_bytes,
     format_mhz,
+    format_os_architecture,
     format_tpm_version,
+    inventory_hosts_match,
     normalize_wmi_date,
+    optional_byte_count,
     safe_str,
     smbios_memory_type,
     volume_used_pct,
@@ -67,6 +71,50 @@ def _field(label: str, value: Any, *, status: QueryStatus = QueryStatus.OK) -> F
     return FieldValue(label, safe_str(value), status=status)
 
 
+def overlay_system_cim(
+    system: Dict[str, str],
+    enrich: Any,
+    requested_host: str,
+) -> bool:
+    """Aplica Caption/versão/build/arch e memória CIM. Não inventa valores.
+
+    Recusa overlay se o Name retornado não for o host solicitado.
+    """
+    if not isinstance(enrich, dict):
+        return False
+    cs = enrich.get("ComputerSystem") if isinstance(enrich.get("ComputerSystem"), dict) else {}
+    osinfo = enrich.get("OperatingSystem") if isinstance(enrich.get("OperatingSystem"), dict) else {}
+    collected = safe_str(cs.get("Name") if cs else "", default="")
+    if collected and collected != _EMPTY and not inventory_hosts_match(requested_host, collected):
+        return False
+
+    applied = False
+    caption = safe_str(osinfo.get("Caption") if osinfo else "", default="")
+    if caption and caption != _EMPTY:
+        system["OS caption"] = caption
+        applied = True
+    version = safe_str(osinfo.get("Version") if osinfo else "", default="")
+    if version and version != _EMPTY:
+        system["OS version"] = version
+        applied = True
+    build = safe_str(osinfo.get("BuildNumber") if osinfo else "", default="")
+    if build and build != _EMPTY:
+        system["OS build"] = build
+        applied = True
+    arch_raw = osinfo.get("OSArchitecture") if osinfo else None
+    if arch_raw not in (None, ""):
+        system["OS architecture"] = format_os_architecture(arch_raw)
+        applied = True
+
+    memory_bytes = optional_byte_count(cs.get("TotalPhysicalMemory") if cs else None)
+    if memory_bytes is not None:
+        primary, detail = format_memory_from_bytes(memory_bytes)
+        if primary and primary != _EMPTY:
+            system["Physical memory"] = f"{primary} ({detail})" if detail else primary
+            applied = True
+    return applied
+
+
 def collect_system(
     host: str,
     *,
@@ -74,31 +122,67 @@ def collect_system(
     password: str = "",
     pstools_dir: str = "",
 ) -> SystemData:
+    requested = (host or "").strip().strip("\\")
     stdout, err = collect_psinfo_raw(
-        host,
+        requested,
         include_disks=False,
         include_hotfixes=False,
         user=user,
         password=password,
         pstools_dir=pstools_dir,
     )
-    if not stdout:
-        return SystemData(status=QueryStatus.ERROR, error=err or "PsInfo sem dados.")
-    parsed = parse_psinfo_output(stdout, host=host)
-    patch_system_uptime(
-        parsed.system,
-        host,
+    parsed = parse_psinfo_output(stdout, host=requested) if stdout else None
+    if parsed is not None:
+        patch_system_uptime(
+            parsed.system,
+            requested,
+            user=user,
+            password=password,
+            pstools_dir=pstools_dir,
+        )
+
+    enrich, cim_err = run_remote_powershell(
+        requested,
+        _SCRIPT_SYSTEM_ENRICH,
         user=user,
         password=password,
         pstools_dir=pstools_dir,
     )
-    info_host = extract_psinfo_host(parsed) or host
+    enrich_dict = enrich if isinstance(enrich, dict) else None
+
+    if parsed is None and enrich_dict is None:
+        return SystemData(
+            status=QueryStatus.ERROR,
+            error=err or cim_err or "Não foi possível consultar o sistema.",
+        )
+
+    system = dict(parsed.system) if parsed is not None else {}
+    cim_applied = overlay_system_cim(system, enrich_dict, requested)
+    info_host = (extract_psinfo_host(parsed) if parsed is not None else "") or requested
+    if cim_applied and isinstance(enrich_dict, dict):
+        cs = enrich_dict.get("ComputerSystem")
+        cim_name = safe_str(cs.get("Name") if isinstance(cs, dict) else "", default="")
+        if cim_name and cim_name != _EMPTY:
+            info_host = cim_name
+
     rows = format_system_display(
-        parsed.system,
+        system,
         host=info_host,
-        tool_version=parsed.tool_version,
+        tool_version=parsed.tool_version if parsed is not None else "",
     )
-    return SystemData(rows=rows, psinfo=parsed, status=QueryStatus.OK)
+    if cim_applied:
+        source_note = (
+            "Fonte: Win32_OperatingSystem / Win32_ComputerSystem via PsExec"
+            " · PsInfo (demais campos)"
+        )
+    else:
+        source_note = "Fonte: PsInfo (Sysinternals)"
+    return SystemData(
+        rows=rows,
+        source_note=source_note,
+        psinfo=parsed,
+        status=QueryStatus.OK,
+    )
 
 
 # ── Scripts PowerShell (executados LOCALMENTE no remoto via PsExec) ─────────
@@ -913,18 +997,82 @@ def collect_updates(
     )
 
 
+_SCRIPT_SYSTEM_ENRICH = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$cs = Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 Name, TotalPhysicalMemory
+$os = Get-CimInstance Win32_OperatingSystem | Select-Object -First 1 Caption, Version, BuildNumber, OSArchitecture, LastBootUpTime
+$result = @{ ComputerSystem = $cs; OperatingSystem = $os }
+$json = [string](ConvertTo-Json -InputObject $result -Depth 6 -Compress)
+if ([string]::IsNullOrWhiteSpace($json)) { $json = '{}' }
+""" + _PS_EMIT_JSON
+
+
 _SCRIPT_OVERVIEW_ENRICH = r"""
 $ErrorActionPreference = 'SilentlyContinue'
-$cs = Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 Manufacturer, Model, Domain, Name
-$net = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-  Where-Object { $_.IPAddress -notlike '127.*' -and $_.PrefixOrigin -ne 'WellKnown' } |
-  Select-Object -First 1 IPAddress, InterfaceAlias
+$cs = Get-CimInstance Win32_ComputerSystem | Select-Object -First 1 Manufacturer, Model, Domain, Name, UserName, TotalPhysicalMemory
+$os = Get-CimInstance Win32_OperatingSystem | Select-Object -First 1 Caption, Version, BuildNumber, OSArchitecture, LastBootUpTime
+$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed, CurrentClockSpeed
+$disks = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Select-Object DeviceID, FileSystem, Size, FreeSpace)
+$nicCfg = @(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled=TRUE") |
+  Where-Object { @($_.IPAddress) | Where-Object { $_ -and $_ -notlike '*:*' -and $_ -notlike '127.*' } } |
+  Select-Object -First 1
+$ip = $null
+$gw = $null
+$desc = $null
+$mac = $null
+if ($nicCfg) {
+  $desc = $nicCfg.Description
+  $mac = $nicCfg.MACAddress
+  $ip = @($nicCfg.IPAddress) | Where-Object { $_ -and $_ -notlike '*:*' -and $_ -notlike '127.*' } | Select-Object -First 1
+  $gw = @($nicCfg.DefaultIPGateway) | Where-Object { $_ -and $_ -notlike '*:*' } | Select-Object -First 1
+}
+$speed = $null
+$alias = $null
+if ($mac) {
+  $na = Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.MACAddress -eq $mac } | Select-Object -First 1
+  if ($na) { $speed = $na.Speed; $alias = $na.NetConnectionID }
+}
+if (-not $ip -or -not $alias) {
+  $net = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -notlike '127.*' -and $_.PrefixOrigin -ne 'WellKnown' } |
+    Select-Object -First 1 IPAddress, InterfaceAlias
+  if ($net) {
+    if (-not $ip) { $ip = $net.IPAddress }
+    if (-not $alias) { $alias = $net.InterfaceAlias }
+  }
+}
 $uptimeSeconds = $null
-$os = Get-CimInstance Win32_OperatingSystem | Select-Object -First 1 LastBootUpTime
 if ($os -and $os.LastBootUpTime) {
   $uptimeSeconds = [int64]((Get-Date) - [datetime]$os.LastBootUpTime).TotalSeconds
 }
-$result = @{ ComputerSystem = $cs; Network = $net; UptimeSeconds = $uptimeSeconds }
+$sec = @{ BitLocker = $null; Defender = $null; Firewall = $null; UAC = $null }
+try { $sec.BitLocker = @(Get-BitLockerVolume -ErrorAction SilentlyContinue | Select-Object MountPoint, ProtectionStatus) } catch {}
+try { $sec.Defender = Get-MpComputerStatus -ErrorAction SilentlyContinue | Select-Object AntivirusEnabled, RealTimeProtectionEnabled } catch {}
+try { $sec.Firewall = @(Get-NetFirewallProfile -ErrorAction SilentlyContinue | Select-Object Name, Enabled) } catch {}
+try { $sec.UAC = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA -ErrorAction SilentlyContinue).EnableLUA } catch {}
+$upd = @{ Count = $null; LastId = $null; LastDate = $null }
+try {
+  $fixes = @(Get-CimInstance Win32_QuickFixEngineering | Select-Object HotFixID, InstalledOn)
+  $upd.Count = @($fixes).Count
+  $last = $fixes | Sort-Object InstalledOn -Descending | Select-Object -First 1
+  if ($last) { $upd.LastId = $last.HotFixID; $upd.LastDate = [string]$last.InstalledOn }
+} catch {}
+$result = @{
+  ComputerSystem = $cs
+  OperatingSystem = $os
+  Processor = $cpu
+  Disks = $disks
+  Network = @{
+    Description = $desc
+    IPAddress = $ip
+    Gateway = $gw
+    Speed = $speed
+    InterfaceAlias = $alias
+  }
+  UptimeSeconds = $uptimeSeconds
+  Security = $sec
+  Updates = $upd
+}
 $json = [string](ConvertTo-Json -InputObject $result -Depth 6 -Compress)
 if ([string]::IsNullOrWhiteSpace($json)) { $json = '{}' }
 """ + _PS_EMIT_JSON

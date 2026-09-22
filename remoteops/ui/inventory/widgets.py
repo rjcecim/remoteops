@@ -170,9 +170,12 @@ class OverviewPanel(QWidget):
         os_line: str = "",
         meta_line: str = "",
         metrics: Optional[Sequence[OverviewMetricData]] = None,
+        identity_rows: Optional[Sequence[Tuple[str, str]]] = None,
+        state_banner: str = "",
         parent=None,
     ):
         super().__init__(parent)
+        self.setObjectName("overviewPanel")
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         root = QVBoxLayout(self)
@@ -198,6 +201,30 @@ class OverviewPanel(QWidget):
             meta = muted_label(meta_line)
             meta.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 8.5pt;")
             root.addWidget(meta)
+
+        if identity_rows:
+            id_wrap = QWidget()
+            id_grid = QGridLayout(id_wrap)
+            id_grid.setContentsMargins(0, 2, 0, 0)
+            id_grid.setHorizontalSpacing(16)
+            id_grid.setVerticalSpacing(4)
+            id_grid.setColumnStretch(1, 1)
+            id_grid.setColumnStretch(3, 1)
+            for i, (label, val) in enumerate(identity_rows):
+                r, c = divmod(i, 2)
+                k = muted_label(label)
+                k.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 8.5pt;")
+                v = value_label(val or "Não disponível")
+                v.setStyleSheet(f"color: {COLOR_TEXT}; font-size: 9pt;")
+                id_grid.addWidget(k, r, c * 2, Qt.AlignmentFlag.AlignTop)
+                id_grid.addWidget(v, r, c * 2 + 1, Qt.AlignmentFlag.AlignTop)
+            root.addWidget(id_wrap)
+
+        if state_banner:
+            banner = muted_label(state_banner)
+            banner.setObjectName("overviewCollectionState")
+            banner.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 8pt;")
+            root.addWidget(banner)
 
         div = QFrame()
         div.setFrameShape(QFrame.Shape.HLine)
@@ -272,7 +299,7 @@ class _SystemGroupSection(QFrame):
 
 class SystemPanel(QWidget):
     """
-    Seção Sistema — dados coletados via PsInfo.
+    Seção Sistema — SO/memória via CIM quando disponível; demais campos via PsInfo.
     Layout compacto alinhado ao topo (não estica para preencher a janela).
     """
 
@@ -289,6 +316,10 @@ class SystemPanel(QWidget):
         "Outros": "\uE946",
     }
     _HERO_LABELS: frozenset[str] = frozenset({
+        "Sistema operacional",
+        "Versão",
+        "Build",
+        "Arquitetura",
         "Versão do kernel",
         "Tipo do produto",
         "Versão do produto",
@@ -300,8 +331,14 @@ class SystemPanel(QWidget):
         "PsInfo",
     })
 
-    def __init__(self, rows: Sequence[Tuple[str, str, str]], parent=None):
+    def __init__(
+        self,
+        rows: Sequence[Tuple[str, str, str]],
+        source_note: str = "",
+        parent=None,
+    ):
         super().__init__(parent)
+        self.setObjectName("systemPanel")
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         by_group: dict[str, List[Tuple[str, str]]] = {}
@@ -315,21 +352,34 @@ class SystemPanel(QWidget):
         root.setSpacing(10)
         root.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        kernel = by_label.get("Versão do kernel", "")
-        if kernel:
-            title = value_label(kernel, bold=True, size=12)
+        os_caption = (by_label.get("Sistema operacional") or "").strip()
+        kernel = (by_label.get("Versão do kernel") or "").strip()
+        title_text = os_caption if os_caption and os_caption != "—" else kernel
+        if title_text:
+            title = value_label(title_text, bold=True, size=12)
             root.addWidget(title)
 
         subtitle_parts: List[str] = []
-        product_type = by_label.get("Tipo do produto", "")
-        product_ver = by_label.get("Versão do produto", "")
-        build = by_label.get("Build do kernel", "")
-        if product_type:
-            subtitle_parts.append(product_type)
-        if product_ver:
-            subtitle_parts.append(product_ver)
-        if build:
-            subtitle_parts.append(f"Build {build}")
+        if os_caption and os_caption != "—":
+            version = (by_label.get("Versão") or "").strip()
+            build = (by_label.get("Build") or "").strip()
+            arch = (by_label.get("Arquitetura") or "").strip()
+            if version and version != "—":
+                subtitle_parts.append(version)
+            if build and build != "—":
+                subtitle_parts.append(f"Build {build}")
+            if arch and arch != "—":
+                subtitle_parts.append(arch)
+        else:
+            product_type = by_label.get("Tipo do produto", "")
+            product_ver = by_label.get("Versão do produto", "")
+            build = by_label.get("Build do kernel", "")
+            if product_type:
+                subtitle_parts.append(product_type)
+            if product_ver:
+                subtitle_parts.append(product_ver)
+            if build:
+                subtitle_parts.append(f"Build {build}")
         if subtitle_parts:
             sub = muted_label(" · ".join(subtitle_parts))
             sub.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 9pt;")
@@ -383,7 +433,7 @@ class SystemPanel(QWidget):
                 continue
             root.addWidget(_SystemGroupSection("\uE946", group_name, filtered))
 
-        foot = QLabel("Fonte: PsInfo (Sysinternals)")
+        foot = QLabel(source_note or "Fonte: PsInfo (Sysinternals)")
         foot.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 7.5pt;")
         root.addWidget(foot)
 
@@ -2187,6 +2237,7 @@ def section_error_widget(message: str) -> QWidget:
 def section_loading_widget(message: str = "Coletando informações...") -> QWidget:
     """Indicador de carregamento único (spinner + mensagem)."""
     wrap = QWidget()
+    wrap.setObjectName("inventoryLoadingState")
     wrap.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
     lay = QVBoxLayout(wrap)
     lay.setContentsMargins(0, 24, 0, 24)

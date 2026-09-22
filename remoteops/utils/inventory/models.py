@@ -29,6 +29,12 @@ class QueryStatus(str, Enum):
     NOT_QUERIED = "not_queried"
 
 
+class CollectionState(str, Enum):
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    ERROR = "error"
+
+
 @dataclass
 class FieldValue:
     label: str
@@ -201,20 +207,40 @@ class OverviewData:
     manufacturer: str = ""
     model: str = ""
     os_summary: str = ""
+    os_name: str = ""
+    os_version: str = ""
+    os_build: str = ""
+    os_architecture: str = ""
     domain: str = ""
+    username: str = ""
+    last_boot: str = ""
     uptime: str = ""
     cpu_summary: str = ""
     cpu_detail: str = ""
+    cpu_cores: str = ""
+    cpu_logical: str = ""
+    cpu_clock: str = ""
     memory_summary: str = ""
     memory_detail: str = ""
     storage_summary: str = ""
     storage_detail: str = ""
+    storage_filesystem: str = ""
+    storage_capacity: str = ""
+    storage_free: str = ""
     network_summary: str = ""
     network_detail: str = ""
+    network_adapter: str = ""
+    network_ip: str = ""
+    network_speed: str = ""
+    network_gateway: str = ""
     security_summary: str = ""
     security_detail: str = ""
     updates_summary: str = ""
     updates_detail: str = ""
+    collected_host: str = ""
+    requested_host: str = ""
+    host_mismatch: bool = False
+    completeness: str = "complete"
     psinfo: Optional[PsInfoResult] = None
     status: QueryStatus = QueryStatus.OK
     error: str = ""
@@ -223,6 +249,7 @@ class OverviewData:
 @dataclass
 class SystemData:
     rows: List[tuple[str, str, str]] = field(default_factory=list)
+    source_note: str = ""
     psinfo: Optional[PsInfoResult] = None
     status: QueryStatus = QueryStatus.OK
     error: str = ""

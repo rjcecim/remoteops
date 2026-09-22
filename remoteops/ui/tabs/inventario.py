@@ -23,19 +23,19 @@ from remoteops.ui.inventory.nav import (
     section_label,
 )
 from remoteops.ui.inventory.widgets import (
+    FirmwarePanel,
+    HardwarePanel,
     IdentitySectionPanel,
+    MemoryPanel,
+    NetworkPanel,
     OverviewMetricData,
     OverviewPanel,
     SectionHeader,
     SecurityPanel,
-    SystemPanel,
-    FirmwarePanel,
-    HardwarePanel,
-    MemoryPanel,
-    NetworkPanel,
-    VideoPanel,
     StoragePanel,
+    SystemPanel,
     UpdatesPanel,
+    VideoPanel,
     muted_label,
     scroll_content,
     section_error_widget,
@@ -49,11 +49,12 @@ from remoteops.ui.style import (
     make_icon_button,
 )
 from remoteops.utils.inventory.cache import normalize_inventory_host
+from remoteops.utils.inventory.formatters import UNAVAILABLE, is_unavailable
 from remoteops.utils.inventory.models import (
+    FirmwareData,
     HardwareData,
     IdentityData,
     InventorySection,
-    FirmwareData,
     MemorySummary,
     NetworkData,
     OverviewData,
@@ -66,7 +67,6 @@ from remoteops.utils.inventory.models import (
     UpdatesData,
     VideoData,
 )
-from remoteops.utils.inventory.formatters import is_invalid_psinfo_uptime
 from remoteops.utils.inventory.service import InventoryService
 from remoteops.utils.pstools import get_pstools_dir
 
@@ -424,7 +424,12 @@ class InventarioTab(QWidget):
         else:
             self._update_host_chip()
             host = self._get_host()
-            self._status_lbl.setText(self.tr("Atualizado") if host else "")
+            current = (self._status_lbl.text() or "").strip()
+            collecting = (not current) or current.startswith("Coletando")
+            if host and collecting:
+                self._status_lbl.setText(self.tr("Atualizado"))
+            elif not host:
+                self._status_lbl.setText("")
 
     def run_inventory(self) -> None:
         """Abre/coleta a seção atual (Visão geral na primeira abertura)."""
@@ -560,42 +565,113 @@ class InventarioTab(QWidget):
         if fn:
             fn(payload)
 
+    def _overview_value(self, value: str) -> str:
+        text = (value or "").strip()
+        if is_unavailable(text):
+            return UNAVAILABLE
+        return text
+
     def _render_overview(self, data: OverviewData) -> None:
+        if data.host_mismatch or (
+            data.status == QueryStatus.ERROR
+            and is_unavailable(data.os_name)
+            and is_unavailable(data.memory_summary)
+        ):
+            self._present_section(
+                InventorySection.OVERVIEW,
+                section_error_widget(
+                    data.error or self.tr("Não foi possível consultar o host.")
+                ),
+            )
+            if data.host_mismatch:
+                self._status_lbl.setText(self.tr("Host divergente"))
+            else:
+                self._status_lbl.setText(self.tr("Erro"))
+            return
+
         device_line = " ".join(
-            p for p in [data.manufacturer, data.model] if p and p != "—"
+            p
+            for p in [data.manufacturer, data.model]
+            if p and not is_unavailable(p)
         )
-        meta_parts: List[str] = []
-        if data.domain and data.domain != "—":
-            meta_parts.append(f"Domínio: {data.domain}")
-        if data.uptime and data.uptime != "—" and not is_invalid_psinfo_uptime(data.uptime):
-            meta_parts.append(f"Uptime: {data.uptime}")
-        meta_line = "  ·  ".join(meta_parts)
+
+        identity_rows = [
+            ("Sistema operacional", self._overview_value(data.os_name or data.os_summary)),
+            ("Versão", self._overview_value(data.os_version)),
+            ("Build", self._overview_value(data.os_build)),
+            ("Arquitetura", self._overview_value(data.os_architecture)),
+            ("Domínio", self._overview_value(data.domain)),
+            ("Usuário", self._overview_value(data.username)),
+            ("Último boot", self._overview_value(data.last_boot)),
+            ("Tempo de atividade", self._overview_value(data.uptime)),
+        ]
 
         metrics = [
-            OverviewMetricData("\uE950", "Processador", data.cpu_summary, data.cpu_detail),
-            OverviewMetricData("\uE8F1", "Memória", data.memory_summary, data.memory_detail),
-            OverviewMetricData("\uE7B8", "Armazenamento", data.storage_summary, data.storage_detail),
-            OverviewMetricData("\uE968", "Rede", data.network_summary, data.network_detail),
+            OverviewMetricData(
+                "\uE950",
+                "Processador",
+                self._overview_value(data.cpu_summary),
+                self._overview_value(data.cpu_detail) if not is_unavailable(data.cpu_detail) else "",
+            ),
+            OverviewMetricData(
+                "\uE8F1",
+                "Memória",
+                self._overview_value(data.memory_summary),
+                self._overview_value(data.memory_detail)
+                if not is_unavailable(data.memory_detail)
+                else "",
+            ),
+            OverviewMetricData(
+                "\uE7B8",
+                "Armazenamento",
+                self._overview_value(data.storage_summary),
+                self._overview_value(data.storage_detail)
+                if not is_unavailable(data.storage_detail)
+                else "",
+            ),
+            OverviewMetricData(
+                "\uE968",
+                "Rede",
+                self._overview_value(data.network_summary),
+                self._overview_value(data.network_detail)
+                if not is_unavailable(data.network_detail)
+                else "",
+            ),
             OverviewMetricData(
                 "\uE72E",
                 "Segurança",
-                data.security_summary or self.tr("Ver seção"),
-                data.security_detail,
+                self._overview_value(data.security_summary),
+                self._overview_value(data.security_detail)
+                if not is_unavailable(data.security_detail)
+                else "",
             ),
             OverviewMetricData(
                 "\uE895",
                 "Atualizações",
-                data.updates_summary or self.tr("Ver seção"),
-                data.updates_detail,
+                self._overview_value(data.updates_summary),
+                self._overview_value(data.updates_detail)
+                if not is_unavailable(data.updates_detail)
+                else "",
             ),
         ]
+
+        state_banner = ""
+        if data.completeness == "partial":
+            state_banner = self.tr("Coleta parcial — alguns campos não estão disponíveis.")
+            self._status_lbl.setText(self.tr("Coleta parcial"))
+        elif data.status == QueryStatus.ERROR:
+            self._status_lbl.setText(self.tr("Erro"))
+        else:
+            self._status_lbl.setText(self.tr("Atualizado"))
 
         panel = OverviewPanel(
             data.hostname or self._get_host(),
             device_line,
-            data.os_summary,
-            meta_line,
+            "",
+            "",
             metrics,
+            identity_rows=identity_rows,
+            state_banner=state_banner,
         )
         self._present_overview(panel)
 
@@ -605,7 +681,7 @@ class InventarioTab(QWidget):
             return
         self._present_section(
             InventorySection.SYSTEM,
-            SystemPanel(data.rows),
+            SystemPanel(data.rows, source_note=data.source_note),
             align_top=True,
         )
 

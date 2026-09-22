@@ -52,6 +52,10 @@ SYSTEM_FIELD_GROUPS: List[tuple[str, List[str]]] = [
     (
         "Sistema operacional",
         [
+            "OS caption",
+            "OS version",
+            "OS build",
+            "OS architecture",
             "Kernel version",
             "Kernel build number",
             "Product type",
@@ -85,6 +89,10 @@ SYSTEM_FIELD_GROUPS: List[tuple[str, List[str]]] = [
 ]
 
 SYSTEM_FIELD_LABELS_PT: Dict[str, str] = {
+    "OS caption": "Sistema operacional",
+    "OS version": "Versão",
+    "OS build": "Build",
+    "OS architecture": "Arquitetura",
     "Kernel version": "Versão do kernel",
     "Kernel build number": "Build do kernel",
     "Product type": "Tipo do produto",
@@ -1356,73 +1364,11 @@ def build_overview_from_psinfo(
     host: str,
     enrich: Optional[dict] = None,
 ) -> dict:
-    """Extrai resumo da visão geral a partir do PsInfo parseado."""
-    sys = parsed.system or {}
-    hostname = extract_psinfo_host(parsed) or host
+    """Compatibilidade: delega à montagem CIM-first da Visão geral."""
+    from remoteops.utils.inventory.overview import (
+        build_overview_data,
+        overview_to_legacy_dict,
+    )
 
-    manufacturer = ""
-    model = ""
-    domain = ""
-    network_summary = ""
-    network_detail = ""
-
-    if isinstance(enrich, dict):
-        cs = enrich.get("ComputerSystem")
-        if isinstance(cs, dict):
-            manufacturer = _safe_str(cs.get("Manufacturer"))
-            model = _safe_str(cs.get("Model"))
-            domain = _safe_str(cs.get("Domain"))
-        net = enrich.get("Network")
-        if isinstance(net, dict):
-            network_summary = _safe_str(net.get("IPAddress"))
-            network_detail = _safe_str(net.get("InterfaceAlias"))
-
-    if not manufacturer:
-        manufacturer = sys.get("Registered organization", "")
-    if not model:
-        model = sys.get("Processor type", "")
-    kernel = sys.get("Kernel version", "")
-    product = sys.get("Product type", "")
-    arch = "x64" if "64" in (sys.get("Processor speed", "") + kernel).lower() or "x64" in kernel.lower() else ""
-    os_summary = " · ".join(p for p in [product, kernel, arch] if p)
-    if not domain:
-        domain = sys.get("Registered organization", "")
-    uptime = sys.get("Uptime", "")
-    if is_invalid_psinfo_uptime(uptime):
-        uptime = uptime_from_enrich(enrich) or ""
-    cpu = sys.get("Processor type", "")
-    proc_count = sys.get("Processors", "")
-    mem = sys.get("Physical memory", "")
-
-    storage_summary = ""
-    storage_detail = ""
-    if parsed.disks_raw:
-        rows = parse_disks_table(parsed.disks_raw)
-        display, _, _root = prepare_disks_for_display(rows, system_root=sys.get("System root", ""))
-        fixed = [r for r in display if r.type.lower() == "fixed" and (r.volume or "").lower() != "total"]
-        if fixed:
-            main = fixed[0]
-            storage_summary = f"{main.format or 'NTFS'} {main.size}".strip()
-            storage_detail = f"{main.volume}: {main.free} livre"
-
-    return {
-        "hostname": hostname,
-        "manufacturer": manufacturer,
-        "model": model,
-        "os_summary": os_summary,
-        "domain": domain,
-        "uptime": uptime,
-        "cpu_summary": cpu,
-        "cpu_detail": proc_count,
-        "memory_summary": mem,
-        "memory_detail": "",
-        "storage_summary": storage_summary,
-        "storage_detail": storage_detail,
-        "network_summary": network_summary,
-        "network_detail": network_detail,
-        "security_summary": "",
-        "security_detail": "",
-        "updates_summary": "",
-        "updates_detail": "",
-        "psinfo": parsed,
-    }
+    data = build_overview_data(host, enrich=enrich, psinfo=parsed)
+    return overview_to_legacy_dict(data)

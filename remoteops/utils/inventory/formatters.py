@@ -3,15 +3,15 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from remoteops.utils.dates import to_display_date
+from remoteops.utils.dates import to_display_date, to_display_datetime
 from remoteops.utils.psinfo import (
     format_bytes_compact,
-    format_uptime_duration,
     is_invalid_psinfo_uptime,
     parse_size_to_bytes,
 )
 
 _EMPTY = "—"
+UNAVAILABLE = "Não disponível"
 
 _TPM_VERSION_RE = re.compile(r"^[\d.]+")
 
@@ -174,3 +174,97 @@ def architecture_label(code: Any) -> str:
         return mapping.get(int(code), f"Arquitetura {int(code)}")
     except (TypeError, ValueError):
         return safe_str(code)
+
+
+def is_unavailable(value: Any) -> bool:
+    text = sanitize_display_text(value, default="")
+    if not text:
+        return True
+    return text in {_EMPTY, UNAVAILABLE, "-", "n/a", "N/A", "na", "NA"}
+
+
+def display_or_unavailable(value: Any) -> str:
+    text = safe_str(value, default="")
+    return UNAVAILABLE if is_unavailable(text) else text
+
+
+def optional_int(value: Any) -> Optional[int]:
+    """Inteiro explícito. Ausente/inválido → None (nunca 0 por omissão)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(str(value).strip().replace(",", ".")))
+        except (TypeError, ValueError):
+            return None
+
+
+def optional_byte_count(value: Any) -> Optional[int]:
+    """Quantidade em bytes. JSON pode enviar float para inteiros grandes."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, float):
+            if value <= 0:
+                return None
+            return int(value)
+        n = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def format_os_architecture(value: Any) -> str:
+    text = sanitize_display_text(value, default="")
+    if not text:
+        return UNAVAILABLE
+    compact = text.lower().replace(" ", "").replace("-", "")
+    if compact in {"64bit", "x64", "amd64"} or "64bit" in compact:
+        return "64 bits"
+    if compact in {"32bit", "x86"} or "32bit" in compact:
+        return "32 bits"
+    if compact in {"arm64"}:
+        return "ARM64"
+    return text
+
+
+def format_memory_from_bytes(num_bytes: Optional[int]) -> tuple[str, str]:
+    """Converte bytes → texto com unidade explícita. Ausente/0 → indisponível."""
+    if num_bytes is None or num_bytes <= 0:
+        return UNAVAILABLE, ""
+    mb = num_bytes / (1024**2)
+    gb = num_bytes / (1024**3)
+    if gb >= 1:
+        return bytes_to_gb(num_bytes), f"{mb:.0f} MB"
+    return f"{mb:.0f} MB", ""
+
+
+def format_storage_bytes(num_bytes: Optional[int]) -> str:
+    if num_bytes is None or num_bytes <= 0:
+        return UNAVAILABLE
+    compact = format_bytes_compact(num_bytes)
+    return compact if compact else UNAVAILABLE
+
+
+def format_last_boot(value: Any) -> str:
+    text = to_display_datetime(value, default="")
+    return text if text else UNAVAILABLE
+
+
+def inventory_hosts_match(requested: str, collected: str) -> bool:
+    """Compara host solicitado e host retornado (UNC, caixa e FQDN curto)."""
+    from remoteops.utils.inventory.cache import normalize_inventory_host
+
+    a = normalize_inventory_host(requested)
+    b = normalize_inventory_host(collected)
+    if not a or not b:
+        return True
+    if a == b:
+        return True
+    return a.split(".")[0] == b.split(".")[0]
