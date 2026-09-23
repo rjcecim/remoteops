@@ -4,9 +4,13 @@ Este arquivo registra as melhorias entregues em cada commit. As versões seguem
 o formato [SemVer](https://semver.org/): `MAJOR.MINOR.PATCH`. A identidade
 exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
-## [Unreleased]
+## [1.10.0] (Build 85) - 2026-09-23
 
-Use esta seção para registrar a próxima melhoria antes de criar o commit.
+Identidade: **RemoteOps 1.10.0 (Build 85)**.
+
+- Add a dedicated Instalação em Lote tab for MSI (same title as the EXE batch tab). After the scan it shows the same results table as EXE — computer, app, version, desired version, action, result and reason. Installation runs one computer at a time: Robocopy first, then `msiexec` through PsExec. The MSI tab remains the parameter form.
+
+- 2026-09-23 · Add MSI batch install with version scan, Robocopy then msiexec, one host at a time.
 
 ## [1.9.0] (Build 84) - 2026-09-17 a 2026-09-22
 

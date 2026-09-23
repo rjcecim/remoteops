@@ -187,9 +187,32 @@ def read_exe_metadata(path: str) -> ExeMetadata:
     )
 
 
+def read_msi_metadata(path: str) -> ExeMetadata:
+    """Lê ProductName / ProductVersion da tabela Property do MSI."""
+    p = (path or "").strip()
+    stem = os.path.splitext(os.path.basename(p))[0] if p else ""
+    info = _query_msi_properties(p) if p else {}
+    version = info.get("ProductVersion", "")
+    return ExeMetadata(
+        path=p,
+        product_name=info.get("ProductName", ""),
+        file_description=info.get("ProductName", ""),
+        product_version=version,
+        file_version=version,
+        file_stem=stem,
+    )
+
+
+def read_installer_metadata(path: str) -> ExeMetadata:
+    """Metadados do instalador: PE para .exe, Property table para .msi."""
+    if (path or "").lower().endswith(".msi"):
+        return read_msi_metadata(path)
+    return read_exe_metadata(path)
+
+
 def identify_product(path: str, metadata: Optional[ExeMetadata] = None) -> ProductIdentity:
     """Monta needles: ProductName, FileDescription, depois o nome do arquivo."""
-    meta = metadata if metadata is not None else read_exe_metadata(path)
+    meta = metadata if metadata is not None else read_installer_metadata(path)
     ordered: List[str] = []
     filename_ordered: List[str] = []
     seen: set[str] = set()
@@ -443,6 +466,100 @@ def _padded_key(key: Tuple[int, ...], width: int = 8) -> Tuple[int, ...]:
     if len(key) >= width:
         return key
     return key + (0,) * (width - len(key))
+
+
+def _query_msi_properties(path: str) -> dict:
+    """ProductName e ProductVersion via msi.dll; vazio se o pacote não abrir."""
+    if sys.platform != "win32" or not os.path.isfile(path):
+        return {}
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except (ImportError, OSError, AttributeError):
+        return {}
+
+    msi = ctypes.WinDLL("msi", use_last_error=True)
+    handle_t = wintypes.ULONG
+    msi.MsiOpenDatabaseW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(handle_t),
+    ]
+    msi.MsiOpenDatabaseW.restype = wintypes.UINT
+    msi.MsiDatabaseOpenViewW.argtypes = [
+        handle_t,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(handle_t),
+    ]
+    msi.MsiDatabaseOpenViewW.restype = wintypes.UINT
+    msi.MsiViewExecute.argtypes = [handle_t, handle_t]
+    msi.MsiViewExecute.restype = wintypes.UINT
+    msi.MsiViewFetch.argtypes = [handle_t, ctypes.POINTER(handle_t)]
+    msi.MsiViewFetch.restype = wintypes.UINT
+    msi.MsiRecordGetStringW.argtypes = [
+        handle_t,
+        wintypes.UINT,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    msi.MsiRecordGetStringW.restype = wintypes.UINT
+    msi.MsiCloseHandle.argtypes = [handle_t]
+    msi.MsiCloseHandle.restype = wintypes.UINT
+
+    error_success = 0
+    error_no_more_items = 259
+    wanted = ("ProductName", "ProductVersion")
+    out: dict = {}
+    hdb = handle_t(0)
+    hview = handle_t(0)
+    if int(msi.MsiOpenDatabaseW(path, None, ctypes.byref(hdb)) or 0) != error_success:
+        return {}
+    try:
+        query = (
+            "SELECT `Property`, `Value` FROM `Property` "
+            "WHERE `Property`='ProductName' OR `Property`='ProductVersion'"
+        )
+        if int(msi.MsiDatabaseOpenViewW(hdb, query, ctypes.byref(hview)) or 0) != error_success:
+            return {}
+        if int(msi.MsiViewExecute(hview, 0) or 0) != error_success:
+            return {}
+        while True:
+            hrec = handle_t(0)
+            fetched = int(msi.MsiViewFetch(hview, ctypes.byref(hrec)) or 0)
+            if fetched == error_no_more_items:
+                break
+            if fetched != error_success or not hrec.value:
+                break
+            try:
+                key = _msi_record_string(msi, hrec, 1)
+                value = _msi_record_string(msi, hrec, 2)
+            finally:
+                msi.MsiCloseHandle(hrec)
+            if key in wanted and value:
+                out[key] = value
+            if all(out.get(name) for name in wanted):
+                break
+    except (OSError, ValueError, TypeError):
+        return {}
+    finally:
+        if hview.value:
+            msi.MsiCloseHandle(hview)
+        if hdb.value:
+            msi.MsiCloseHandle(hdb)
+    return out
+
+
+def _msi_record_string(msi, handle, field: int) -> str:
+    import ctypes
+    from ctypes import wintypes
+
+    size = wintypes.DWORD(0)
+    msi.MsiRecordGetStringW(handle, int(field), None, ctypes.byref(size))
+    buf = ctypes.create_unicode_buffer(int(size.value) + 1)
+    size = wintypes.DWORD(len(buf))
+    if int(msi.MsiRecordGetStringW(handle, int(field), buf, ctypes.byref(size)) or 0) != 0:
+        return ""
+    return (buf.value or "").strip()
 
 
 def _query_version_strings(path: str) -> dict:

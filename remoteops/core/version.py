@@ -1,4 +1,4 @@
 """Única fonte programática da versão do aplicativo."""
 
-__version__ = "1.9.0"
-__build__ = "84"
+__version__ = "1.10.0"
+__build__ = "85"

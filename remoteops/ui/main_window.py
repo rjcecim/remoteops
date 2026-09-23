@@ -23,6 +23,7 @@ from remoteops.ui.branding import APP_DISPLAY_NAME, app_icon
 from remoteops.ui.style import SPACE_SM
 from remoteops.ui.tabs.appsearch import AppSearchTab
 from remoteops.ui.tabs.batchinstall import BatchInstallTab
+from remoteops.ui.tabs.batchmsi import BatchMsiTab
 from remoteops.ui.tabs.cmd import CmdTab
 from remoteops.ui.tabs.connectivity import ConnectivityTab
 from remoteops.ui.tabs.contas_locais import ContasLocaisTab
@@ -114,8 +115,25 @@ class MainWindow(QMainWindow):
         self.settings_tab = None
         self.connectivity_tab = None
         self._run_after_precheck = False
-        self.msi_tab = MsiTab()
         self.robocopy_tab = RobocopyTab()
+        self.msi_tab = MsiTab(
+            msi_provider=lambda: getattr(self.file_selector, "selected_file", None) or "",
+            robocopy_params_provider=lambda: self.robocopy_tab.get_params(),
+        )
+        self.batchmsi_tab = BatchMsiTab(
+            msi_provider=lambda: getattr(self.file_selector, "selected_file", None) or "",
+            msi_params_provider=self.msi_tab.get_params,
+            creds_provider=lambda: (
+                self.psexec_tab.auth_username(),
+                self.psexec_tab.pass_edit.text() or "",
+            ),
+            psexec_params_provider=lambda: self.psexec_tab.collect_builder_params(
+                host="",
+                psexec_path=get_pstools_dir(),
+                remote_cmd="",
+            ),
+            robocopy_params_provider=lambda: self.robocopy_tab.get_params(),
+        )
         self.powershell_tab = PowerShellTab()
         self.cmd_tab = CmdTab()
         self.psexec_tab.setSizePolicy(
@@ -123,6 +141,7 @@ class MainWindow(QMainWindow):
         )
         for _tab in (
             self.msi_tab,
+            self.batchmsi_tab,
             self.robocopy_tab,
             self.powershell_tab,
             self.cmd_tab,
@@ -196,6 +215,7 @@ class MainWindow(QMainWindow):
         self.powershell_tab.formLayoutChanged.connect(self._on_form_layout_changed)
         self.cmd_tab.formLayoutChanged.connect(self._on_form_layout_changed)
         self.msi_tab.formLayoutChanged.connect(self._on_form_layout_changed)
+        self.batchmsi_tab.batchBusyChanged.connect(self._on_msi_batch_busy)
         self.robocopy_tab.formLayoutChanged.connect(self._on_form_layout_changed)
         # Cards Autenticação/Desempenho já abrem recolhidos → ajusta Preview/Log
         self._on_form_layout_changed()
@@ -264,7 +284,18 @@ class MainWindow(QMainWindow):
         if not enabled:
             self.run_button.setEnabled(False)
             return
+        if getattr(self.batchmsi_tab, "_is_busy", lambda: False)():
+            self.run_button.setEnabled(False)
+            return
         self.run_button.setEnabled(bool(self.psexec_tab.can_run_psexec()))
+
+    def _on_msi_batch_busy(self, busy: bool) -> None:
+        if busy:
+            self._set_run_button_enabled(False)
+            return
+        if self.stop_button.isEnabled():
+            return
+        self._set_run_button_enabled(True)
 
     def _on_host_online_changed(self, _online: bool) -> None:
         # Em execução o Parar fica ativo — não reabilitar Executar no meio do processo.
@@ -1101,6 +1132,9 @@ class MainWindow(QMainWindow):
         batch = getattr(self, "batchinstall_tab", None)
         if batch is not None:
             batch.reset_to_startup()
+        batch_msi = getattr(self, "batchmsi_tab", None)
+        if batch_msi is not None:
+            batch_msi.reset_to_startup()
 
         self.log_output.clear_log()
         self.log_output.set_interactive(False)
@@ -1693,6 +1727,8 @@ class MainWindow(QMainWindow):
         self._sync_psexec_copy_allowed()
         if getattr(self, "batchinstall_tab", None) is not None:
             self.batchinstall_tab.on_exe_changed("")
+        self.msi_tab.set_msi_path("")
+        self.batchmsi_tab.on_msi_changed("")
         self.update_tab_visibility(False, False)
         self.update_command()
 
@@ -1716,6 +1752,8 @@ class MainWindow(QMainWindow):
         self.update_tab_visibility(is_msi, is_exe)
         if getattr(self, "batchinstall_tab", None) is not None:
             self.batchinstall_tab.on_exe_changed(file_path if is_exe else "")
+        self.msi_tab.set_msi_path(file_path if is_msi else "")
+        self.batchmsi_tab.on_msi_changed(file_path if is_msi else "")
         self.update_command()
 
     def should_enable_robocopy(self):
@@ -1789,6 +1827,8 @@ class MainWindow(QMainWindow):
                 continue
             if is_exe and w is self.batchinstall_tab:
                 continue
+            if is_msi and w is self.batchmsi_tab:
+                continue
             if psinfo_widget is not None and w is psinfo_widget:
                 continue
             if hostapps_widget is not None and w is hostapps_widget:
@@ -1861,6 +1901,8 @@ class MainWindow(QMainWindow):
         # \uE7ED = CMD/Console, \uE8B7 = Copy/Robocopy
         if is_exe and self.tabs.indexOf(self.batchinstall_tab) == -1:
             _insert_tab(self.batchinstall_tab, self.tr("Instalação em Lote"), "\uE118")
+        if is_msi and self.tabs.indexOf(self.batchmsi_tab) == -1:
+            _insert_tab(self.batchmsi_tab, self.tr("Instalação em Lote"), "\uE118")
         if is_msi:
             _insert_tab(self.msi_tab, self.tr("MSI"), "\uE8A5")
         if show_powershell_tab:
@@ -1936,18 +1978,9 @@ class MainWindow(QMainWindow):
 
     def update_command(self):
         from PyQt6.QtWidgets import QApplication
-        # Parâmetros MSI
-        msi_params = {
-            'enable': True,  # Sempre habilitado se for MSI
-            'action': self.msi_tab.action_combo.currentText(),
-            'interface': self.msi_tab.interface_combo.currentText(),
-            'restart': self.msi_tab.restart_combo.currentText(),
-            'log': self.msi_tab.log_checkbox.isChecked(),
-            'log_file': self.msi_tab.log_file_edit.text(),
-            'repair': self.msi_tab.repair_spin.text(),
-            'update': self.msi_tab.update_edit.text(),
-        }
-        self.command_builder.set_msi_params(msi_params)
+        self.command_builder.set_msi_params(self.msi_tab.get_params())
+        if getattr(self, "batchmsi_tab", None) is not None:
+            self.batchmsi_tab._refresh_preview()
 
         # Recupera seleção do FileSelectorWidget
         selection = getattr(self.file_selector, 'selected_file', None)
@@ -2235,6 +2268,7 @@ class MainWindow(QMainWindow):
             getattr(self, "sessoes_arquivos_tab", None),
             getattr(self, "psinfo_tab", None),
             getattr(self, "batchinstall_tab", None),
+            getattr(self, "batchmsi_tab", None),
             getattr(self, "connectivity_tab", None),
         ):
             if tab is not None:

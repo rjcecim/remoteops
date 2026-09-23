@@ -2,7 +2,7 @@
   <img src="assets/app_icon.png" alt="RemoteOps" width="128" />
 </p>
 
-<h1 align="center">RemoteOps 1.9.0 (Build 84)</h1>
+<h1 align="center">RemoteOps 1.10.0 (Build 85)</h1>
 
 <p align="center">
   <strong>Operações remotas no Windows via PsExec</strong><br />
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/RemoteOps-1.9.0%20(Build%2084)-0F2744?style=for-the-badge" alt="RemoteOps 1.9.0 (Build 84)" />
+  <img src="https://img.shields.io/badge/RemoteOps-1.10.0%20(Build%2085)-0F2744?style=for-the-badge" alt="RemoteOps 1.10.0 (Build 85)" />
 </p>
 
 <p align="center">
@@ -33,7 +33,7 @@
 
 O comando executado é o que está selecionado na aba **PsExec**. A senha nunca aparece no preview nem nos logs (`-p ********`).
 
-Identidade do produto: **`RemoteOps 1.9.0 (Build 84)`** — a mesma string da janela, definida em `remoteops.core.version` (`__version__` + `__build__`) e exposta em `remoteops.ui.branding.APP_DISPLAY_NAME`.
+Identidade do produto: **`RemoteOps 1.10.0 (Build 85)`** — a mesma string da janela, definida em `remoteops.core.version` (`__version__` + `__build__`) e exposta em `remoteops.ui.branding.APP_DISPLAY_NAME`.
 
 ---
 
@@ -116,7 +116,7 @@ A aba **PsExec** está sempre visível. As demais abrem sob demanda.
 | Aba | Quando aparece | Função |
 |-----|----------------|--------|
 | **PsExec** | Sempre | Host, autenticação, privilégios, flags e args do programa remoto |
-| **Instalação em Lote** | Arquivo `.exe` | Varre a rede ou `hosts.json` e instala o EXE (versão desejada opcional) |
+| **Instalação em Lote** | Arquivo `.exe` ou `.msi` | Varre a rede ou `hosts.json`. EXE instala via PsExec; MSI copia com Robocopy e depois instala com `msiexec`, um host por vez. Versão desejada opcional. |
 | **MSI** | Arquivo `.msi` | Ação, interface, reinício e propriedades do `msiexec` |
 | **PowerShell** | `.ps1` ou comando `powershell` | `-Command`, `-File`, `-EncodedCommand`, política de execução |
 | **CMD** | `.bat` ou comando `cmd` | `/C` ou `/K` (checkboxes exclusivos), `/D`, `/Q` e cadeia |
@@ -299,5 +299,5 @@ RemoteOps/
 ---
 
 <p align="center">
-  <sub>RemoteOps 1.9.0 (Build 84) · Windows 10 / 11 · PyQt6 Fluent</sub>
+  <sub>RemoteOps 1.10.0 (Build 85) · Windows 10 / 11 · PyQt6 Fluent</sub>
 </p>

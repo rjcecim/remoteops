@@ -16,6 +16,12 @@ from remoteops.core.psexec_options import (
     validate_psexec_options,
 )
 from remoteops.core.win_cmdline import split_windows_command_line
+from remoteops.services.msi_validate import (
+    filter_msiexec_extra_tokens,
+    sanitize_repair_flags,
+    validate_msi_params,
+    validate_msi_property_tokens,
+)
 from remoteops.utils.pstools import resolve_pstools_tool
 from remoteops.utils.redaction import REDACTED, format_argv_for_display, redact_command_text
 
@@ -617,10 +623,15 @@ class CommandBuilder:
                 cmd.extend(["/l*vx", log_file])
 
         if self.msi_params.get("repair") and str(self.msi_params["repair"]).strip():
-            cmd.append(f"-f{self.msi_params['repair']}")
+            repair = sanitize_repair_flags(str(self.msi_params["repair"]))
+            if repair:
+                cmd.append(f"-f{repair}")
 
         if self.msi_params.get("update") and str(self.msi_params["update"]).strip():
-            cmd.extend(_split_extra_args(str(self.msi_params["update"])))
+            valid_props, _prop_errors = validate_msi_property_tokens(
+                str(self.msi_params["update"])
+            )
+            cmd.extend(valid_props)
 
         # Nota: extra_args do PsExec eram historicamente anexados ao msiexec;
         # em _spec_from_psexec_argv já anexamos ao final do PsExec. Para MSI
@@ -628,9 +639,13 @@ class CommandBuilder:
         if remote_msi_path is None:
             extra = (self.psexec_params.get("extra_args") or "").strip()
             if extra:
-                cmd.extend(_split_extra_args(extra))
+                extras, _extra_errors = filter_msiexec_extra_tokens(extra)
+                cmd.extend(extras)
 
         return cmd
+
+    def validate_msi_params(self) -> List[str]:
+        return validate_msi_params(self.msi_params)
 
     def build_msiexec(self) -> str:
         if not self.msi_params.get("enable"):
