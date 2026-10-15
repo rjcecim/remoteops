@@ -2097,6 +2097,11 @@ class MainWindow(QMainWindow):
                 for err in ps_errors:
                     self.log_output.append_log(self.tr(f"[POWERSHELL] {err}"))
                 return
+        if not self.psexec_tab.confirm_realtime_priority():
+            self.log_output.append_log(
+                self.tr("[PSEXEC] Execução em tempo real cancelada.")
+            )
+            return
         if self.psexec_tab.has_fresh_tcp445():
             self._execute_validated_run()
             return

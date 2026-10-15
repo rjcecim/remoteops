@@ -4,6 +4,17 @@ Este arquivo registra as melhorias entregues em cada commit. As versões seguem
 o formato [SemVer](https://semver.org/): `MAJOR.MINOR.PATCH`. A identidade
 exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
+## [1.12.0] (Build 88) - 2026-10-15
+
+Identidade: **RemoteOps 1.12.0 (Build 88)**.
+
+- Rebuild the PsExec Desempenho card around the destination computer. Priority maps to `-low`, `-belownormal`, `-abovenormal`, `-high`, `-realtime` and `-background`. CPU group and affinity use that computer's processor groups.
+- Query the groups with PsExec as the configured account, off the UI thread, and read the result from a temporary file when the console pipe comes back empty. Refresh uses the same icon button as the session list.
+- Keep the affinity text as typed. A bad format, a duplicate or an index outside a known group blocks the command. A well-formed value whose limits were not verified stays in the command with a warning. Tempo real asks for confirmation before the TCP 445 check.
+- Drop the previous limits when the host or the credential changes. A group that is no longer present is not replaced by Automático.
+
+- 2026-10-15 · Validate PsExec priority, CPU group and affinity against the remote computer.
+
 ## [1.11.0] (Build 87) - 2026-10-15
 
 Identidade: **RemoteOps 1.11.0 (Build 87)**.

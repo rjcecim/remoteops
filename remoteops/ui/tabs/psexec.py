@@ -4,13 +4,14 @@ import hashlib
 from typing import Optional
 
 from PyQt6.QtCore import QEvent, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPalette
+from PyQt6.QtGui import QColor, QFont, QPalette, QValidator
 from PyQt6.QtWidgets import (
     QCheckBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
@@ -57,7 +58,13 @@ from remoteops.ui.widgets.flow import FlowLayout
 from remoteops.ui.widgets.spinbox import StepSpinBox
 from remoteops.ui.widgets.status_dot import STATUS_COLORS as _STATUS_COLORS
 from remoteops.ui.widgets.status_dot import StatusDot as _StatusDot
-from remoteops.utils.api import get_processor_count, get_processor_groups
+from remoteops.utils.cpu_topology import (
+    CpuTopology,
+    ProcessorGroup,
+    affinity_limit_for,
+    describe_cpu_status,
+    query_remote_cpu_topology,
+)
 from remoteops.utils.domain import (
     HostUserDomain,
     domain_hint_from_hostname,
@@ -133,6 +140,98 @@ class _TcpPrecheckWorker(QThread):
             use_cache=True,
         )
         self.result.emit(self._host, ping)
+
+
+class _AffinityEdit(QLineEdit):
+    """Mantém o texto rejeitado visível quando a colagem não cabe no validador."""
+
+    inputRejectedReason = pyqtSignal(str)
+
+    def _propose(self, current: str, addition: str, pos: int) -> str:
+        pos = max(0, min(pos, len(current)))
+        return current[:pos] + addition + current[pos:]
+
+    def keyPressEvent(self, event) -> None:
+        before = self.text()
+        pos = self.cursorPosition()
+        addition = event.text() or ""
+        super().keyPressEvent(event)
+        if not addition or self.text() != before:
+            return
+        validator = self.validator()
+        if validator is None:
+            return
+        validator.validate(self._propose(before, addition, pos), pos)
+        reason = str(getattr(validator, "last_reason", "") or "")
+        if reason:
+            self.inputRejectedReason.emit(reason)
+
+    def insertFromMimeData(self, source) -> None:
+        before = self.text()
+        pos = self.cursorPosition()
+        pasted = source.text() if source is not None else ""
+        super().insertFromMimeData(source)
+        if not pasted or self.text() != before:
+            return
+        validator = self.validator()
+        if validator is None:
+            return
+        attempted = self._propose(before, pasted, pos)
+        state, _, _ = validator.validate(attempted, pos)
+        if state == QValidator.State.Invalid and len(pasted) > 1:
+            self.setText(attempted)
+            self.setCursorPosition(len(attempted))
+        reason = str(getattr(validator, "last_reason", "") or "")
+        if reason:
+            self.inputRejectedReason.emit(reason)
+
+
+class _CpuTopologyWorker(QThread):
+    """Lê a topologia do host fora da thread da interface.
+
+    ``generation`` descarta resultado atrasado. A senha só vive até o fim de ``run``.
+    """
+
+    result = pyqtSignal(int, str, object, str)
+
+    def __init__(
+        self,
+        generation: int,
+        host: str,
+        user: str = "",
+        password: str = "",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._generation = int(generation)
+        self._host = host
+        self._user = user
+        self._password = password
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+        self.requestInterruption()
+
+    def run(self) -> None:
+        try:
+            if self._cancel or self.isInterruptionRequested():
+                return
+            try:
+                topology, error = query_remote_cpu_topology(
+                    self._host,
+                    user=self._user,
+                    password=self._password,
+                    should_cancel=lambda: self._cancel or self.isInterruptionRequested(),
+                )
+            except Exception:
+                topology, error = None, "Falha ao consultar os processadores."
+            if self._cancel or self.isInterruptionRequested():
+                return
+            self.result.emit(self._generation, self._host, topology, error or "")
+        finally:
+            self._password = ""
+            self._user = ""
 
 
 class _SessionListWorker(QThread):
@@ -216,6 +315,20 @@ def _field_caption(object_name: str) -> QLabel:
     )
     lbl.setContentsMargins(2, 0, 0, 0)
     return lbl
+
+
+def _captioned_field(object_name: str, caption: str, body: QWidget) -> QWidget:
+    column = QVBoxLayout()
+    column.setContentsMargins(0, 0, 0, 0)
+    column.setSpacing(2)
+    label = _field_caption(object_name)
+    label.setText(caption)
+    column.addWidget(label)
+    column.addWidget(body)
+    wrap = QWidget()
+    wrap.setLayout(column)
+    wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    return wrap
 
 
 def _add_row(grid: QGridLayout, row: int, label_text: str, widget: QWidget):
@@ -609,6 +722,22 @@ class PsExecTab(QWidget):
         self._session_refresh_timer.setSingleShot(True)
         self._session_refresh_timer.setInterval(150)
         self._session_refresh_timer.timeout.connect(self._refresh_remote_sessions)
+        self._cpu_worker: Optional[_CpuTopologyWorker] = None
+        self._cpu_generation = 0
+        self._cpu_context: Optional[tuple] = None
+        self._cpu_loaded_generation = -1
+        self._cpu_pending = False
+        self._cpu_querying = False
+        self._cpu_state = "not_queried"
+        self._cpu_topology: Optional[CpuTopology] = None
+        self._cpu_failure = ""
+        self._cpu_group_block_reason = ""
+        self._rebuilding_cpu_groups = False
+        self._noting_cpu = False
+        self._cpu_refresh_timer = QTimer(self)
+        self._cpu_refresh_timer.setSingleShot(True)
+        self._cpu_refresh_timer.setInterval(150)
+        self._cpu_refresh_timer.timeout.connect(self._refresh_cpu_topology)
         self._host_status_timer = QTimer(self)
         self._host_status_timer.setSingleShot(True)
         self._host_status_timer.setInterval(550)
@@ -847,43 +976,90 @@ class PsExecTab(QWidget):
         card4 = CardWidget("\uE950", self.tr("Desempenho"))
         g4 = _grid_in_card(card4)
 
-        # Prioridade
         self.priority_combo = FluentComboBox()
         self.priority_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        self.priority_combo.addItem(self.tr("Padrão (sem alteração)"), "")
-        self.priority_combo.addItem(self.tr("-low  Baixa"), "-low")
-        self.priority_combo.addItem(self.tr("-belownormal  Abaixo do normal"), "-belownormal")
-        self.priority_combo.addItem(self.tr("-abovenormal  Acima do normal"), "-abovenormal")
-        self.priority_combo.addItem(self.tr("-high  Alta"), "-high")
-        self.priority_combo.addItem(self.tr("-realtime  Tempo real"), "-realtime")
-        self.priority_combo.addItem(self.tr("-background  Segundo plano"), "-background")
+        self.priority_combo.addItem(self.tr("Padrão"), "")
+        self.priority_combo.addItem(self.tr("Baixa"), "-low")
+        self.priority_combo.addItem(self.tr("Abaixo do normal"), "-belownormal")
+        self.priority_combo.addItem(self.tr("Acima do normal"), "-abovenormal")
+        self.priority_combo.addItem(self.tr("Alta"), "-high")
+        self.priority_combo.addItem(self.tr("Tempo real — crítico"), "-realtime")
+        self.priority_combo.addItem(self.tr("Segundo plano — E/S e memória"), "-background")
         self.priority_combo.setCurrentIndex(0)
         self.priority_combo.setToolTip(self.tr(TOOLTIPS["priority"]))
-        _add_row(g4, 0, self.tr("Prioridade"), self.priority_combo)
+        self.realtime_warning = _field_caption("cpuRealtimeWarning")
+        self.realtime_warning.setText(
+            self.tr(
+                "Tempo real pode tornar o computador remoto instável. "
+                "A execução pedirá confirmação."
+            )
+        )
+        self.realtime_warning.hide()
+        priority_column = QVBoxLayout()
+        priority_column.setContentsMargins(0, 0, 0, 0)
+        priority_column.setSpacing(2)
+        priority_caption = _field_caption("cpuPriorityCaption")
+        priority_caption.setText(self.tr("Prioridade do processo"))
+        priority_column.addWidget(priority_caption)
+        priority_column.addWidget(self.priority_combo)
+        priority_column.addWidget(self.realtime_warning)
+        priority_box = QWidget()
+        priority_box.setLayout(priority_column)
 
-        # Grupo CPU — opcional; não é pré-requisito de -a
         self.group_combo = FluentComboBox()
         self.group_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        self.group_combo.addItem(self.tr("Nenhum"), None)
-        self.processor_groups = get_processor_groups()
-        for group_id in self.processor_groups:
-            self.group_combo.addItem(str(group_id), group_id)
+        self.group_combo.addItem(self.tr("Automático (sem -g)"), None)
         self.group_combo.setCurrentIndex(0)
         self.group_combo.setToolTip(self.tr(TOOLTIPS["-g"]))
-        _add_row(g4, 1, self.tr("Grupo CPU"), self.group_combo)
+        group_box = _captioned_field("cpuGroupCaption", self.tr("Grupo CPU"), self.group_combo)
 
-        # Afinidade CPU — válida sem -g
-        self.affinity_edit = QLineEdit()
-        self.affinity_edit.setPlaceholderText(self.tr("ex: 1,2,3"))
+        performance_top = QWidget()
+        performance_row = QHBoxLayout(performance_top)
+        performance_row.setContentsMargins(0, 0, 0, 0)
+        performance_row.setSpacing(8)
+        performance_row.addWidget(priority_box, 1)
+        performance_row.addWidget(group_box, 1)
+        g4.addWidget(performance_top, 0, 0, 1, 2)
+
+        self.affinity_edit = _AffinityEdit()
+        self.affinity_edit.setPlaceholderText(self.tr("1,2,3"))
         self.affinity_edit.setToolTip(self.tr(TOOLTIPS["-a"]))
-        self.current_max_cpu = get_processor_count(0)
-        self.affinity_validator = AffinityValidator(self.current_max_cpu, self.affinity_edit)
+        self.affinity_validator = AffinityValidator(None, self.affinity_edit)
         self.affinity_edit.setValidator(self.affinity_validator)
-        _add_row(g4, 2, self.tr("Afinidade CPU"), self.affinity_edit)
+        self.affinity_edit.inputRejectedReason.connect(self._on_affinity_rejected)
+        self.cpu_query_btn = QToolButton()
+        self.cpu_query_btn.setObjectName("cpuQueryButton")
+        self.cpu_query_btn.setText("\uE72C")
+        self.cpu_query_btn.setFont(QFont("Segoe MDL2 Assets", 10))
+        self.cpu_query_btn.setFixedSize(HEADER_BTN_SIZE, HEADER_BTN_SIZE)
+        self.cpu_query_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cpu_query_btn.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.cpu_query_btn.setAutoRaise(True)
+        self.cpu_query_btn.setToolTip(self.tr("Atualizar"))
+        self.cpu_query_btn.setAccessibleName(self.tr("Atualizar"))
+        self.cpu_query_btn.setStyleSheet(
+            "QToolButton#cpuQueryButton { border: none; background: transparent; "
+            f"color: {COLOR_ACCENT}; }}"
+        )
+        self.cpu_query_btn.clicked.connect(self._on_cpu_query_clicked)
+        affinity_row = QWidget()
+        affinity_layout = QHBoxLayout(affinity_row)
+        affinity_layout.setContentsMargins(0, 0, 0, 0)
+        affinity_layout.setSpacing(8)
+        affinity_layout.addWidget(self.affinity_edit, 1)
+        affinity_layout.addWidget(self.cpu_query_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        affinity_box = _captioned_field(
+            "cpuAffinityCaption", self.tr("Afinidade CPU"), affinity_row
+        )
+        g4.addWidget(affinity_box, 1, 0, 1, 2)
+
+        self.cpu_status = _field_caption("cpuTopologyStatus")
+        self.cpu_status.setText(self.tr("Não consultado."))
+        g4.addWidget(self.cpu_status, 2, 0, 1, 2)
 
         vbox.addWidget(card4)
 
@@ -980,6 +1156,9 @@ class PsExecTab(QWidget):
             card.resetRequested.connect(on_reset)
             card.collapsedChanged.connect(self._on_form_card_collapsed)
         bind_card_stack(vbox, self._form_cards)
+        self._cpu_context = self._cpu_context_key()
+        self._update_cpu_query_enabled()
+        self._refresh_cpu_status()
 
     def _reset_card_conexao(self) -> None:
         self.host_edit.clear()
@@ -1009,8 +1188,12 @@ class PsExecTab(QWidget):
 
     def _reset_card_desempenho(self) -> None:
         self.priority_combo.setCurrentIndex(0)
-        self.group_combo.setCurrentIndex(0)
         self.affinity_edit.clear()
+        groups = None
+        if self._cpu_state == "available" and self._cpu_topology is not None:
+            groups = self._cpu_topology.groups
+        self._cpu_group_block_reason = ""
+        self._rebuild_group_combo(groups, preserve=None)
         self.update_psexec_option_state()
 
     def _reset_card_flags(self) -> None:
@@ -1536,12 +1719,7 @@ class PsExecTab(QWidget):
         )
 
     def snapshot_options(self) -> PsExecOptions:
-        group = self.group_combo.currentData()
-        if group is not None:
-            try:
-                group = int(group)
-            except (TypeError, ValueError):
-                group = None
+        group = self._selected_cpu_group_id()
         return PsExecOptions(
             user=self.auth_username(),
             has_password=bool(self.auth_password()),
@@ -1561,6 +1739,10 @@ class PsExecTab(QWidget):
             priority=self.priority_combo.currentData() or "",
             cpu_group=group,
             affinity=(self.affinity_edit.text() or "").strip(),
+            cpu_topology_verified=self._cpu_topology_is_verified(),
+            cpu_topology_groups=self._cpu_topology_pairs(),
+            cpu_group_unavailable=self._cpu_group_is_unavailable(),
+            cpu_group_block_reason=self._cpu_group_block_text(),
             timeout=int(self.timeout_spin.value() or 0),
             flag_d=self.flag_d.isChecked(),
             flag_c=self.flag_c.isChecked(),
@@ -1646,6 +1828,8 @@ class PsExecTab(QWidget):
             return
         self._updating_option_state = True
         try:
+            if trigger == "user":
+                self._note_cpu_context()
             state = compute_psexec_option_state(self.snapshot_options(), trigger=trigger)
             self._apply_option_state(state, trigger=trigger)
         finally:
@@ -1723,6 +1907,8 @@ class PsExecTab(QWidget):
             self.priority_combo.setToolTip(self._priority_tooltips[idx])
         else:
             self.priority_combo.setToolTip(self.tr(TOOLTIPS["priority"]))
+        self._sync_realtime_warning()
+        self._refresh_cpu_status()
 
         extra_state = widgets.get("extra_args")
         if extra_state is not None:
@@ -1881,6 +2067,7 @@ class PsExecTab(QWidget):
 
     def _schedule_session_refresh(self) -> None:
         self._note_session_context()
+        self._note_cpu_context()
         self._update_session_refresh_enabled()
         if not self.session_interactive.isChecked() or not self.is_host_online:
             return
@@ -2073,20 +2260,334 @@ class PsExecTab(QWidget):
             self._reset_session_combo(keep_enabled=self.session_interactive.isChecked())
 
     def _update_affinity_validator(self, group_id: Optional[int]) -> None:
-        gid = 0 if group_id is None else int(group_id)
+        limit, label = affinity_limit_for(
+            group_id,
+            self._cpu_topology.groups if self._cpu_topology is not None else (),
+            verified=self._cpu_topology_is_verified() and not self._cpu_group_block_text(),
+        )
+        self.affinity_validator.set_max_cpu(limit)
+        self.affinity_validator.set_group_label(label)
+        self.affinity_edit.setPlaceholderText(self.tr("1,2,3"))
+
+    def confirm_realtime_priority(self) -> bool:
+        """Pede confirmação só para -realtime. As demais prioridades seguem direto."""
+        if (self.priority_combo.currentData() or "") != "-realtime":
+            return True
+        answer = QMessageBox.question(
+            self,
+            self.tr("Prioridade de tempo real"),
+            self.tr(
+                "Tempo real pode tornar o computador remoto instável.\n\n"
+                "Executar mesmo assim?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _sync_realtime_warning(self) -> None:
+        if not hasattr(self, "realtime_warning"):
+            return
+        self.realtime_warning.setVisible(
+            (self.priority_combo.currentData() or "") == "-realtime"
+        )
+
+    def _cpu_context_key(self) -> tuple:
+        return (
+            normalize_host(self.host_edit.text()).casefold(),
+            self.auth_kind.value,
+            self.auth_username(),
+            self._password_mark(),
+        )
+
+    def _cpu_topology_is_verified(self) -> bool:
+        return self._cpu_state == "available" and self._cpu_topology is not None
+
+    def _cpu_topology_pairs(self) -> tuple[tuple[int, int], ...]:
+        if not self._cpu_topology_is_verified() or self._cpu_topology is None:
+            return ()
+        return tuple(
+            (group.group_id, group.logical_count) for group in self._cpu_topology.groups
+        )
+
+    def _cpu_group_is_unavailable(self) -> bool:
+        data = self.group_combo.currentData()
+        return isinstance(data, tuple) and bool(data) and data[0] == "missing"
+
+    def _cpu_group_block_text(self) -> str:
+        if not self._cpu_group_is_unavailable():
+            return ""
+        return (self._cpu_group_block_reason or "").strip()
+
+    def _selected_cpu_group_id(self) -> Optional[int]:
+        data = self.group_combo.currentData()
+        if isinstance(data, tuple) and data and data[0] == "missing":
+            try:
+                return int(data[1])
+            except (TypeError, ValueError):
+                return None
+        if isinstance(data, bool) or data is None:
+            return None
+        if isinstance(data, int):
+            return int(data)
+        return None
+
+    def _note_cpu_context(self) -> None:
+        """Invalida topologia quando o host ou a conta mudam. Não reaproveita limites."""
+        if self._cpu_context is None or not hasattr(self, "group_combo"):
+            return
+        if self._noting_cpu:
+            return
+        key = self._cpu_context_key()
+        if key == self._cpu_context:
+            return
+        previous = self._cpu_context
+        host_changed = previous[0] != key[0]
+        self._noting_cpu = True
         try:
-            cpu_count = get_processor_count(gid)
-        except Exception:
-            cpu_count = self.current_max_cpu or 1
-        self.current_max_cpu = cpu_count
-        self.affinity_validator = AffinityValidator(cpu_count, self.affinity_edit)
-        self.affinity_edit.setValidator(self.affinity_validator)
-        if group_id is None:
-            self.affinity_edit.setPlaceholderText(self.tr(f"1-{cpu_count} (ex: 1,2,3)"))
+            self._cpu_context = key
+            self._cpu_generation += 1
+            self._cpu_refresh_timer.stop()
+            self._invalidate_cpu_topology(host_changed=host_changed)
+            worker = self._cpu_worker
+            if worker is not None and worker.isRunning():
+                worker.cancel()
+                self._cpu_pending = True
+            elif (not host_changed) and self._cpu_query_applicable():
+                self._cpu_refresh_timer.start()
+        finally:
+            self._noting_cpu = False
+        if not self._updating_option_state:
+            self.update_psexec_option_state("-g")
+
+    def _invalidate_cpu_topology(self, *, host_changed: bool) -> None:
+        had_remote = self._cpu_state in {"available", "failed", "querying", "stale"} or (
+            self._cpu_topology is not None
+        )
+        selected = None if host_changed else self._selected_cpu_group_id()
+        self._cpu_topology = None
+        self._cpu_loaded_generation = -1
+        self._cpu_failure = ""
+        self._cpu_group_block_reason = ""
+        self._cpu_querying = False
+        if host_changed:
+            self._cpu_state = "stale" if had_remote else "not_queried"
         else:
-            self.affinity_edit.setPlaceholderText(
-                self.tr(f"Grupo {group_id}: 1-{cpu_count} (ex: 1,2,3)")
+            self._cpu_state = "stale" if had_remote or selected is not None else "not_queried"
+        self._rebuild_group_combo(None, preserve=selected)
+        self._refresh_cpu_status()
+
+    def _rebuild_group_combo(
+        self,
+        groups: Optional[tuple[ProcessorGroup, ...]],
+        *,
+        preserve: Optional[int],
+    ) -> None:
+        self._rebuilding_cpu_groups = True
+        self.group_combo.blockSignals(True)
+        self.group_combo.clear()
+        self.group_combo.addItem(self.tr("Automático (sem -g)"), None)
+        self._cpu_group_block_reason = ""
+        index = 0
+        if groups:
+            for group in groups:
+                count = int(group.logical_count)
+                word = "processador" if count == 1 else "processadores"
+                self.group_combo.addItem(
+                    self.tr(f"{group.group_id} · {count} {word}"),
+                    int(group.group_id),
+                )
+            if preserve is not None:
+                found = -1
+                for row in range(self.group_combo.count()):
+                    if self.group_combo.itemData(row) == int(preserve):
+                        found = row
+                        break
+                if found >= 0:
+                    index = found
+                else:
+                    self.group_combo.addItem(
+                        self.tr(f"Grupo {preserve} não está mais disponível"),
+                        ("missing", int(preserve)),
+                    )
+                    index = self.group_combo.count() - 1
+                    self._cpu_group_block_reason = self.tr(
+                        f"Grupo CPU {preserve} não existe neste computador."
+                    )
+        elif preserve is not None:
+            self.group_combo.addItem(
+                self.tr(f"Grupo {preserve} (não verificado)"),
+                int(preserve),
             )
+            index = 1
+        self.group_combo.setCurrentIndex(index)
+        self.group_combo.blockSignals(False)
+        self._rebuilding_cpu_groups = False
+
+    def _refresh_cpu_status(self) -> None:
+        if not hasattr(self, "cpu_status"):
+            return
+        text, tip = describe_cpu_status(
+            state=self._cpu_state,
+            topology=self._cpu_topology if self._cpu_state == "available" else None,
+            affinity=self.affinity_edit.text() if hasattr(self, "affinity_edit") else "",
+            cpu_group=self._selected_cpu_group_id() if hasattr(self, "group_combo") else None,
+            failure=self._cpu_failure,
+            group_block_reason=self._cpu_group_block_text(),
+        )
+        self.cpu_status.setText(self.tr(text))
+        self.cpu_status.setToolTip(self.tr(tip))
+
+    def _on_affinity_rejected(self, reason: str) -> None:
+        if reason and hasattr(self, "cpu_status"):
+            self.cpu_status.setText(self.tr(reason))
+
+    def _sync_cpu_host_state(self, state: str) -> None:
+        if not hasattr(self, "cpu_status"):
+            return
+        if state in {"offline", "invalid", "err"}:
+            self._cpu_refresh_timer.stop()
+            if self._cpu_state == "available" or self._cpu_topology is not None:
+                self._invalidate_cpu_topology(host_changed=False)
+            self._cpu_state = "unavailable"
+            self._cpu_failure = ""
+            self._update_cpu_query_enabled()
+            self._refresh_cpu_status()
+            if not self._updating_option_state:
+                self.update_psexec_option_state("-g")
+            return
+        elif state == "idle":
+            self._cpu_refresh_timer.stop()
+            if self._cpu_state != "available":
+                self._cpu_state = "not_queried"
+                self._cpu_topology = None
+        self._update_cpu_query_enabled()
+        self._refresh_cpu_status()
+
+    def _cpu_query_applicable(self) -> bool:
+        host = normalize_host(self.host_edit.text())
+        return bool(
+            self.is_host_online
+            and host
+            and is_valid_host(host)
+            and not self._closing
+        )
+
+    def _update_cpu_query_enabled(self) -> None:
+        if not hasattr(self, "cpu_query_btn"):
+            return
+        enabled = self._cpu_query_applicable() and not self._cpu_querying
+        self.cpu_query_btn.setEnabled(enabled)
+        if self._cpu_querying:
+            self.cpu_query_btn.setToolTip(self.tr("Consultando processadores…"))
+        else:
+            self.cpu_query_btn.setToolTip(self.tr("Atualizar"))
+
+    def _schedule_cpu_refresh(self) -> None:
+        if not hasattr(self, "_cpu_refresh_timer") or self._closing:
+            return
+        self._update_cpu_query_enabled()
+        if not self._cpu_query_applicable():
+            return
+        self._cpu_refresh_timer.start()
+
+    def _on_cpu_query_clicked(self) -> None:
+        self._cpu_refresh_timer.stop()
+        self._refresh_cpu_topology(manual=True)
+
+    def _refresh_cpu_topology(self, *, manual: bool = False) -> None:
+        if self._closing:
+            return
+        if not self._cpu_query_applicable():
+            self._update_cpu_query_enabled()
+            return
+        worker = self._cpu_worker
+        running = worker is not None and worker.isRunning()
+        if running:
+            if worker._generation != self._cpu_generation:
+                worker.cancel()
+                self._cpu_pending = True
+            return
+        if (
+            not manual
+            and not self._cpu_pending
+            and self._cpu_loaded_generation == self._cpu_generation
+        ):
+            self._update_cpu_query_enabled()
+            return
+        self._cpu_pending = False
+        self._cpu_querying = True
+        self._cpu_state = "querying"
+        self._cpu_failure = ""
+        self._cpu_topology = None
+        self._rebuild_group_combo(None, preserve=self._selected_cpu_group_id())
+        self._refresh_cpu_status()
+        self._update_cpu_query_enabled()
+        if not self._updating_option_state:
+            self.update_psexec_option_state("-g")
+        generation = self._cpu_generation
+        host = normalize_host(self.host_edit.text())
+        self._cpu_worker = _CpuTopologyWorker(
+            generation,
+            host,
+            user=self.auth_username(),
+            password=self.auth_password(),
+            parent=self,
+        )
+        self._remember_worker(self._cpu_worker)
+        self._cpu_worker.result.connect(self._on_cpu_result)
+        self._cpu_worker.finished.connect(self._on_cpu_worker_finished)
+        self._cpu_worker.start()
+
+    def _cpu_result_is_current(self, generation: int, host: str) -> bool:
+        if self._closing or generation != self._cpu_generation or not self.is_host_online:
+            return False
+        current = normalize_host(self.host_edit.text())
+        return host.casefold() == current.casefold()
+
+    def _on_cpu_result(self, generation: int, host: str, topology, error: str) -> None:
+        if not self._cpu_result_is_current(generation, host):
+            return
+        self._cpu_loaded_generation = generation
+        self._cpu_querying = False
+        selected = self._selected_cpu_group_id()
+        message = (error or "").strip()
+        if message or not isinstance(topology, CpuTopology):
+            self._cpu_state = "failed"
+            self._cpu_failure = message or "Falha ao consultar os processadores."
+            self._cpu_topology = None
+            self._rebuild_group_combo(None, preserve=selected)
+        else:
+            self._cpu_state = "available"
+            self._cpu_failure = ""
+            self._cpu_topology = topology
+            self._rebuild_group_combo(topology.groups, preserve=selected)
+        self._update_cpu_query_enabled()
+        if not self._updating_option_state:
+            self.update_psexec_option_state("-g")
+        else:
+            self._refresh_cpu_status()
+
+    def _on_cpu_worker_finished(self) -> None:
+        worker = self.sender()
+        if not isinstance(worker, QThread):
+            return
+        pending = self._cpu_pending
+        self._cpu_pending = False
+        if worker is self._cpu_worker:
+            self._cpu_worker = None
+        self._release_worker(worker)
+        if self._closing:
+            return
+        if pending:
+            self._refresh_cpu_topology()
+            return
+        if self._cpu_querying:
+            self._cpu_querying = False
+            if self._cpu_state == "querying":
+                self._cpu_state = "not_queried"
+            self._update_cpu_query_enabled()
+            self._refresh_cpu_status()
 
     @property
     def is_host_online(self) -> bool:
@@ -2292,7 +2793,11 @@ class PsExecTab(QWidget):
                 self._start_domain_worker(normalize_host(self.host_edit.text()))
                 if self.session_interactive.isChecked():
                     self._schedule_session_refresh()
+                if self._cpu_state == "unavailable":
+                    self._cpu_state = "not_queried"
+                self._schedule_cpu_refresh()
         self._update_session_refresh_enabled()
+        self._sync_cpu_host_state(state)
 
     def _apply_reachability(self, reach: HostReachability) -> None:
         if reach.cancelled:
@@ -2323,6 +2828,7 @@ class PsExecTab(QWidget):
         host = normalize_host(self.host_edit.text())
         self._drop_session_for_other_host(host)
         self._note_session_context()
+        self._note_cpu_context()
         self._update_session_refresh_enabled()
         self._host_status_wanted = host
         self._last_reachability = None
@@ -2422,9 +2928,12 @@ class PsExecTab(QWidget):
         self._closing = True
         self._host_status_timer.stop()
         self._session_refresh_timer.stop()
+        self._cpu_refresh_timer.stop()
         self._host_status_generation += 1
         self._tcp_precheck_generation += 1
         self._session_generation += 1
+        self._cpu_generation += 1
+        self._cpu_pending = False
         self._session_pending = False
         self._host_status_pending = None
         for worker in list(self._live_workers):

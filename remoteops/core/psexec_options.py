@@ -11,6 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Iterable, Optional
 
+from remoteops.utils.cpu_topology import (
+    affinity_limit_for,
+    check_affinity,
+    check_cpu_group,
+)
 from remoteops.utils.ping import format_unc_host, normalize_host
 
 # ── constantes ──────────────────────────────────────────────────────────
@@ -111,13 +116,14 @@ TOOLTIPS = {
     ),
     "-n": "Timeout em segundos para conectar ao computador remoto (0 = sem timeout).",
     "-a": (
-        "Processadores nos quais o processo poderá executar (-a n,n,...). "
-        "Pode ser usado sem -g. O grupo CPU é opcional e só é necessário em "
-        "sistemas com mais de 64 processadores."
+        "Processadores do grupo em que o processo pode executar (-a n,n,...). "
+        "A numeração começa em 1, dentro do grupo. Sem -g, o PsExec usa o "
+        "grupo do serviço, em geral o grupo 0."
     ),
     "-g": (
-        "Grupo de processadores (-g n). Opcional. Relevante em hosts com mais "
-        "de 64 processadores. Não é obrigatório para usar afinidade (-a)."
+        "Grupo de processadores (-g n), numerado a partir de 0. Sem -g, o "
+        "processo fica no grupo do serviço do PsExec. A lista vem do "
+        "computador remoto."
     ),
     "-arm": "Indica ao PsExec que o computador remoto utiliza arquitetura ARM.",
     "-accepteula": "Aceitar automaticamente o EULA do PsExec.",
@@ -169,6 +175,10 @@ class PsExecOptions:
     priority: str = ""
     cpu_group: Optional[int] = None
     affinity: str = ""
+    cpu_topology_verified: bool = False
+    cpu_topology_groups: tuple[tuple[int, int], ...] = ()
+    cpu_group_unavailable: bool = False
+    cpu_group_block_reason: str = ""
     timeout: int = 0
     flag_d: bool = False
     flag_c: bool = False
@@ -227,6 +237,32 @@ class PsExecOptionsError(ValueError):
 
 # ── conversão dict ↔ modelo ─────────────────────────────────────────────
 
+def _parse_topology_groups(raw) -> tuple[tuple[int, int], ...]:
+    """Aceita só pares (grupo, quantidade) contíguos a partir de 0."""
+    if not isinstance(raw, (list, tuple)) or isinstance(raw, (str, bytes)):
+        return ()
+    found: list[tuple[int, int]] = []
+    seen: set[int] = set()
+    for item in raw:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            return ()
+        if isinstance(item[0], bool) or isinstance(item[1], bool):
+            return ()
+        try:
+            group_id = int(item[0])
+            count = int(item[1])
+        except (TypeError, ValueError):
+            return ()
+        if group_id < 0 or group_id > 65535 or count < 1 or count > 64 or group_id in seen:
+            return ()
+        seen.add(group_id)
+        found.append((group_id, count))
+    found.sort()
+    if [group_id for group_id, _count in found] != list(range(len(found))):
+        return ()
+    return tuple(found)
+
+
 def _parse_cpu_group(raw) -> Optional[int]:
     if raw is None:
         return None
@@ -279,6 +315,8 @@ def options_from_params(params: Optional[dict]) -> PsExecOptions:
     else:
         group = _parse_cpu_group(group)
     user = str(p.get("user") or "").strip()
+    groups = _parse_topology_groups(p.get("cpu_topology_groups"))
+    verified = bool(p.get("cpu_topology_verified")) and bool(groups)
     return PsExecOptions(
         user=user,
         has_password=bool(p.get("has_password")) and bool(user),
@@ -294,6 +332,10 @@ def options_from_params(params: Optional[dict]) -> PsExecOptions:
         priority=_parse_priority(p.get("priority", "")),
         cpu_group=group,
         affinity=str(p.get("affinity") or "").strip(),
+        cpu_topology_verified=verified,
+        cpu_topology_groups=groups,
+        cpu_group_unavailable=bool(p.get("cpu_group_unavailable")),
+        cpu_group_block_reason=str(p.get("cpu_group_block_reason") or ""),
         timeout=_parse_timeout(p.get("timeout", 0)),
         flag_d=bool(p.get("-d")),
         flag_c=bool(p.get("-c")),
@@ -324,6 +366,10 @@ def options_to_params(opts: PsExecOptions) -> dict:
         "priority": opts.priority,
         "cpu_group": opts.cpu_group,
         "affinity": opts.affinity,
+        "cpu_topology_verified": bool(opts.cpu_topology_verified),
+        "cpu_topology_groups": tuple(opts.cpu_topology_groups),
+        "cpu_group_unavailable": bool(opts.cpu_group_unavailable),
+        "cpu_group_block_reason": opts.cpu_group_block_reason,
         "timeout": opts.timeout if opts.timeout > 0 else 0,
         "-d": opts.flag_d,
         "-c": opts.flag_c,
@@ -596,6 +642,36 @@ def validate_psexec_options(opts: PsExecOptions) -> list[str]:
     if priority and priority not in PRIORITIES:
         errors.append(f"Prioridade inválida: {priority}.")
 
+    group_errors = check_cpu_group(
+        opts.cpu_group,
+        opts.cpu_topology_groups,
+        verified=bool(opts.cpu_topology_verified),
+        unavailable=bool(opts.cpu_group_unavailable),
+        block_reason=opts.cpu_group_block_reason,
+    )
+    errors.extend(group_errors)
+    limit = None
+    label = ""
+    if opts.cpu_topology_verified and not group_errors:
+        limit, label = affinity_limit_for(
+            opts.cpu_group,
+            opts.cpu_topology_groups,
+            verified=True,
+        )
+    if (
+        opts.cpu_topology_verified
+        and not group_errors
+        and (opts.affinity or "").strip()
+        and limit is None
+    ):
+        errors.append("A afinidade não pode ser conferida neste grupo.")
+    affinity_check = check_affinity(
+        opts.affinity,
+        limit=limit,
+        group_label=label,
+    )
+    errors.extend(affinity_check.errors)
+
     if opts.timeout is not None:
         try:
             timeout_i = int(opts.timeout)
@@ -604,20 +680,6 @@ def validate_psexec_options(opts: PsExecOptions) -> list[str]:
         else:
             if timeout_i < 0:
                 errors.append("Timeout (-n) não pode ser negativo.")
-
-    if opts.cpu_group is not None:
-        try:
-            int(opts.cpu_group)
-        except (TypeError, ValueError):
-            errors.append("Grupo CPU (-g) deve ser um inteiro.")
-
-    affinity = (opts.affinity or "").strip()
-    if affinity:
-        parts = [p.strip() for p in affinity.split(",") if p.strip()]
-        if not parts or any(not p.isdigit() or int(p) < 1 for p in parts):
-            errors.append("Afinidade CPU (-a) deve ser uma lista de processadores 1-based.")
-        elif len(parts) != len(set(parts)):
-            errors.append("Afinidade CPU (-a) não pode repetir processadores.")
 
     return errors
 
@@ -682,12 +744,19 @@ def build_psexec_option_argv(opts: PsExecOptions) -> list[str]:
     if opts.priority in PRIORITIES:
         cmd.append(opts.priority)
 
-    if opts.cpu_group is not None:
+    group_blocked = bool(
+        opts.cpu_group_unavailable or (opts.cpu_group_block_reason or "").strip()
+    )
+    if opts.cpu_group is not None and not group_blocked:
         cmd.extend(["-g", str(int(opts.cpu_group))])
 
     affinity = (opts.affinity or "").strip()
     if affinity:
-        cmd.extend(["-a", affinity])
+        checked = check_affinity(affinity, limit=None)
+        token = (
+            checked.normalized if checked.normalized and not checked.errors else affinity
+        )
+        cmd.extend(["-a", token])
 
     if opts.flag_arm:
         cmd.append("-arm")

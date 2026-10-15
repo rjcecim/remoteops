@@ -1,84 +1,57 @@
-
 from PyQt6.QtGui import QValidator
+
+from remoteops.utils.cpu_topology import classify_affinity_input
 
 
 class AffinityValidator(QValidator):
-    """
-    Validador customizado para máscaras de afinidade de CPU.
-    Permite números inteiros separados por vírgula, sem espaços.
-    """
+    """Números separados por vírgula. Não apaga processadores informados pelo usuário."""
 
-    def __init__(self, max_cpu: int, parent=None):
+    def __init__(self, max_cpu: int | None = None, parent=None):
         super().__init__(parent)
         self.max_cpu = max_cpu
+        self.group_label = ""
+        self.last_reason = ""
+
+    def set_max_cpu(self, max_cpu: int | None) -> None:
+        self.max_cpu = max_cpu
+
+    def set_group_label(self, group_label: str) -> None:
+        self.group_label = group_label or ""
+
+    def _limit(self) -> int | None:
+        if self.max_cpu is None or isinstance(self.max_cpu, bool):
+            return None
+        try:
+            value = int(self.max_cpu)
+        except (TypeError, ValueError):
+            return None
+        if value < 1:
+            return None
+        return value
 
     def validate(self, input_text: str, pos: int) -> tuple[QValidator.State, str, int]:
-        """
-        Valida o texto de entrada para máscara de afinidade.
-
-        Args:
-            input_text (str): Texto a ser validado
-            pos (int): Posição do cursor
-
-        Returns:
-            tuple[QValidator.State, str, int]: (estado, texto, posição)
-        """
-        # Se vazio, é aceitável (não especificar afinidade)
-        if not input_text.strip():
-            return QValidator.State.Acceptable, input_text, pos
-
-        # Verificar se contém apenas números, vírgulas e espaços
-        allowed_chars = set("0123456789,")
-        if not all(c in allowed_chars for c in input_text):
-            return QValidator.State.Invalid, input_text, pos
-
-        # Verificar se não há vírgulas consecutivas ou no início/fim
-        if input_text.startswith(",") or input_text.endswith(",") or ",," in input_text:
-            return QValidator.State.Invalid, input_text, pos
-
-        # Tentar converter para lista de números
-        try:
-            cpu_list = [int(x.strip()) for x in input_text.split(',') if x.strip()]
-
-            # Verificar se todos os valores estão no range válido
-            for cpu in cpu_list:
-                if cpu < 1 or cpu > self.max_cpu:
-                    return QValidator.State.Invalid, input_text, pos
-
-            # Verificar se não há duplicatas
-            if len(cpu_list) != len(set(cpu_list)):
-                return QValidator.State.Invalid, input_text, pos
-
-            return QValidator.State.Acceptable, input_text, pos
-
-        except ValueError:
-            return QValidator.State.Invalid, input_text, pos
+        state, reason = classify_affinity_input(
+            input_text or "",
+            max_cpu=self._limit(),
+            group_label=self.group_label,
+        )
+        self.last_reason = reason
+        mapped = {
+            "acceptable": QValidator.State.Acceptable,
+            "intermediate": QValidator.State.Intermediate,
+            "invalid": QValidator.State.Invalid,
+        }[state]
+        return mapped, input_text, pos
 
     def fixup(self, input_text: str) -> str:
-        """
-        Corrige automaticamente o texto de entrada.
-
-        Args:
-            input_text (str): Texto a ser corrigido
-
-        Returns:
-            str: Texto corrigido
-        """
-        if not input_text.strip():
-            return ""
-
-        try:
-            # Converter para lista de números
-            cpu_list = [int(x.strip()) for x in input_text.split(',') if x.strip()]
-
-            # Filtrar valores válidos e remover duplicatas
-            valid_cpus = []
-            for cpu in cpu_list:
-                if 1 <= cpu <= self.max_cpu and cpu not in valid_cpus:
-                    valid_cpus.append(cpu)
-
-            # Retornar formatado
-            return ",".join(map(str, sorted(valid_cpus)))
-
-        except ValueError:
-            return ""
+        """Só completa uma vírgula final. Não troca o valor por outro executável."""
+        text = input_text or ""
+        stripped = text.strip()
+        squashed = stripped.replace(" ", "")
+        if (
+            stripped.endswith(",")
+            and not squashed.endswith(",,")
+            and not squashed.startswith(",")
+        ):
+            return stripped[:-1].rstrip()
+        return text
