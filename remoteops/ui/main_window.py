@@ -2226,12 +2226,14 @@ class MainWindow(QMainWindow):
 
         self.log_output.clear_log()
         self.log_output.set_session_status("connecting")
+        self.log_output.set_redaction_secrets(creds.passwords)
         self._set_run_phase(RunPhase.STARTING)
 
         plan = list(attempt.plan)
         if not plan:
             self.log_output.append_log(self.tr("Nenhum comando para executar."))
             self._clear_active_attempt()
+            self.log_output.clear_redaction_secrets()
             creds.clear()
             return
 
@@ -2245,9 +2247,11 @@ class MainWindow(QMainWindow):
             if not result.robocopy_started and not result.ok:
                 self._clear_active_attempt()
                 self.log_output.set_session_status("error")
+                self.log_output.clear_redaction_secrets()
             elif result.ok and not result.remote_monitored and not result.robocopy_started:
                 self._clear_active_attempt()
                 self.log_output.set_session_status("idle")
+                self.log_output.clear_redaction_secrets()
             elif result.ok:
                 self._set_run_phase(RunPhase.RUNNING)
         finally:
@@ -2270,6 +2274,7 @@ class MainWindow(QMainWindow):
         self._session_exit_requested = False
         self._clear_active_attempt()
         self.log_output.set_interactive(False)
+        self.log_output.clear_redaction_secrets()
         result = self.executor.last_result
         detached = bool(
             result
@@ -2362,6 +2367,7 @@ class MainWindow(QMainWindow):
         self.executor.stop()
         self.log_output.set_interactive(False)
         self.log_output.set_session_status("exited")
+        self.log_output.clear_redaction_secrets()
         self._clear_active_attempt()
         self.log_output.append_log(
             self.tr(

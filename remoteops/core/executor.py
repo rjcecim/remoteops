@@ -11,12 +11,16 @@ from typing import List, Optional, Sequence, Union
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from remoteops.core.console_codec import decode_best_effort
+from remoteops.core.console_stream import StreamRedactor, emit_conpty_text
 from remoteops.core.models import CommandSpec, ExecutionResult, OperationStatus, is_robocopy_success
 from remoteops.core.win_cmd import CREATE_NO_WINDOW, popen_argv
 from remoteops.utils.redaction import redact_command_text
 
 # Reexport para callers históricos (batch_install, etc.).
-__all__ = ("Executor", "decode_best_effort")
+__all__ = ("Executor", "decode_best_effort", "_emit_conpty_text")
+
+# Alias estável para batchinstall / batchmsi.
+_emit_conpty_text = emit_conpty_text
 
 
 def _read_pipe(pipe, callback, prefix: str = "") -> str:
@@ -39,33 +43,6 @@ def _read_pipe(pipe, callback, prefix: str = "") -> str:
         except Exception:
             pass
     return "\n".join(chunks)
-
-
-def _emit_conpty_text(
-    text: str,
-    *,
-    prefix: str,
-    on_line,
-    carry: List[str],
-    on_partial=None,
-) -> None:
-    """Converte pedaços ConPTY em linhas para o log (mantém leftover parcial)."""
-    if not text:
-        return
-    data = (carry[0] if carry else "") + text
-    carry.clear()
-    parts = data.split("\n")
-    if not data.endswith("\n"):
-        carry.append(parts[-1])
-        parts = parts[:-1]
-    for part in parts:
-        line = part.split("\r")[-1]
-        if not line.strip():
-            continue
-        on_line(f"{prefix}{line}" if prefix else line)
-    if on_partial is not None:
-        partial = carry[0] if carry else ""
-        on_partial(f"{prefix}{partial}" if (prefix and partial) else partial)
 
 
 class Executor(QObject):
@@ -141,6 +118,10 @@ class Executor(QObject):
                 self._run_command, command, timeout, generation, bool(use_conpty)
             )
         QTimer.singleShot(100, lambda: self._check_future(generation))
+
+    def _clear_passwords(self) -> None:
+        with self._lock:
+            self._passwords = []
 
     def send_input(self, text: str) -> bool:
         """Envia uma linha (Enter) ao ConPTY ativo. Retorna False se não houver sessão."""
@@ -252,14 +233,17 @@ class Executor(QObject):
                 )
 
             creationflags = CREATE_NO_WINDOW if CREATE_NO_WINDOW else 0
+            passwords_snapshot = list(self._passwords)
 
             def on_out(line: str) -> None:
-                stdout_acc.append(line)
-                self.outputReceived.emit(line)
+                safe = redact_command_text(line, passwords=passwords_snapshot)
+                stdout_acc.append(safe)
+                self.outputReceived.emit(safe)
 
             def on_err(line: str) -> None:
-                stderr_acc.append(line)
-                self.errorReceived.emit(line)
+                safe = redact_command_text(line, passwords=passwords_snapshot)
+                stderr_acc.append(safe)
+                self.errorReceived.emit(safe)
 
             xml_out = CliXmlLineFilter(on_out)
             xml_err = CliXmlLineFilter(on_err)
@@ -380,6 +364,9 @@ class Executor(QObject):
                     self._conpty_write = None
                     self._conpty_resize = None
             self._set_interactive(False)
+            # Credencial efêmera: limpa após a tentativa (UI já materializou e limpou).
+            if generation == self._run_generation:
+                self._clear_passwords()
 
     def _run_conpty(
         self,
@@ -428,12 +415,18 @@ class Executor(QObject):
         from remoteops.winget.clixml import CliXmlLineFilter
 
         carry: List[str] = []
-        xml_out = CliXmlLineFilter(lambda line: _emit_ps_line(line))
+        # Snapshot: finally do pipe path / stop pode limpar self._passwords.
+        passwords_snapshot = list(self._passwords)
+        # Redige o fluxo contínuo antes da montagem de linhas (senha fragmentada).
+        stream_redactor = StreamRedactor(passwords_snapshot)
 
         def _emit_ps_line(line: str) -> None:
-            safe_line = redact_command_text(line, passwords=self._passwords)
+            # Linha já passou pelo StreamRedactor no chunk; reforço por política.
+            safe_line = redact_command_text(line, passwords=passwords_snapshot)
             stdout_acc.append(safe_line)
             self.outputReceived.emit(safe_line)
+
+        xml_out = CliXmlLineFilter(lambda line: _emit_ps_line(line))
 
         def on_line(line: str) -> None:
             xml_out.feed(line)
@@ -441,12 +434,15 @@ class Executor(QObject):
         def on_partial(text: str) -> None:
             if xml_out.buffering:
                 return
-            safe = redact_command_text(text, passwords=self._passwords)
+            safe = redact_command_text(text, passwords=passwords_snapshot)
             self.partialOutput.emit(safe)
 
         def on_chunk(chunk: str) -> None:
-            _emit_conpty_text(
-                chunk,
+            safe_chunk = stream_redactor.feed(chunk)
+            if not safe_chunk:
+                return
+            emit_conpty_text(
+                safe_chunk,
                 prefix=prefix,
                 on_line=on_line,
                 carry=carry,
@@ -461,6 +457,15 @@ class Executor(QObject):
                 timeout=timeout,
             )
         finally:
+            leftover_stream = stream_redactor.finish()
+            if leftover_stream:
+                emit_conpty_text(
+                    leftover_stream,
+                    prefix=prefix,
+                    on_line=on_line,
+                    carry=carry,
+                    on_partial=on_partial,
+                )
             if carry and carry[0].strip():
                 on_line(f"{prefix}{carry[0]}" if prefix else carry[0])
             xml_out.flush()
@@ -480,7 +485,7 @@ class Executor(QObject):
         result.remote_may_continue = result.cancelled or result.timed_out
         if conpty_result.exception:
             result.exception = redact_command_text(
-                conpty_result.exception, passwords=self._passwords
+                conpty_result.exception, passwords=passwords_snapshot
             )
         return result.finalize()
 
@@ -516,6 +521,7 @@ class Executor(QObject):
             with self._lock:
                 if self.future is fut:
                     self.future = None
+            self._clear_passwords()
         else:
             QTimer.singleShot(100, lambda: self._check_future(generation))
 
@@ -549,6 +555,8 @@ class Executor(QObject):
         if fut is not None and not fut.running() and not fut.done():
             fut.cancel()
         self._set_interactive(False)
+        if fut is None or fut.done():
+            self._clear_passwords()
 
     @property
     def last_result(self) -> Optional[ExecutionResult]:
@@ -556,4 +564,5 @@ class Executor(QObject):
 
     def shutdown(self, wait: bool = False) -> None:
         self.stop()
+        self._clear_passwords()
         self.executor.shutdown(wait=wait, cancel_futures=True)

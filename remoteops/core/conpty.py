@@ -8,25 +8,18 @@ Não usar em PsInfo, Pesquisa nem no botão Desinstalar dessas abas.
 from __future__ import annotations
 
 import ctypes
-import re
 import subprocess
 import threading
 import time
+from collections import deque
 from ctypes import wintypes
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence, Union
+from typing import Callable, Deque, List, Optional, Sequence, Union
 
-# VT/ANSI comum emitido pelo ConPTY — remove para o QTextEdit.
-# Inclui CSI (?25h, 2J, H…), OSC (]0;title BEL) e códigos de 1 byte.
-_ANSI_RE = re.compile(
-    r"(?:"
-    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC
-    r"|\x1b\[[0-9;?]*[ -/]*[@-~]"  # CSI
-    r"|\x1b[P^_][^\x1b]*\x1b\\"  # DCS/PM/APC
-    r"|\x1b[@-Z\\-_]"  # 2-byte (não inclui ']')
-    r"|\x00"
-    r")"
-)
+from remoteops.core.console_stream import ConPtyTextProcessor, strip_ansi
+
+# Reexport para callers/testes históricos.
+__all__ = ("ConPtyResult", "ConPtySession", "run_argv_conpty", "strip_ansi")
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -208,15 +201,6 @@ kernel32.PeekNamedPipe.argtypes = [
 kernel32.PeekNamedPipe.restype = wintypes.BOOL
 
 
-def strip_ansi(text: str) -> str:
-    if not text:
-        return ""
-    # Cursor absolute (ConPTY): vira quebra de linha para não colar textos.
-    text = re.sub(r"\x1b\[\d+;\d+H", "\n", text)
-    text = _ANSI_RE.sub("", text)
-    return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
 def _argv_to_command_line(argv: Sequence[str]) -> str:
     """Command line Windows (regras de list2cmdline / CommandLineToArgvW)."""
     return subprocess.list2cmdline([str(a) for a in argv])
@@ -257,6 +241,13 @@ class ConPtySession:
         self._h_out_read: Optional[wintypes.HANDLE] = None
         self._h_in_write: Optional[wintypes.HANDLE] = None
         self._io_lock = threading.Lock()
+        self._chunk_lock = threading.Lock()
+        self._output_chunks: Deque[bytes] = deque()
+        # Limite de bytes pendentes (pressão de retorno leve no reader).
+        self._max_pending_bytes = 8 * 1024 * 1024
+        self._pending_bytes = 0
+        self._reader_stop = threading.Event()
+        self._reader_thread: Optional[threading.Thread] = None
 
     def write_input(self, data: Union[bytes, str]) -> bool:
         """Envia bytes/texto ao stdin do ConPTY (teclado da sessão interativa)."""
@@ -325,8 +316,10 @@ class ConPtySession:
         self._hpc = hpc
         self._h_in_write = h_in_write
         self._h_out_read = h_out_read
-        self._output_chunks: List[bytes] = []
-        self._reader_stop = threading.Event()
+        with self._chunk_lock:
+            self._output_chunks.clear()
+            self._pending_bytes = 0
+        self._reader_stop.clear()
 
         def _early_reader() -> None:
             handle = self._h_out_read
@@ -336,7 +329,18 @@ class ConPtySession:
                 ok = kernel32.ReadFile(handle, buf, len(buf), ctypes.byref(read), None)
                 if not ok or read.value == 0:
                     break
-                self._output_chunks.append(bytes(buf[: read.value]))
+                chunk = bytes(buf[: read.value])
+                while not self._reader_stop.is_set():
+                    with self._chunk_lock:
+                        if (
+                            self._pending_bytes + len(chunk)
+                            <= self._max_pending_bytes
+                        ):
+                            self._output_chunks.append(chunk)
+                            self._pending_bytes += len(chunk)
+                            break
+                    # Pressão de retorno: espera o consumidor drenar (sem descartar).
+                    time.sleep(0.05)
 
         # Listener antes do CreateProcess (como EchoCon).
         self._reader_thread = threading.Thread(
@@ -432,23 +436,14 @@ class ConPtySession:
             return b""
         return bytes(buf[: read.value])
 
-    def _drain_output(self, on_chunk: Callable[[str], None], chunks: List[str]) -> None:
-        while True:
-            raw = self._read_available()
-            if not raw:
-                return
-            text = strip_ansi(
-                raw.decode("utf-8", errors="replace")
-                .replace("\r\n", "\n")
-                .replace("\r", "\n")
-            )
-            if not text:
-                continue
-            chunks.append(text)
-            try:
-                on_chunk(text)
-            except Exception:
-                pass
+    def _take_pending_bytes(self) -> bytes:
+        with self._chunk_lock:
+            if not self._output_chunks:
+                return b""
+            raw = b"".join(self._output_chunks)
+            self._output_chunks.clear()
+            self._pending_bytes = 0
+            return raw
 
     def read_output_loop(
         self,
@@ -465,19 +460,13 @@ class ConPtySession:
         cancelled = False
         timed_out = False
         deadline = (time.monotonic() + float(timeout)) if timeout else None
-        emitted = 0
+        processor = ConPtyTextProcessor()
 
-        def _flush_new() -> None:
-            nonlocal emitted
-            raw = b"".join(self._output_chunks[emitted:])
-            emitted = len(self._output_chunks)
-            if not raw:
-                return
-            text = strip_ansi(
-                raw.decode("utf-8", errors="replace")
-                .replace("\r\n", "\n")
-                .replace("\r", "\n")
-            )
+        def _flush_new(*, final: bool = False) -> None:
+            raw = self._take_pending_bytes()
+            text = processor.feed_bytes(raw) if raw else ""
+            if final:
+                text += processor.finish()
             if not text:
                 return
             chunks.append(text)
@@ -519,10 +508,10 @@ class ConPtySession:
                 _close_handle(self._h_out_read)
                 self._h_out_read = None
             self._reader_stop.set()
-            t = getattr(self, "_reader_thread", None)
+            t = self._reader_thread
             if t is not None:
                 t.join(timeout=2.0)
-            _flush_new()
+            _flush_new(final=True)
 
         code = wintypes.DWORD(1)
         if self._pi is not None:

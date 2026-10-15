@@ -21,7 +21,6 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QSizePolicy,
     QTableWidget,
-    QTableWidgetItem,
     QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
@@ -889,6 +888,9 @@ class ProcessosTab(QWidget):
             self._invalidate_data()
 
         user, password = self._creds()
+        self.log_output.set_redaction_secrets(
+            [password] if (password or "").strip() else None
+        )
         self._req_id += 1
         req = self._req_id
         same_host = host.casefold() == (self._data_host or "").casefold()
@@ -932,6 +934,11 @@ class ProcessosTab(QWidget):
         if not self._ui_alive():
             return
         self._set_loading(False)
+        if not (
+            (self._detail_worker is not None and self._detail_worker.isRunning())
+            or (self._action_worker is not None and self._action_worker.isRunning())
+        ):
+            self.log_output.clear_redaction_secrets()
 
     def _on_list_err(self, host: str, message: str) -> None:
         if not self._ui_alive():
@@ -939,8 +946,7 @@ class ProcessosTab(QWidget):
         if host.casefold() != self._get_host().casefold():
             return
         self._status_lbl.setText(self.tr("Falha ao listar processos"))
-        safe = redact_command_text(message or "", passwords=None)
-        self.log_output.append_log(self.tr(f"[PROCESSOS] {safe}"))
+        self.log_output.append_log(self.tr(f"[PROCESSOS] {message or ''}"))
 
     def _on_list_ok(
         self,
@@ -1238,6 +1244,9 @@ class ProcessosTab(QWidget):
             return
         host = self._get_host()
         user, password = self._creds()
+        self.log_output.set_redaction_secrets(
+            [password] if (password or "").strip() else None
+        )
         self._detail_worker = _DetailWorker(
             kind,
             host,
@@ -1323,6 +1332,9 @@ class ProcessosTab(QWidget):
             return
         host = self._get_host()
         user, password = self._creds()
+        self.log_output.set_redaction_secrets(
+            [password] if (password or "").strip() else None
+        )
         self._action_worker = _ActionWorker(
             action,
             host,

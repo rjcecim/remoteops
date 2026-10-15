@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from typing import Callable, Optional, Tuple
 
-from remoteops.utils.dates import format_now_datetime
-
 from PyQt6 import sip
-from PyQt6.QtCore import QTime, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTime, pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -19,8 +17,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSizePolicy,
-    QTabWidget,
     QTableWidget,
+    QTabWidget,
     QTimeEdit,
     QVBoxLayout,
     QWidget,
@@ -58,10 +56,10 @@ from remoteops.ui.widgets.mdl2_tab_bar import Mdl2TabBar
 from remoteops.ui.widgets.spinbox import StepSpinBox
 from remoteops.ui.widgets.status_dot import StatusDot
 from remoteops.ui.widgets.table import SortableTableItem, configure_standard_table
+from remoteops.utils.dates import format_now_datetime
 from remoteops.utils.installed_printers import session_account
 from remoteops.utils.ping import is_valid_host, normalize_host
 from remoteops.utils.printers import active_sessions
-from remoteops.utils.pstools import get_pstools_dir
 from remoteops.utils.psshutdown import (
     ADVANCED_ACTIONS,
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
@@ -89,6 +87,7 @@ from remoteops.utils.psshutdown import (
     suggested_reason_message,
     validate_power_request,
 )
+from remoteops.utils.pstools import get_pstools_dir
 from remoteops.utils.redaction import redact_command_text
 from remoteops.utils.sessions import RemoteSession
 
@@ -1232,6 +1231,9 @@ class EnergiaTab(QWidget):
         user, password = self._creds()
         self._busy = True
         self._refresh_actions()
+        self.log_output.set_redaction_secrets(
+            [password] if (password or "").strip() else None
+        )
         self.log_output.append_log(
             self.tr(f"[ENERGIA] {action_profile(request.action).label} em {host}…")
         )
@@ -1348,6 +1350,8 @@ class EnergiaTab(QWidget):
             return
         pending_abort = self._abort_after_stop
         self._abort_after_stop = False
+        if not pending_abort:
+            self.log_output.clear_redaction_secrets()
         self._refresh_actions()
         if pending_abort:
             abort = apply_action_defaults(

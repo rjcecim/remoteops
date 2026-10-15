@@ -1226,8 +1226,11 @@ class SessoesArquivosTab(QWidget):
     def _append_log(self, line: str) -> None:
         if not self._ui_alive():
             return
-        safe = redact_command_text(line or "", passwords=None)
-        self.log_output.append_log(safe)
+        _user, password = self._creds()
+        self.log_output.set_redaction_secrets(
+            [password] if (password or "").strip() else None
+        )
+        self.log_output.append_log(line or "")
 
     # ── PsLoggedOn ────────────────────────────────────────────────────────
 

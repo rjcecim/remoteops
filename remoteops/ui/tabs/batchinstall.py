@@ -755,6 +755,8 @@ class BatchInstallTab(QWidget):
         self.log_console.set_interactive(False)
         self.log_console.set_partial_line("")
         self.log_console.set_session_status("idle")
+        self.log_console.clear_redaction_secrets()
+        self.log_messages.clear_redaction_secrets()
         if clear:
             self.log_console.clear_log()
 
@@ -762,6 +764,8 @@ class BatchInstallTab(QWidget):
         self._flush_console_partial()
         self.log_console.set_interactive(False)
         self.log_console.set_session_status("error" if error else "exited")
+        self.log_console.clear_redaction_secrets()
+        self.log_messages.clear_redaction_secrets()
 
     def _flush_console_partial(self) -> None:
         leftover = (self._console_carry[0] if self._console_carry else "").strip()
@@ -1382,6 +1386,9 @@ class BatchInstallTab(QWidget):
 
         identity = identify_product(exe)
         user, password, params = self._creds_and_params()
+        secrets = [password] if (password or "").strip() else None
+        self.log_console.set_redaction_secrets(secrets)
+        self.log_messages.set_redaction_secrets(secrets)
         cols, rows = self._console_size
         self._worker = _BatchInstallWorker(
             [],

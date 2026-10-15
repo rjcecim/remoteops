@@ -922,6 +922,7 @@ class MessageTab(QWidget):
             )
             passwords = list(creds.passwords)
             self._send_passwords = passwords
+            self.log_output.set_redaction_secrets(passwords)
             display = spec.sanitized_display(passwords=passwords)
             if display:
                 self._append_console(display)
@@ -935,6 +936,7 @@ class MessageTab(QWidget):
         except Exception as exc:
             self._sending = False
             self._send_passwords = []
+            self.log_output.clear_redaction_secrets()
             self._refresh_actions()
             self._set_op_status("err", str(exc))
         finally:
@@ -952,6 +954,7 @@ class MessageTab(QWidget):
         if current.casefold() != (self._send_host or "").casefold():
             self._sending = False
             self._send_passwords = []
+            self.log_output.clear_redaction_secrets()
             self._refresh_actions()
             return
         classified = self._service.classify_result(
@@ -966,6 +969,7 @@ class MessageTab(QWidget):
         passwords = list(self._send_passwords)
         self._sending = False
         self._send_passwords = []
+        self.log_output.clear_redaction_secrets()
         self._refresh_actions()
         if classified.ok:
             self.message_edit.clear()

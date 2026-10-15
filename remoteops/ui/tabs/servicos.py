@@ -26,7 +26,6 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QTableWidget,
-    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -1461,8 +1460,11 @@ class ServicosTab(QWidget):
     def _append_psservice_log(self, line: str) -> None:
         if not self._ui_alive():
             return
-        safe = redact_command_text(line or "", passwords=None)
-        self.log_output.append_log(safe)
+        _user, password = self._creds()
+        self.log_output.set_redaction_secrets(
+            [password] if (password or "").strip() else None
+        )
+        self.log_output.append_log(line or "")
 
     def refresh_services(self, full: bool = True) -> None:
         """Carrega serviços. full=True faz query+config; False só query (auto)."""
@@ -1490,6 +1492,9 @@ class ServicosTab(QWidget):
             self._invalidate_data()
 
         user, password = self._creds()
+        self.log_output.set_redaction_secrets(
+            [password] if (password or "").strip() else None
+        )
         self._generation += 1
         gen = self._generation
         same_host = host.casefold() == (self._data_host or "").casefold()
@@ -1540,6 +1545,9 @@ class ServicosTab(QWidget):
         if not self._ui_alive():
             return
         self._set_loading(False)
+        # Mantém secrets se outra ação (detalhe/ação) ainda estiver ativa.
+        if not self._busy():
+            self.log_output.clear_redaction_secrets()
 
     def _on_refresh_err(self, host: str, generation: int, message: str) -> None:
         if not self._ui_alive():

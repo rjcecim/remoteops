@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from typing import Callable, Optional, Tuple
 
-from remoteops.utils.dates import format_now_datetime
-
 from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
@@ -48,6 +46,7 @@ from remoteops.ui.winget.parsers.winget_text import (
 from remoteops.ui.winget.preview import build_preview_text
 from remoteops.ui.winget.table_style import apply_flat_list_table_style
 from remoteops.ui.winget.workers.winget_worker import WinGetWorker
+from remoteops.utils.dates import format_now_datetime
 from remoteops.utils.pstools import get_pstools_dir, resolve_pstools_tool
 from remoteops.winget.clixml import clixml_to_text, looks_like_clixml, summarize_one_line
 from remoteops.winget.constants import is_winget_success_exit
@@ -833,6 +832,8 @@ class WinGetTab(QWidget):
 
         # Um comando por vez: console só desta aba / comando atual
         self.log_output.clear_log()
+        user, password = self._get_creds()
+        self.log_output.set_redaction_secrets([password] if (password or "").strip() else None)
         if log_header is not None:
             self._append_log(log_header)
 
@@ -840,7 +841,6 @@ class WinGetTab(QWidget):
         self._set_preview(action=action, ids=ids or [], query=query)
 
         self._set_busy(True)
-        user, password = self._get_creds()
         self._worker = WinGetWorker(
             psexec_path=self._psexec_path(),
             host=host,
@@ -936,6 +936,7 @@ class WinGetTab(QWidget):
             self._reset_progress_ui()
         self._progress.stop_animation()
         self._set_busy(False)
+        self.log_output.clear_redaction_secrets()
 
     def _exec_result_summary(self, action: str, payload: dict) -> tuple[str, str]:
         """Monta prefixo e resumo textual para ações install/upgrade/uninstall."""
@@ -1014,6 +1015,7 @@ class WinGetTab(QWidget):
         else:
             self._append_log("[OK] Ação concluída.")
         self._set_busy(False)
+        self.log_output.clear_redaction_secrets()
 
     def _on_installed_list(self) -> None:
         self._start_worker(

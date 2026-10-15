@@ -722,6 +722,8 @@ class BatchMsiTab(QWidget):
         self.log_console.set_interactive(False)
         self.log_console.set_partial_line("")
         self.log_console.set_session_status("idle")
+        self.log_console.clear_redaction_secrets()
+        self.log_messages.clear_redaction_secrets()
         if clear:
             self.log_console.clear_log()
 
@@ -733,6 +735,8 @@ class BatchMsiTab(QWidget):
         self.log_console.set_partial_line("")
         self.log_console.set_interactive(False)
         self.log_console.set_session_status("error" if error else "exited")
+        self.log_console.clear_redaction_secrets()
+        self.log_messages.clear_redaction_secrets()
 
     def _on_console_started(self, command: str) -> None:
         if not self._ui_alive():
@@ -1258,6 +1262,9 @@ class BatchMsiTab(QWidget):
         self.log_console.set_interactive(False)
         self._show_output_tab(1)
         kwargs = self._worker_kwargs(msi)
+        secrets = [kwargs["password"]] if (kwargs.get("password") or "").strip() else None
+        self.log_console.set_redaction_secrets(secrets)
+        self.log_messages.set_redaction_secrets(secrets)
         preview = self.current_preview_command()
         self._log("INFO", self.tr(f"Prévia: {preview}"))
         self._log_identity(kwargs["identity"], kwargs["desired_version"])

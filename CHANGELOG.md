@@ -4,9 +4,9 @@ Este arquivo registra as melhorias entregues em cada commit. As versões seguem
 o formato [SemVer](https://semver.org/): `MAJOR.MINOR.PATCH`. A identidade
 exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
-## [1.12.0] (Build 91) - 2026-10-15
+## [1.12.0] (Build 92) - 2026-10-15
 
-Identidade: **RemoteOps 1.12.0 (Build 91)**.
+Identidade: **RemoteOps 1.12.0 (Build 92)**.
 
 - Rebuild the PsExec Desempenho card around the destination computer. Priority maps to `-low`, `-belownormal`, `-abovenormal`, `-high`, `-realtime` and `-background`. CPU group and affinity use that computer's processor groups.
 - Query the groups with PsExec as the configured account, off the UI thread, and read the result from a temporary file when the console pipe comes back empty. Refresh uses the same icon button as the session list.
@@ -16,7 +16,9 @@ Identidade: **RemoteOps 1.12.0 (Build 91)**.
 - Parse program arguments with Windows `CommandLineToArgvW` rules shared by PsExec extras, Robocopy switches and msiexec tokens. Validate connection timeout `-n` from 0 to 9999.
 - Treat `-d` as a detached launch: a local PID is not reported as remote failure, and the log states that the remote process is not monitored.
 - Freeze each Executar attempt as a validated plan so a TCP 445 precheck cannot launch a command rebuilt from later edits. Run/Stop follow an explicit phase, and late or cancelled precheck callbacks do not start execution. Rename the preview checkbox to “Abrir em console externo”.
+- Harden the Console de Saída: incremental UTF-8/ANSI, carriage-return progress, bounded ConPTY buffers and visual retention, smart scroll, and a redaction gateway shared by every `LogOutputWidget` (including WinGet and other tabs).
 
+- 2026-10-15 · Harden console streams, ConPTY retention and redaction across all output consoles.
 - 2026-10-15 · Freeze validated Executar attempts through TCP precheck and cancel safely.
 - 2026-10-15 · Harden PsExec flags, Windows argument parsing and detached `-d` results.
 - 2026-10-15 · Restore the window size after collapsing Autenticação and Desempenho.

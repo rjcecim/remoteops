@@ -103,7 +103,6 @@ from remoteops.utils.printers import (
     select_default_active_session,
     share_status_label,
 )
-from remoteops.utils.redaction import redact_command_text
 from remoteops.utils.sessions import RemoteSession, list_remote_sessions
 
 LOG_PREFIX = "[IMPRESSORAS]"
@@ -546,7 +545,10 @@ class PrintersTab(QWidget):
 
     def _log(self, message: str) -> None:
         _user, password = self._creds()
-        text = redact_command_text(message or "", passwords=[password] if password else None)
+        self.log_output.set_redaction_secrets(
+            [password] if (password or "").strip() else None
+        )
+        text = message or ""
         if not text.startswith(LOG_PREFIX):
             text = f"{LOG_PREFIX} {text}"
         self.log_output.append_log(text)
