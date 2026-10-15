@@ -141,7 +141,7 @@ class CommandBuilder:
         if "has_password" in clean:
             self._has_password = bool(clean.pop("has_password"))
         else:
-            self._has_password = bool(str(raw_pwd or "").strip())
+            self._has_password = bool(raw_pwd)
         # Defesa: remover qualquer residual
         clean.pop("password", None)
         self.psexec_params = clean

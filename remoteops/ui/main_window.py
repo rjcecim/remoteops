@@ -103,7 +103,7 @@ class MainWindow(QMainWindow):
             exe_provider=lambda: getattr(self.file_selector, "selected_file", None) or "",
             creds_provider=lambda: (
                 self.psexec_tab.auth_username(),
-                self.psexec_tab.pass_edit.text() or "",
+                self.psexec_tab.auth_password(),
             ),
             psexec_params_provider=lambda: self.psexec_tab.collect_builder_params(
                 host="",
@@ -136,7 +136,7 @@ class MainWindow(QMainWindow):
             msi_params_provider=self.msi_tab.get_params,
             creds_provider=lambda: (
                 self.psexec_tab.auth_username(),
-                self.psexec_tab.pass_edit.text() or "",
+                self.psexec_tab.auth_password(),
             ),
             psexec_params_provider=lambda: self.psexec_tab.collect_builder_params(
                 host="",
@@ -232,6 +232,7 @@ class MainWindow(QMainWindow):
         self._on_form_layout_changed()
         self.psexec_tab.user_edit.textChanged.connect(self.update_command)
         self.psexec_tab.pass_edit.textChanged.connect(self.update_command)
+        self.psexec_tab.authChanged.connect(self.update_command)
         # Conexões dos checkboxes de elevação
         self.psexec_tab.flag_h.stateChanged.connect(self.update_command)
         self.psexec_tab.flag_s.stateChanged.connect(self.update_command)
@@ -318,7 +319,7 @@ class MainWindow(QMainWindow):
     def _current_creds(self) -> CredentialContext:
         return CredentialContext(
             user=self.psexec_tab.auth_username(),
-            password=self.psexec_tab.pass_edit.text() or "",
+            password=self.psexec_tab.auth_password(),
         )
 
     def _escape_quotes(self, s: str) -> str:
@@ -533,7 +534,7 @@ class MainWindow(QMainWindow):
             host_source=self.psexec_tab.host_edit,
             creds_provider=lambda: (
                 self.psexec_tab.auth_username(),
-                self.psexec_tab.pass_edit.text() or "",
+                self.psexec_tab.auth_password(),
             ),
         )
         self.psinfo_tab.openContasLocaisRequested.connect(
@@ -603,7 +604,7 @@ class MainWindow(QMainWindow):
             host_source=self.psexec_tab.host_edit,
             creds_provider=lambda: (
                 self.psexec_tab.auth_username(),
-                self.psexec_tab.pass_edit.text() or "",
+                self.psexec_tab.auth_password(),
             ),
         )
         self.tabs.addTab(self.winget_tab, self.tr("WinGet"))
@@ -640,7 +641,7 @@ class MainWindow(QMainWindow):
             host_source=self.psexec_tab.host_edit,
             creds_provider=lambda: (
                 self.psexec_tab.auth_username(),
-                self.psexec_tab.pass_edit.text() or "",
+                self.psexec_tab.auth_password(),
             ),
             online_provider=lambda: bool(self.psexec_tab.is_host_online),
         )
@@ -679,7 +680,7 @@ class MainWindow(QMainWindow):
             host_source=self.psexec_tab.host_edit,
             creds_provider=lambda: (
                 self.psexec_tab.auth_username(),
-                self.psexec_tab.pass_edit.text() or "",
+                self.psexec_tab.auth_password(),
             ),
             online_provider=lambda: bool(self.psexec_tab.is_host_online),
         )
@@ -720,7 +721,7 @@ class MainWindow(QMainWindow):
             host_source=self.psexec_tab.host_edit,
             creds_provider=lambda: (
                 self.psexec_tab.auth_username(),
-                self.psexec_tab.pass_edit.text() or "",
+                self.psexec_tab.auth_password(),
             ),
             online_provider=lambda: bool(self.psexec_tab.is_host_online),
         )
@@ -760,7 +761,7 @@ class MainWindow(QMainWindow):
             host_source=self.psexec_tab.host_edit,
             creds_provider=lambda: (
                 self.psexec_tab.auth_username(),
-                self.psexec_tab.pass_edit.text() or "",
+                self.psexec_tab.auth_password(),
             ),
             online_provider=lambda: bool(self.psexec_tab.is_host_online),
         )
@@ -800,7 +801,7 @@ class MainWindow(QMainWindow):
             host_source=self.psexec_tab.host_edit,
             creds_provider=lambda: (
                 self.psexec_tab.auth_username(),
-                self.psexec_tab.pass_edit.text() or "",
+                self.psexec_tab.auth_password(),
             ),
             online_provider=lambda: bool(self.psexec_tab.is_host_online),
         )
@@ -860,7 +861,7 @@ class MainWindow(QMainWindow):
             host_source=self.psexec_tab.host_edit,
             creds_provider=lambda: (
                 self.psexec_tab.auth_username(),
-                self.psexec_tab.pass_edit.text() or "",
+                self.psexec_tab.auth_password(),
             ),
             online_provider=lambda: bool(self.psexec_tab.is_host_online),
         )
@@ -923,7 +924,7 @@ class MainWindow(QMainWindow):
             host_source=self.psexec_tab.host_edit,
             creds_provider=lambda: (
                 self.psexec_tab.auth_username(),
-                self.psexec_tab.pass_edit.text() or "",
+                self.psexec_tab.auth_password(),
             ),
             online_provider=lambda: bool(self.psexec_tab.is_host_online),
         )
@@ -1011,7 +1012,7 @@ class MainWindow(QMainWindow):
         self.hostsearch_tab = HostSearchTab(
             creds_provider=lambda: (
                 self.psexec_tab.auth_username(),
-                self.psexec_tab.pass_edit.text() or "",
+                self.psexec_tab.auth_password(),
             )
         )
         self.hostsearch_tab.openHostRequested.connect(self._open_psexec_for_host)
@@ -1950,8 +1951,8 @@ class MainWindow(QMainWindow):
         """
         specs = self.build_specs_for_execution()
         passwords = []
-        pwd = self.psexec_tab.pass_edit.text() or ""
-        if pwd.strip():
+        pwd = self.psexec_tab.auth_password()
+        if pwd:
             passwords.append(pwd)
         return "\n".join(s.sanitized_display(passwords) for s in specs)
 
@@ -2055,7 +2056,7 @@ class MainWindow(QMainWindow):
 
     def log_to_file(self, text: str):
         """Grava histórico sanitizado (nunca senha)."""
-        pwd = self.psexec_tab.pass_edit.text() if hasattr(self, "psexec_tab") else ""
+        pwd = self.psexec_tab.auth_password() if hasattr(self, "psexec_tab") else ""
         passwords = [pwd] if pwd else None
         append_history(text, passwords=passwords)
 

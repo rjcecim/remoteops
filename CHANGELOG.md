@@ -4,6 +4,18 @@ Este arquivo registra as melhorias entregues em cada commit. As versões seguem
 o formato [SemVer](https://semver.org/): `MAJOR.MINOR.PATCH`. A identidade
 exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
+## [1.11.0] (Build 87) - 2026-10-15
+
+Identidade: **RemoteOps 1.11.0 (Build 87)**.
+
+- Replace the PsExec authentication form with three credential modes. Windows atual sends no `-u` or `-p`. Domínio sends `DOMÍNIO\usuário` and fills the domain from the Windows session, then from the remote computer when that lookup is a real domain. Conta local sends `.\usuário` for the remote SAM account.
+- Keep a domain prefix the operator typed. A workgroup or computer name is not used as the account domain. Switching mode clears the account and password.
+- Mask the password, with a show/hide control that never puts it in the tooltip, preview, history or log. Spaces and symbols are preserved. An empty password with a username still omits `-p` so PsExec can prompt.
+- Replace the elevation checkboxes with one privilege level: Padrão, Elevado (`-h`), SYSTEM (`-s`) or Limitado (`-l`). Shell commands and executable preselect still choose SYSTEM, and the control shows that effective flag. `-e` remains incompatible with `-s`.
+- Choose an interactive session with `-i` or `-i N`. List remote sessions as returned, refresh on demand, and ignore a result whose host, account or password no longer matches the request. A session that disappeared must be chosen again before an interactive run.
+
+- 2026-10-15 · Add credential modes and reliable privilege and session selection for PsExec.
+
 ## [1.10.0] (Build 86) - 2026-09-23 a 2026-10-15
 
 Identidade: **RemoteOps 1.10.0 (Build 86)**.

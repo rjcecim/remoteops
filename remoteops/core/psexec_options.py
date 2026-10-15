@@ -96,8 +96,8 @@ TOOLTIPS = {
         "sessão console — não é a sessão 0 de serviços do Windows."
     ),
     "session_id": (
-        "Sessão remota para -i. «não especificar» gera apenas -i (console do "
-        "PsExec). Com o host online, a lista mostra os IDs reais do computador."
+        "Sessão remota para -i. «Console padrão (sem ID)» gera apenas -i. "
+        "Uma sessão escolhida gera -i seguido do ID real do computador."
     ),
     "-c": "Copia o programa especificado para o sistema remoto antes de executá-lo.",
     "-f": "Forçar cópia mesmo que o arquivo já exista no computador remoto.",
@@ -123,8 +123,9 @@ TOOLTIPS = {
     "-accepteula": "Aceitar automaticamente o EULA do PsExec.",
     "-nobanner": "Não exibir o banner do PsExec.",
     "-u": (
-        r"Usuário no formato DOMAIN\user ou .\user (conta local do host). "
-        "O domínio é preenchido com o USERDOMAIN do computador remoto."
+        "Windows atual omite -u e -p e usa o token do processo. "
+        r"Domínio envia DOMÍNIO\usuário. Conta local envia .\usuário, "
+        "que o PsExec trata como a conta local do computador remoto."
     ),
     "-p": (
         "Senha da conta em -u. Se o usuário estiver preenchido e a senha vazia, "
@@ -162,6 +163,9 @@ class PsExecOptions:
     flag_l: bool = False
     session_interactive: bool = False
     session_id: Optional[int] = None
+    session_unavailable: bool = False
+    session_unconfirmed: bool = False
+    session_block_reason: str = ""
     priority: str = ""
     cpu_group: Optional[int] = None
     affinity: str = ""
@@ -284,6 +288,9 @@ def options_from_params(params: Optional[dict]) -> PsExecOptions:
         flag_l=bool(p.get("-l")),
         session_interactive=bool(p.get("session_interactive")),
         session_id=_parse_session_id(p.get("session_id")),
+        session_unavailable=bool(p.get("session_unavailable")),
+        session_unconfirmed=bool(p.get("session_unconfirmed")),
+        session_block_reason=str(p.get("session_block_reason") or ""),
         priority=_parse_priority(p.get("priority", "")),
         cpu_group=group,
         affinity=str(p.get("affinity") or "").strip(),
@@ -311,6 +318,9 @@ def options_to_params(opts: PsExecOptions) -> dict:
         "-l": opts.flag_l,
         "session_interactive": opts.session_interactive,
         "session_id": opts.session_id,
+        "session_unavailable": opts.session_unavailable,
+        "session_unconfirmed": opts.session_unconfirmed,
+        "session_block_reason": opts.session_block_reason,
         "priority": opts.priority,
         "cpu_group": opts.cpu_group,
         "affinity": opts.affinity,
@@ -367,7 +377,13 @@ def sanitize_psexec_options(
     if not resolved.user.strip():
         resolved = replace(resolved, user="", has_password=False)
     if not resolved.session_interactive:
-        resolved = replace(resolved, session_id=None)
+        resolved = replace(
+            resolved,
+            session_id=None,
+            session_unavailable=False,
+            session_unconfirmed=False,
+            session_block_reason="",
+        )
 
     trigger_on = bool(trigger) and trigger in _FLAG_ATTR and resolved.is_checked(trigger)
     if trigger_on:
@@ -386,10 +402,30 @@ def sanitize_psexec_options(
 
     priority = _parse_priority(resolved.priority)
     timeout = _parse_timeout(resolved.timeout)
-    session_id = (
-        _parse_session_id(resolved.session_id) if resolved.session_interactive else None
+    blocked = bool(
+        resolved.session_interactive
+        and (
+            resolved.session_unavailable
+            or resolved.session_unconfirmed
+            or (resolved.session_block_reason or "").strip()
+        )
     )
-    return replace(resolved, priority=priority, timeout=timeout, session_id=session_id)
+    session_id = (
+        _parse_session_id(resolved.session_id)
+        if resolved.session_interactive and not blocked
+        else None
+    )
+    return replace(
+        resolved,
+        priority=priority,
+        timeout=timeout,
+        session_id=session_id,
+        session_unavailable=bool(resolved.session_interactive and resolved.session_unavailable),
+        session_unconfirmed=bool(resolved.session_interactive and resolved.session_unconfirmed),
+        session_block_reason=(
+            (resolved.session_block_reason or "").strip() if resolved.session_interactive else ""
+        ),
+    )
 
 
 def compute_psexec_option_state(
@@ -546,6 +582,15 @@ def validate_psexec_options(opts: PsExecOptions) -> list[str]:
 
     if opts.session_id is not None and not opts.session_interactive:
         errors.append("O ID da sessão só se aplica quando -i está ativo.")
+    if opts.session_interactive and (
+        opts.session_unavailable
+        or opts.session_unconfirmed
+        or (opts.session_block_reason or "").strip()
+    ):
+        errors.append(
+            (opts.session_block_reason or "").strip()
+            or "Escolha a sessão interativa novamente antes de executar."
+        )
 
     priority = str(opts.priority or "").strip()
     if priority and priority not in PRIORITIES:
@@ -613,7 +658,12 @@ def build_psexec_option_argv(opts: PsExecOptions) -> list[str]:
     elif opts.flag_e:
         cmd.append("-e")
 
-    if opts.session_interactive:
+    session_blocked = bool(
+        opts.session_unavailable
+        or opts.session_unconfirmed
+        or (opts.session_block_reason or "").strip()
+    )
+    if opts.session_interactive and not session_blocked:
         if opts.session_id is None:
             cmd.append("-i")
         else:

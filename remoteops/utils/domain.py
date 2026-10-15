@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 import sys
 from dataclasses import dataclass
@@ -52,6 +53,27 @@ def netbios_from_dns(dns: str) -> str:
         return ""
     cleaned = "".join(ch for ch in label if ch.isalnum() or ch in "-_")
     return cleaned[:15].upper()
+
+
+def local_logon_domain() -> HostUserDomain:
+    """Domínio NetBIOS da sessão atual, quando o logon não é conta local.
+
+    ``USERDOMAIN`` igual a ``COMPUTERNAME`` é o próprio computador, não um
+    domínio de conta, e não deve ir para o prefixo.
+    """
+    userdomain = (os.environ.get("USERDOMAIN") or "").strip().strip("\\")
+    computer = (os.environ.get("COMPUTERNAME") or "").strip().strip("\\")
+    dns = (os.environ.get("USERDNSDOMAIN") or "").strip().strip(".")
+    if not userdomain:
+        return HostUserDomain()
+    if computer and userdomain.casefold() == computer.casefold():
+        return HostUserDomain()
+    return HostUserDomain(
+        name=userdomain,
+        dns=dns,
+        is_workgroup=False,
+        source="session",
+    )
 
 
 def userdomain_prefix(name: str) -> str:

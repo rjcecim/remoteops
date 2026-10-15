@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ctypes
 import re
+import subprocess
 from ctypes import wintypes
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
@@ -100,6 +101,86 @@ class RemoteSession:
         if state:
             parts.append(state)
         return " — ".join(parts)
+
+
+def format_psexec_session(session: RemoteSession) -> str:
+    """Rótulo da sessão na aba PsExec, só com os campos realmente preenchidos.
+
+    ``1 — usuario01 · Ativa``. Sem usuário ou estado, essas partes somem.
+    O nome da estação entra apenas quando não há usuário.
+    """
+    head = str(int(session.session_id))
+    user = (session.username or "").strip()
+    name = (session.name or "").strip()
+    if user:
+        head = f"{head} — {user}"
+    elif name:
+        head = f"{head} — {name}"
+    state = (session.state or "").strip()
+    if state:
+        return f"{head} · {state}"
+    return head
+
+
+def classify_session_query(error: str, *, count: int) -> Tuple[str, str]:
+    """Classifica o resultado sem devolver texto bruto de exceção ou comando.
+
+    ``ok`` com lista, ``empty`` quando a consulta confirmou zero sessões,
+    ou ``denied`` / ``timeout`` / ``unavailable`` / ``failed``.
+    """
+    text = (error or "").strip()
+    if not text:
+        if count <= 0:
+            return "empty", "Nenhuma sessão encontrada."
+        return "ok", ""
+    folded = text.casefold()
+    if (
+        "acesso negado" in folded
+        or "access is denied" in folded
+        or "access denied" in folded
+        or re.search(r"winerror\s+5\b", folded) is not None
+    ):
+        return "denied", "Acesso negado."
+    if any(token in folded for token in ("timed out", "timeout", "tempo esgotado", "tempo limite")):
+        return "timeout", "Tempo esgotado ao consultar as sessões."
+    if (
+        "host inválido" in folded
+        or "inacessível" in folded
+        or "indisponível" in folded
+        or "network path" in folded
+        or "caminho da rede" in folded
+        or re.search(r"winerror\s+(53|64|67|1203|1231|1232|1722)\b", folded) is not None
+    ):
+        return "unavailable", "Computador indisponível."
+    if "conflito de credenciais" in folded:
+        return "failed", "Conflito de credenciais ao acessar o computador remoto."
+    return "failed", "Falha inesperada ao consultar as sessões."
+
+
+def _session_error_from_winerror(code: int) -> str:
+    kind, message = classify_session_query(f"WinError {int(code)}", count=0)
+    if kind == "failed":
+        return "Falha inesperada ao consultar as sessões."
+    return message
+
+
+def _public_session_error(*messages: str) -> str:
+    """Escolhe a falha mais específica, sem repetir senha, argv ou exceção."""
+    ranks = {"denied": 4, "timeout": 3, "unavailable": 3, "failed": 1}
+    best = "Falha inesperada ao consultar as sessões."
+    best_rank = 0
+    for message in messages:
+        text = (message or "").strip()
+        if not text:
+            continue
+        kind, shown = classify_session_query(text, count=0)
+        if kind == "empty":
+            continue
+        rank = ranks.get(kind, 1)
+        if rank > best_rank:
+            best_rank = rank
+            best = shown
+    return best
 
 
 class WTS_SESSION_INFOW(ctypes.Structure):
@@ -279,7 +360,7 @@ def _enumerate_wts(host: str) -> Tuple[List[RemoteSession], str]:
         wts = _wtsapi()
         handle = wts.WTSOpenServerW(host)
         if not handle:
-            return [], "Não foi possível consultar as sessões pela API WTS."
+            return [], _session_error_from_winerror(ctypes.get_last_error())
         info_ptr = ctypes.POINTER(WTS_SESSION_INFOW)()
         count = wintypes.DWORD(0)
         sessions: List[RemoteSession] = []
@@ -288,7 +369,7 @@ def _enumerate_wts(host: str) -> Tuple[List[RemoteSession], str]:
                 handle, 0, 1, ctypes.byref(info_ptr), ctypes.byref(count)
             )
             if not ok or not info_ptr:
-                return [], "Não foi possível consultar as sessões pela API WTS."
+                return [], _session_error_from_winerror(ctypes.get_last_error())
             for i in range(int(count.value)):
                 item = info_ptr[i]
                 name = str(item.pWinStationName or "").strip()
@@ -313,7 +394,7 @@ def _enumerate_wts(host: str) -> Tuple[List[RemoteSession], str]:
         sessions.sort(key=lambda s: s.session_id)
         return sessions, ""
     except Exception:
-        return [], "Não foi possível consultar as sessões pela API WTS."
+        return [], "Falha inesperada ao consultar as sessões."
 
 
 def _query_session_psexec(
@@ -368,8 +449,11 @@ def _query_session_cli(host: str) -> Tuple[List[RemoteSession], str]:
     for argv, parser in parsers:
         try:
             result = run_captured(argv, timeout=8)
-        except Exception as exc:
-            last_error = str(exc) or last_error
+        except subprocess.TimeoutExpired:
+            last_error = "Tempo esgotado ao consultar as sessões."
+            continue
+        except Exception:
+            last_error = "Falha inesperada ao consultar as sessões."
             continue
         text = (
             decode_console_bytes(result.stdout or b"")
@@ -438,38 +522,34 @@ def list_remote_sessions(
     if not host or not is_valid_host(host):
         return [], "Host inválido."
 
-    auth = connect_ipc(host, user or "", password or "")
+    auth = None
     try:
+        auth = connect_ipc(host, user or "", password or "")
         if auth.conflict:
-            return [], auth.error
+            return [], _public_session_error(auth.error)
         sessions, wts_error = _enumerate_wts(host)
+        cli_error = ""
         if not _has_interactive_user(sessions):
             cli_sessions, cli_error = _query_session_cli(host)
-            sessions = _merge_session_usernames(sessions, cli_sessions)
-        else:
-            cli_error = ""
-        if _has_interactive_user(sessions):
-            return sessions, ""
-        if allow_psexec_fallback:
+            if wts_error and not sessions:
+                sessions = list(cli_sessions)
+            else:
+                sessions = _merge_session_usernames(sessions, cli_sessions)
+        if allow_psexec_fallback and not _has_interactive_user(sessions):
             sessions = _merge_session_usernames(
                 sessions,
                 _query_session_psexec(host, user=user, password=password),
             )
-            if _has_interactive_user(sessions):
-                return sessions, ""
-        if sessions and not _has_interactive_user(sessions):
+        if sessions or not wts_error:
             return sessions, ""
         if user and not auth.connected and auth.error:
-            return [], auth.error
-        if wts_error:
-            return [], wts_error
-        if cli_error:
-            return [], "Não foi possível consultar as sessões pela API WTS."
-        return [], "Não foi possível consultar as sessões pela API WTS."
-    except Exception as exc:
-        return [], str(exc) or "Falha ao consultar sessões."
+            return [], _public_session_error(auth.error, wts_error, cli_error)
+        return [], _public_session_error(wts_error, cli_error)
+    except Exception:
+        return [], "Falha inesperada ao consultar as sessões."
     finally:
-        release_ipc(auth)
+        if auth is not None:
+            release_ipc(auth)
 
 
 def session_choices(sessions: Sequence[RemoteSession]) -> List[RemoteSession]:

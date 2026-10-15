@@ -28,7 +28,7 @@ class CredentialContext:
 
     @property
     def passwords(self) -> List[str]:
-        return [self.password] if self.password.strip() else []
+        return [self.password] if self.password else []
 
 
 def materialize_password_in_argv(
@@ -42,7 +42,7 @@ def materialize_password_in_argv(
     ``********`` no estado persistente.
     """
     out = [str(a) for a in argv]
-    if not (password or "").strip():
+    if not password:
         return out
     i = 0
     while i < len(out):
@@ -76,7 +76,7 @@ def build_psexec_argv(
     creds = creds or CredentialContext()
     if creds.user.strip():
         argv.extend(["-u", creds.user.strip()])
-    if creds.password.strip():
+    if creds.password:
         if include_password:
             argv.extend(["-p", creds.password])
         else:
@@ -142,7 +142,7 @@ class CommandExecutionService:
         use_external_console: bool = False,
     ) -> LaunchResult:
         passwords = list(passwords or [])
-        if creds and creds.password.strip() and creds.password not in passwords:
+        if creds and creds.password and creds.password not in passwords:
             passwords.append(creds.password)
         password = passwords[0] if passwords else ""
         external = bool(use_external_console)
