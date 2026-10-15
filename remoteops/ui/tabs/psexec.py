@@ -27,6 +27,7 @@ from remoteops.core.auth_identity import (
     normalize_domain_label,
 )
 from remoteops.core.psexec_options import (
+    TIMEOUT_MAX_SECONDS,
     TOOLTIPS,
     PsExecOptions,
     compute_psexec_option_state,
@@ -1073,9 +1074,10 @@ class PsExecTab(QWidget):
         timeout_row.setSpacing(6)
         timeout_row.setContentsMargins(0, 0, 0, 0)
         self.timeout_spin = StepSpinBox()
-        self.timeout_spin.setRange(0, 9999)
+        self.timeout_spin.setRange(0, TIMEOUT_MAX_SECONDS)
         self.timeout_spin.setValue(0)
-        self.timeout_spin.setToolTip(self.tr("Timeout em segundos (0 = sem timeout)"))
+        self.timeout_spin.setToolTip(self.tr(TOOLTIPS["-n"]))
+        self.timeout_spin.setAccessibleName(self.tr("Timeout de conexão"))
         timeout_suffix = QLabel(self.tr("segundos"))
         timeout_suffix.setStyleSheet("color: palette(windowText);")
         timeout_row.addWidget(self.timeout_spin)
@@ -1914,6 +1916,12 @@ class PsExecTab(QWidget):
             self.priority_combo.setToolTip(self.tr(TOOLTIPS["priority"]))
         self._sync_realtime_warning()
         self._refresh_cpu_status()
+
+        timeout_state = widgets.get("-n")
+        if timeout_state is not None and hasattr(self, "timeout_spin"):
+            self.timeout_spin.setToolTip(
+                self.tr(timeout_state.tooltip or TOOLTIPS["-n"])
+            )
 
         extra_state = widgets.get("extra_args")
         if extra_state is not None:

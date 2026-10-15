@@ -2209,6 +2209,34 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self._set_run_button_enabled(True)
         self.log_output.set_interactive(False)
+        result = self.executor.last_result
+        detached = bool(
+            result
+            and (
+                (result.metadata or {}).get("psexec_detached")
+                or (result.metadata or {}).get("detached_launch")
+            )
+        )
+        if detached:
+            # Com -d o código local é o PID (ou falha do PsExec), não o término remoto.
+            failed = bool(result and (result.exception or int(exit_code or 0) < 0))
+            self.log_output.set_session_status("error" if failed else "exited")
+            if failed:
+                self.log_output.append_log(
+                    self.tr(
+                        f"PsExec não iniciou o processo remoto (modo -d). "
+                        f"Código local: {exit_code}"
+                    )
+                )
+            else:
+                self.log_output.append_log(
+                    self.tr(
+                        f"Execução solicitada (modo -d). Código local: {exit_code}. "
+                        "O PsExec não aguarda o término nem devolve a saída do "
+                        "programa remoto."
+                    )
+                )
+            return
         self.log_output.set_session_status("error" if exit_code else "exited")
         self.log_output.append_log(self.tr(f"Processo finalizado com código {exit_code}"))
 

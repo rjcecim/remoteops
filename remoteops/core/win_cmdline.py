@@ -66,3 +66,12 @@ def split_windows_command_line(command_line: str) -> List[str]:
         return [argv_ptr[i] for i in range(argc.value)]
     finally:
         local_free(argv_ptr)
+
+
+def split_extra_args(extra: str) -> List[str]:
+    """Divide argumentos extras do programa remoto com regras Windows.
+
+    Mesma semântica de ``split_windows_command_line`` (CommandLineToArgvW).
+    Usado por PsExec ``extra_args``, switches do Robocopy e tokens do msiexec.
+    """
+    return split_windows_command_line(extra or "")

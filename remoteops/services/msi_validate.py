@@ -16,33 +16,11 @@ def _extract_flag_value(combo_text: str) -> str:
 
 
 def _split_extra_args(extra: str) -> List[str]:
-    s = (extra or "").strip()
-    if not s:
-        return []
-    parts: List[str] = []
-    buf: List[str] = []
-    in_quote = False
-    quote_char = ""
-    for ch in s:
-        if in_quote:
-            if ch == quote_char:
-                in_quote = False
-            else:
-                buf.append(ch)
-            continue
-        if ch in ('"', "'"):
-            in_quote = True
-            quote_char = ch
-            continue
-        if ch.isspace():
-            if buf:
-                parts.append("".join(buf))
-                buf = []
-            continue
-        buf.append(ch)
-    if buf:
-        parts.append("".join(buf))
-    return parts
+    """Argumentos do msiexec: mesmas regras Windows do PsExec ``extra_args``."""
+    from remoteops.core.win_cmdline import split_extra_args
+
+    return split_extra_args(extra or "")
+
 
 # Compound File Binary (OLE) — assinatura de pacotes MSI clássicos.
 MSI_CFB_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"

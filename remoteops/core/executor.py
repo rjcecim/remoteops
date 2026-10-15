@@ -218,6 +218,13 @@ class Executor(QObject):
         )
         result.metadata["run_generation"] = generation
         result.metadata["conpty"] = bool(use_conpty)
+        if isinstance(command, CommandSpec):
+            meta = dict(command.metadata or {})
+            if meta.get("psexec_detached"):
+                result.metadata["psexec_detached"] = True
+            # Fallback: argv já montado com -d
+            elif "-d" in (command.argv or ()):
+                result.metadata["psexec_detached"] = True
         stdout_acc: List[str] = []
         stderr_acc: List[str] = []
         proc: Optional[subprocess.Popen] = None
@@ -228,6 +235,8 @@ class Executor(QObject):
                 result.exception = "Comando vazio"
                 result.return_code = 1
                 return result.finalize()
+            if "-d" in argv:
+                result.metadata["psexec_detached"] = True
 
             prefix = "[ROBOCOPY] " if is_robocopy else ""
             from remoteops.winget.clixml import CliXmlLineFilter

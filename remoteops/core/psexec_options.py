@@ -20,6 +20,9 @@ from remoteops.utils.ping import format_unc_host, normalize_host
 
 # ── constantes ──────────────────────────────────────────────────────────
 
+# Limite do spinbox da UI e da validação de -n (timeout de conexão).
+TIMEOUT_MAX_SECONDS = 9999
+
 PRIORITIES = (
     "-low",
     "-belownormal",
@@ -91,7 +94,10 @@ TOOLTIPS = {
         "elevado da conta, se disponível."
     ),
     "-s": "Executa o processo remoto na conta SYSTEM.",
-    "-e": "Não carrega o perfil da conta informada em -u.",
+    "-e": (
+        "Não carrega o perfil da conta informada em -u. Incompatível com "
+        "SYSTEM (-s) na seção Privilégios e Sessão."
+    ),
     "-l": (
         "Executa como usuário limitado (remove o grupo Administrators; no Vista+ "
         "roda com integridade baixa)."
@@ -105,16 +111,25 @@ TOOLTIPS = {
         "Uma sessão escolhida gera -i seguido do ID real do computador."
     ),
     "-c": "Copia o programa especificado para o sistema remoto antes de executá-lo.",
-    "-f": "Forçar cópia mesmo que o arquivo já exista no computador remoto.",
+    "-f": (
+        "Com -c, força a cópia mesmo que o arquivo já exista no computador "
+        "remoto. Indisponível sem -c e incompatível com -v."
+    ),
     "-v": (
-        "Copiar apenas se a versão for superior ou o arquivo for mais novo "
-        "do que o que já está no computador remoto."
+        "Com -c, copia só se a versão for superior ou o arquivo for mais novo "
+        "no remoto. Indisponível sem -c e incompatível com -f."
     ),
     "-d": (
-        "Não aguardar o processo remoto terminar. O PsExec retorna imediatamente; "
-        "o RemoteOps não receberá a saída nem o código de retorno do processo remoto."
+        "Não aguardar o processo remoto terminar. O PsExec inicia o programa e "
+        "encerra localmente; o código local costuma ser o PID remoto, não o "
+        "resultado do programa. A saída e o código de término remotos não "
+        "chegam ao RemoteOps."
     ),
-    "-n": "Timeout em segundos para conectar ao computador remoto (0 = sem timeout).",
+    "-n": (
+        "Timeout de conexão do PsExec (-n), em segundos, até estabelecer a "
+        "sessão com o computador remoto. 0 omite -n (sem limite). Não limita "
+        "o tempo de execução do programa remoto nem consultas auxiliares."
+    ),
     "-a": (
         "Processadores do grupo em que o processo pode executar (-a n,n,...). "
         "A numeração começa em 1, dentro do grupo. Sem -g, o PsExec usa o "
@@ -138,8 +153,9 @@ TOOLTIPS = {
         "-p é omitido e o PsExec pode solicitar a senha no console."
     ),
     "extra_args": (
-        "Argumentos do programa executado no host remoto — não são parâmetros "
-        "do PsExec. Não use este campo para flags como -s ou -h."
+        "Argumentos do programa remoto (após o executável), no estilo da "
+        "linha de comando do Windows. Aspas preservam espaços. Não são flags "
+        "do PsExec — não use -s, -h, -c etc. aqui."
     ),
     "priority": "Prioridade do processo remoto. Apenas uma opção por vez.",
     "-low": "Prioridade baixa.",
@@ -281,11 +297,12 @@ def _parse_cpu_group(raw) -> Optional[int]:
 
 
 def _parse_timeout(raw) -> int:
+    """Converte timeout para int. Valores inválidos viram 0; negativos e
+    acima do limite passam adiante para a validação rejeitar."""
     try:
-        value = int(raw or 0)
+        return int(raw or 0)
     except (TypeError, ValueError):
         return 0
-    return value if value > 0 else 0
 
 
 def _parse_session_id(raw) -> Optional[int]:
@@ -447,7 +464,15 @@ def sanitize_psexec_options(
         resolved = replace(resolved, flag_f=False, flag_v=False)
 
     priority = _parse_priority(resolved.priority)
-    timeout = _parse_timeout(resolved.timeout)
+    # Emissão segura: só 1..TIMEOUT_MAX_SECONDS entram em -n.
+    try:
+        timeout_raw = int(resolved.timeout)
+    except (TypeError, ValueError):
+        timeout_raw = 0
+    if timeout_raw < 1 or timeout_raw > TIMEOUT_MAX_SECONDS:
+        timeout = 0
+    else:
+        timeout = timeout_raw
     blocked = bool(
         resolved.session_interactive
         and (
@@ -680,6 +705,10 @@ def validate_psexec_options(opts: PsExecOptions) -> list[str]:
         else:
             if timeout_i < 0:
                 errors.append("Timeout (-n) não pode ser negativo.")
+            elif timeout_i > TIMEOUT_MAX_SECONDS:
+                errors.append(
+                    f"Timeout (-n) não pode ultrapassar {TIMEOUT_MAX_SECONDS} segundos."
+                )
 
     return errors
 

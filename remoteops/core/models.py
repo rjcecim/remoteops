@@ -131,6 +131,7 @@ class ExecutionResult:
     def finalize(self) -> "ExecutionResult":
         if self.started_at and self.finished_at:
             self.duration_seconds = (self.finished_at - self.started_at).total_seconds()
+        detached = bool((self.metadata or {}).get("psexec_detached"))
         if self.cancelled:
             self.status = OperationStatus.CANCELLED
             self.success = False
@@ -143,6 +144,16 @@ class ExecutionResult:
         elif self.return_code is None:
             self.status = OperationStatus.UNKNOWN
             self.success = False
+        elif detached:
+            # Com -d o código local é o PID (ou 0), não o término do remoto.
+            # Códigos negativos costumam indicar falha do PsExec ao iniciar.
+            if int(self.return_code) < 0:
+                self.status = OperationStatus.FAILED
+                self.success = False
+            else:
+                self.status = OperationStatus.COMPLETED
+                self.success = True
+                self.metadata["detached_launch"] = True
         elif self.return_code == 0:
             self.status = OperationStatus.COMPLETED
             self.success = True

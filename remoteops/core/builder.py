@@ -15,7 +15,7 @@ from remoteops.core.psexec_options import (
     sanitize_psexec_options,
     validate_psexec_options,
 )
-from remoteops.core.win_cmdline import split_windows_command_line
+from remoteops.core.win_cmdline import split_extra_args, split_windows_command_line
 from remoteops.services.msi_validate import (
     filter_msiexec_extra_tokens,
     sanitize_repair_flags,
@@ -51,37 +51,6 @@ def _normalize_robocopy_dest(dest: str) -> str:
     if dest.lower().startswith("c:"):
         dest = dest[2:].lstrip("\\/").replace("/", "\\")
     return "\\".join(part for part in dest.split("\\") if part)
-
-
-def _split_extra_args(extra: str) -> List[str]:
-    """Divide argumentos extras preservando aspas simples (Windows-ish)."""
-    s = (extra or "").strip()
-    if not s:
-        return []
-    parts: List[str] = []
-    buf: List[str] = []
-    in_quote = False
-    quote_char = ""
-    for ch in s:
-        if in_quote:
-            if ch == quote_char:
-                in_quote = False
-            else:
-                buf.append(ch)
-            continue
-        if ch in ('"', "'"):
-            in_quote = True
-            quote_char = ch
-            continue
-        if ch.isspace():
-            if buf:
-                parts.append("".join(buf))
-                buf = []
-            continue
-        buf.append(ch)
-    if buf:
-        parts.append("".join(buf))
-    return parts
 
 
 class CommandBuilder:
@@ -227,7 +196,7 @@ class CommandBuilder:
         if host_error:
             return CommandSpec(executable="robocopy", display_command=host_error)
         dest_unc = f"\\\\{host}\\C$\\{dest}"
-        argv = ["robocopy", src_dir, dest_unc, file_name, *_split_extra_args(switches)]
+        argv = ["robocopy", src_dir, dest_unc, file_name, *split_extra_args(switches)]
         return CommandSpec.from_argv(argv, metadata={"kind": "robocopy"})
 
     def _build_robocopy_folder_spec(self) -> Optional[CommandSpec]:
@@ -265,7 +234,7 @@ class CommandBuilder:
                 display_command=f"# Erro: Diretório de origem não encontrado: {src_dir}",
             )
         dest_unc = f"\\\\{host}\\C$\\{dest}\\{folder_name}"
-        argv = ["robocopy", src_dir, dest_unc, "/E", *_split_extra_args(switches)]
+        argv = ["robocopy", src_dir, dest_unc, "/E", *split_extra_args(switches)]
         return CommandSpec.from_argv(argv, metadata={"kind": "robocopy"})
 
     # ── PsExec base ─────────────────────────────────────────────────────
@@ -334,7 +303,7 @@ class CommandBuilder:
     def _append_extra_args(self, argv: List[str]) -> None:
         extra = (self.psexec_params.get("extra_args") or "").strip()
         if extra:
-            argv.extend(_split_extra_args(extra))
+            argv.extend(split_extra_args(extra))
 
     def _spec_from_psexec_argv(
         self,
@@ -349,16 +318,21 @@ class CommandBuilder:
                 display_command="# Erro PsExec: " + "; ".join(errors),
                 metadata={"kind": "psexec", "psexec_errors": errors},
             )
+        opts = sanitize_psexec_options(self._psexec_options())
         # Argv com senha mascarada; materialização ocorre na execução.
         real = self._base_psexec_argv()
         real.extend(remote_parts)
         # MSI file-mode já embute extra_args no msiexec (compat legado)
         if append_extra:
             self._append_extra_args(real)
+        meta = {
+            "kind": "psexec",
+            "psexec_detached": bool(opts.flag_d),
+        }
         return CommandSpec.from_argv(
             real,
             has_secrets=self._has_password,
-            metadata={"kind": "psexec"},
+            metadata=meta,
             prefer_external_console=True,
         )
 

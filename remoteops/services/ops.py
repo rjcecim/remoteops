@@ -305,12 +305,16 @@ class CommandExecutionService:
         """
         argv = materialize_password_in_argv(spec.argv, password)
         try:
+            meta = dict(spec.metadata or {})
+            meta["kind"] = "psexec"
+            if "-d" in argv:
+                meta["psexec_detached"] = True
             self.executor.run(
                 CommandSpec.from_argv(
                     argv,
                     has_secrets=bool(password),
                     passwords=[password] if password else None,
-                    metadata=dict(spec.metadata or {}) | {"kind": "psexec"},
+                    metadata=meta,
                     prefer_external_console=False,
                 ),
                 passwords=[password] if password else None,
