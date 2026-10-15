@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Iterable, Optional
 
+from remoteops.utils.ping import format_unc_host, normalize_host
+
 # ── constantes ──────────────────────────────────────────────────────────
 
 PRIORITIES = (
@@ -658,7 +660,7 @@ def build_psexec_prefix_argv(
     da senha nunca deve ser passado aqui no preview.
     """
     opts = sanitize_psexec_options(opts or PsExecOptions())
-    host = (host or "").strip().strip("\\")
+    host = format_unc_host(normalize_host(host))
     argv = [executable, f"\\\\{host}"]
     argv.extend(build_psexec_option_argv(opts))
 

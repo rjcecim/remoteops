@@ -164,7 +164,7 @@ class MsiexecCommandTests(unittest.TestCase):
             os.makedirs(folder, exist_ok=True)
             path = _write_fake_msi(os.path.join(folder, "App Setup.msi"))
             plan = build_batch_msi_plan(
-                host="HOST A",
+                host="HOST-A",
                 msi_path=path,
                 msi_params=_msi_params(),
                 robocopy_params={"dest": "temp\\lote msi"},

@@ -53,6 +53,17 @@ from remoteops.utils.pstools import get_pstools_dir
 from remoteops.utils.redaction import redact_command_text
 
 
+def new_execution_blocked(
+    *,
+    stop_enabled: bool,
+    executor_busy: bool,
+    awaiting_followup: bool,
+    precheck_pending: bool,
+) -> bool:
+    """True quando já existe execução ou pré-teste TCP em andamento."""
+    return bool(stop_enabled or executor_busy or awaiting_followup or precheck_pending)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2054,11 +2065,11 @@ class MainWindow(QMainWindow):
                 self.tr("[HOST] Host remoto precisa estar acessível na porta TCP 445 para executar.")
             )
             return
-        if (
-            self.stop_button.isEnabled()
-            or self.executor.is_busy
-            or self._execution_service.awaiting_followup
-            or self._run_after_precheck
+        if new_execution_blocked(
+            stop_enabled=self.stop_button.isEnabled(),
+            executor_busy=self.executor.is_busy,
+            awaiting_followup=self._execution_service.awaiting_followup,
+            precheck_pending=self._run_after_precheck,
         ):
             self.log_output.append_log(
                 self.tr(
@@ -2278,26 +2289,9 @@ class MainWindow(QMainWindow):
                     pass
         if hasattr(self, "psexec_tab") and self.psexec_tab is not None:
             try:
-                self.psexec_tab.cancel_tcp_precheck()
+                self.psexec_tab.shutdown(wait_ms=2000)
             except Exception:
                 pass
-            for attr in (
-                "_host_status_worker",
-                "_session_worker",
-                "_domain_worker",
-                "_tcp_precheck_worker",
-            ):
-                worker = getattr(self.psexec_tab, attr, None)
-                if worker is not None and worker.isRunning():
-                    try:
-                        if hasattr(worker, "cancel"):
-                            worker.cancel()
-                    except Exception:
-                        pass
-                    try:
-                        worker.wait(2000)
-                    except Exception:
-                        pass
         self.executor.stop()
         if hasattr(self.executor, "shutdown"):
             try:

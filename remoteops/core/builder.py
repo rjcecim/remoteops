@@ -22,8 +22,19 @@ from remoteops.services.msi_validate import (
     validate_msi_params,
     validate_msi_property_tokens,
 )
+from remoteops.utils.ping import format_unc_host, is_valid_host, normalize_host
 from remoteops.utils.pstools import resolve_pstools_tool
 from remoteops.utils.redaction import REDACTED, format_argv_for_display, redact_command_text
+
+
+def _unc_host_or_error(raw: str) -> tuple[str, str]:
+    """Host normalizado para UNC, ou mensagem de erro pronta para o preview."""
+    host = normalize_host(raw or "")
+    if not host:
+        return "", "# Erro: host remoto não especificado"
+    if not is_valid_host(host):
+        return "", "# Erro: host remoto inválido"
+    return format_unc_host(host), ""
 
 
 def _extract_flag_value(combo_text: str) -> str:
@@ -212,12 +223,9 @@ class CommandBuilder:
                 executable="robocopy",
                 display_command=f"# Erro: Diretório de origem não encontrado: {src_dir}",
             )
-        host = (self.psexec_params.get("host") or "").strip().strip("\\")
-        if not host:
-            return CommandSpec(
-                executable="robocopy",
-                display_command="# Erro: host remoto não especificado",
-            )
+        host, host_error = _unc_host_or_error(self.psexec_params.get("host") or "")
+        if host_error:
+            return CommandSpec(executable="robocopy", display_command=host_error)
         dest_unc = f"\\\\{host}\\C$\\{dest}"
         argv = ["robocopy", src_dir, dest_unc, file_name, *_split_extra_args(switches)]
         return CommandSpec.from_argv(argv, metadata={"kind": "robocopy"})
@@ -248,12 +256,9 @@ class CommandBuilder:
             if self.folder_path
             else ""
         )
-        host = (self.psexec_params.get("host") or "").strip().strip("\\")
-        if not host:
-            return CommandSpec(
-                executable="robocopy",
-                display_command="# Erro: host remoto não especificado",
-            )
+        host, host_error = _unc_host_or_error(self.psexec_params.get("host") or "")
+        if host_error:
+            return CommandSpec(executable="robocopy", display_command=host_error)
         if not src_dir or not os.path.isdir(src_dir):
             return CommandSpec(
                 executable="robocopy",
@@ -297,7 +302,7 @@ class CommandBuilder:
         assinatura; o valor real da senha não está disponível neste objeto.
         """
         del include_password  # senha bruta não vive no builder
-        host = (self.psexec_params.get("host") or "").strip().strip("\\")
+        host = normalize_host(self.psexec_params.get("host") or "")
         user = (self.psexec_params.get("user") or "").strip()
         opts = sanitize_psexec_options(self._psexec_options())
         password_placeholder = REDACTED if (self._has_password and user) else None
@@ -408,6 +413,13 @@ class CommandBuilder:
             return CommandSpec(
                 executable="PsExec.exe",
                 display_command="# PsExec.exe \\\\<host> [opções] <comando>",
+            )
+        host = normalize_host(self.psexec_params.get("host") or "")
+        if host and not is_valid_host(host):
+            return CommandSpec(
+                executable=self._resolve_psexec_path(),
+                display_command="# Erro: host remoto inválido",
+                metadata={"kind": "psexec", "psexec_errors": ["Host remoto inválido."]},
             )
         errors = self.validate_psexec_params()
         if errors:

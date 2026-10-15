@@ -7,6 +7,7 @@ import os
 from typing import Iterable, List, Optional, Tuple
 
 from remoteops.paths import project_root
+from remoteops.utils.ping import is_valid_host, normalize_host
 
 
 def app_dir() -> str:
@@ -41,11 +42,8 @@ def normalize_hosts_list(hosts_raw: Iterable) -> List[str]:
     out: List[str] = []
     seen: set[str] = set()
     for item in hosts_raw:
-        h = str(item or "").strip().strip("\\")
-        if not h:
-            continue
-        # Rejeita caracteres perigosos para UNC/shell
-        if any(ch in h for ch in ('&', '|', '<', '>', '^', '"', "'", '%', ' ', '\t')):
+        h = normalize_host(str(item or ""))
+        if not h or not is_valid_host(h):
             continue
         key = h.casefold()
         if key in seen:

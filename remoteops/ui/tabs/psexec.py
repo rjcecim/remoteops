@@ -70,13 +70,15 @@ from remoteops.utils.validator import AffinityValidator
 
 
 class _HostStatusWorker(QThread):
-    """ICMP + TCP 445 em background; emite o host e o resultado estruturado."""
+    """ICMP + TCP 445 em background; emite geração, host e o resultado."""
 
-    result = pyqtSignal(str, object)
+    result = pyqtSignal(int, str, object)
 
-    def __init__(self, host: str, parent=None):
+    def __init__(self, host: str, generation: int, *, use_cache: bool = True, parent=None):
         super().__init__(parent)
         self._host = host
+        self._generation = generation
+        self._use_cache = use_cache
         self._cancel = False
 
     def cancel(self) -> None:
@@ -90,8 +92,9 @@ class _HostStatusWorker(QThread):
             self._host,
             should_cancel=lambda: self._cancel or self.isInterruptionRequested(),
             pstools_dir=get_pstools_dir(),
+            use_cache=self._use_cache,
         )
-        self.result.emit(self._host, reach)
+        self.result.emit(self._generation, self._host, reach)
 
 
 class _TcpPrecheckWorker(QThread):
@@ -192,7 +195,7 @@ def _grid_in_card(card: CardWidget) -> QGridLayout:
     return grid
 
 
-def _line_edit_with_clear_icon(password: bool = False):
+def _line_edit_with_clear_icon(password: bool = False, clear_tooltip: str = "Limpar"):
     """
     Container com QLineEdit e ícone de remover à direita.
     Retorna (container, line_edit). O ícone só aparece quando há texto.
@@ -214,7 +217,7 @@ def _line_edit_with_clear_icon(password: bool = False):
     clear_btn.setFont(QFont("Segoe MDL2 Assets", 10))
     clear_btn.setFixedSize(22, 22)
     clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    clear_btn.setToolTip("Limpar")
+    clear_btn.setToolTip(clear_tooltip)
     clear_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
     clear_btn.setStyleSheet(f"""
         QToolButton {{ border: none; background: transparent; color: {COLOR_ACCENT}; }}
@@ -261,9 +264,13 @@ class PsExecTab(QWidget):
         super().__init__(parent)
         self.log_output = log_output
         self._host_online = False
+        self._closing = False
         self._last_reachability: Optional[HostReachability] = None
         self._host_status_worker: Optional[_HostStatusWorker] = None
         self._host_status_wanted = ""
+        self._host_status_generation = 0
+        self._host_status_pending: Optional[tuple] = None
+        self._live_workers: list = []
         self._tcp_precheck_worker: Optional[_TcpPrecheckWorker] = None
         self._tcp_precheck_generation = 0
         self._domain_worker: Optional[_HostDomainWorker] = None
@@ -293,9 +300,13 @@ class PsExecTab(QWidget):
         card1 = CardWidget("\uEA18", self.tr("Conexão"))
         g1 = _grid_in_card(card1)
 
-        host_clear_container, self.host_edit = _line_edit_with_clear_icon()
+        host_clear_container, self.host_edit = _line_edit_with_clear_icon(
+            clear_tooltip=self.tr("Limpar host")
+        )
         self.host_edit.setPlaceholderText("ex: 192.168.1.100 ou computador.local")
-        self.host_edit.setToolTip(self.tr("Nome ou IP do computador remoto"))
+        self.host_edit.setToolTip(
+            self.tr("Nome, FQDN ou endereço IP do computador remoto")
+        )
         _add_row(g1, 0, self.tr("Host remoto"), host_clear_container)
 
         # Ver → software → interagir → impacto (reset/recolher ficam no fim).
@@ -384,10 +395,25 @@ class PsExecTab(QWidget):
         )
         status_row.addWidget(self.host_status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
         status_row.addWidget(self.host_status_label, 1, Qt.AlignmentFlag.AlignVCenter)
+        self.recheck_btn = QToolButton()
+        self.recheck_btn.setObjectName("recheckHostBtn")
+        self.recheck_btn.setText("\uE72C")
+        self.recheck_btn.setFont(QFont("Segoe MDL2 Assets", 10))
+        self.recheck_btn.setFixedSize(HEADER_BTN_SIZE, HEADER_BTN_SIZE)
+        self.recheck_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.recheck_btn.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.recheck_btn.setAutoRaise(True)
+        self.recheck_btn.setToolTip(self.tr("Verificar novamente"))
+        self.recheck_btn.setAccessibleName(self.tr("Verificar novamente"))
+        self.recheck_btn.setStyleSheet(
+            f"QToolButton#recheckHostBtn {{ border: none; background: transparent; color: {COLOR_ACCENT}; }}"
+        )
+        self.recheck_btn.clicked.connect(self._recheck_host_status)
+        status_row.addWidget(self.recheck_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         self.diagnose_btn = QPushButton(self.tr("Diagnosticar"))
         self.diagnose_btn.setObjectName("diagnoseHostBtn")
         self.diagnose_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.diagnose_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.diagnose_btn.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.diagnose_btn.setFixedHeight(HEADER_BTN_SIZE)
         self.diagnose_btn.setToolTip(
             self.tr("Abrir a aba Conectividade (ICMP Ping e TCP Ping)")
@@ -404,17 +430,23 @@ class PsExecTab(QWidget):
         status_container = QWidget()
         status_container.setLayout(status_row)
         status_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        status_container.setAccessibleName(self.tr("Status da conectividade"))
         _add_row(g1, 1, self.tr("Status"), status_container)
         self._set_host_status("idle")  # desabilita ações até o host ficar Online
         self.host_edit.textChanged.connect(self._on_host_text_changed)
 
         # Comando remoto
-        remote_cmd_container, self.remote_cmd_edit = _line_edit_with_clear_icon()
+        remote_cmd_container, self.remote_cmd_edit = _line_edit_with_clear_icon(
+            clear_tooltip=self.tr("Limpar comando")
+        )
         self.remote_cmd_edit.setPlaceholderText(
-            self.tr(r"Programa remoto a executar, ex: \\SERVIDOR\cmd.exe")
+            self.tr(r"ex: cmd.exe ou C:\Windows\System32\hostname.exe")
         )
         self.remote_cmd_edit.setToolTip(
-            self.tr("Comando completo a ser executado remotamente")
+            self.tr(
+                "Programa executado no computador remoto, com argumentos se necessário. "
+                "O texto digitado não é substituído pela verificação de rede."
+            )
         )
         self.remote_cmd_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         _add_row(g1, 2, self.tr("Comando remoto"), remote_cmd_container)
@@ -981,6 +1013,8 @@ class PsExecTab(QWidget):
         self._session_refresh_timer.start()
 
     def _refresh_remote_sessions(self) -> None:
+        if self._closing:
+            return
         host = normalize_host(self.host_edit.text())
         if (
             not self.session_interactive.isChecked()
@@ -1002,6 +1036,7 @@ class PsExecTab(QWidget):
             password=self.pass_edit.text() or "",
             parent=self,
         )
+        self._remember_worker(self._session_worker)
         self._session_worker.result.connect(self._on_sessions_result)
         self._session_worker.finished.connect(self._on_session_worker_finished)
         self._session_worker.start()
@@ -1042,11 +1077,15 @@ class PsExecTab(QWidget):
         self.session_combo.currentIndexChanged.emit(self.session_combo.currentIndex())
 
     def _on_session_worker_finished(self) -> None:
-        worker = self._session_worker
-        finished_host = getattr(worker, "_host", "") if worker is not None else ""
-        self._session_worker = None
-        if worker is not None:
-            worker.deleteLater()
+        worker = self.sender()
+        if not isinstance(worker, QThread):
+            return
+        finished_host = getattr(worker, "_host", "") or ""
+        if worker is self._session_worker:
+            self._session_worker = None
+        self._release_worker(worker)
+        if self._closing:
+            return
         current = normalize_host(self.host_edit.text())
         if (
             self.session_interactive.isChecked()
@@ -1251,16 +1290,19 @@ class PsExecTab(QWidget):
         labels = {
             "idle": self.tr("Aguardando host"),
             "checking": self.tr("Verificando…"),
-            "online": self.tr("Online — PsExec acessível"),
-            "offline": self.tr("Offline ou inacessível"),
+            "online": self.tr("Rede acessível"),
+            "offline": self.tr("Host inacessível"),
             "invalid": self.tr("Host inválido"),
-            "warn": self.tr("Verificando…"),
+            "warn": self.tr("Atenção"),
+            "err": self.tr("Falha na verificação"),
         }
         caption = text if text is not None else labels.get(state, "")
         self.host_status_label.setText(caption)
         tip = tooltip if tooltip is not None else caption
         self.host_status_dot.setToolTip(tip)
         self.host_status_label.setToolTip(tip)
+        host_now = normalize_host(self.host_edit.text())
+        self.recheck_btn.setEnabled(bool(host_now) and is_valid_host(host_now))
 
         if psexec_enabled is None:
             online = state == "online"
@@ -1301,6 +1343,8 @@ class PsExecTab(QWidget):
         self.printers_button.setToolTip(self.tr(f"Impressoras de rede ({unc})"))
 
     def _on_host_text_changed(self, _text: str = "") -> None:
+        if self._closing:
+            return
         host = normalize_host(self.host_edit.text())
         self._host_status_wanted = host
         self._last_reachability = None
@@ -1412,6 +1456,8 @@ class PsExecTab(QWidget):
         self._fill_userdomain_prefix(hint.name, previous=previous)
 
     def _start_domain_worker(self, host: str) -> None:
+        if self._closing:
+            return
         host = normalize_host(host)
         if not host or not is_valid_host(host):
             return
@@ -1420,6 +1466,7 @@ class PsExecTab(QWidget):
         if worker is not None and worker.isRunning():
             return
         self._domain_worker = _HostDomainWorker(host, self)
+        self._remember_worker(self._domain_worker)
         self._domain_worker.result.connect(self._on_host_domain_result)
         self._domain_worker.finished.connect(self._on_domain_worker_finished)
         self._domain_worker.start()
@@ -1439,11 +1486,15 @@ class PsExecTab(QWidget):
         self._fill_userdomain_prefix(domain.name, previous=previous)
 
     def _on_domain_worker_finished(self) -> None:
-        worker = self._domain_worker
-        finished_host = getattr(worker, "_host", "") if worker is not None else ""
-        self._domain_worker = None
-        if worker is not None:
-            worker.deleteLater()
+        worker = self.sender()
+        if not isinstance(worker, QThread):
+            return
+        finished_host = getattr(worker, "_host", "") or ""
+        if worker is self._domain_worker:
+            self._domain_worker = None
+        self._release_worker(worker)
+        if self._closing:
+            return
 
         current = normalize_host(self.host_edit.text())
         if (
@@ -1454,35 +1505,90 @@ class PsExecTab(QWidget):
         ):
             self._start_domain_worker(current)
 
-    def _check_host_status(self) -> None:
+    def _remember_worker(self, worker: QThread) -> None:
+        if worker not in self._live_workers:
+            self._live_workers.append(worker)
+
+    def _release_worker(self, worker: Optional[QThread]) -> None:
+        if worker is None:
+            return
+        self._live_workers = [item for item in self._live_workers if item is not worker]
+        delete = getattr(worker, "deleteLater", None)
+        if callable(delete):
+            delete()
+
+    def shutdown(self, wait_ms: int = 2000) -> None:
+        """Cancela verificações em andamento e espera o encerramento cooperativo."""
+        self._closing = True
+        self._host_status_timer.stop()
+        self._session_refresh_timer.stop()
+        self._host_status_generation += 1
+        self._tcp_precheck_generation += 1
+        self._host_status_pending = None
+        for worker in list(self._live_workers):
+            if worker.isRunning() and hasattr(worker, "cancel"):
+                try:
+                    worker.cancel()
+                except Exception:
+                    pass
+        for worker in list(self._live_workers):
+            if worker.isRunning():
+                worker.wait(max(0, int(wait_ms)))
+
+    def _check_host_status(self, *, force: bool = False) -> None:
+        if self._closing:
+            return
         host = normalize_host(self.host_edit.text())
         self._host_status_wanted = host
         if not host:
+            self._supersede_host_check()
             self._last_reachability = None
             self._set_host_status("idle", psexec_enabled=False)
             return
         if not is_valid_host(host):
+            self._supersede_host_check()
             self._last_reachability = None
             self._set_host_status("invalid", psexec_enabled=False)
             return
 
-        self._set_host_status("checking", psexec_enabled=False)
         worker = self._host_status_worker
-        if worker is not None and worker.isRunning():
-            running_host = str(getattr(worker, "_host", "") or "")
-            if running_host.casefold() != host.casefold():
-                worker.cancel()
+        if (
+            worker is not None
+            and worker.isRunning()
+            and not force
+            and not getattr(worker, "_cancel", False)
+            and str(getattr(worker, "_host", "") or "").casefold() == host.casefold()
+        ):
             return
 
-        self._start_host_status_worker(host)
+        self._host_status_generation += 1
+        generation = self._host_status_generation
+        self._set_host_status("checking", psexec_enabled=False)
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+            self._host_status_pending = (host, generation, force)
+            return
+        self._host_status_pending = None
+        self._start_host_status_worker(host, generation, use_cache=not force)
+
+    def _supersede_host_check(self) -> None:
+        self._host_status_generation += 1
+        self._host_status_pending = None
+        worker = self._host_status_worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+
+    def _recheck_host_status(self) -> None:
+        self._host_status_timer.stop()
+        self.refresh_host_status()
 
     def refresh_host_status(self) -> None:
-        """Reconsulta o host atual (ex.: após trocar a pasta PSTools)."""
+        """Reconsulta o host atual, sem reutilizar o cache."""
         host = normalize_host(self.host_edit.text())
         if not host or not is_valid_host(host):
             return
         self._last_reachability = None
-        self._check_host_status()
+        self._check_host_status(force=True)
 
     def current_host(self) -> str:
         return normalize_host(self.host_edit.text())
@@ -1496,18 +1602,23 @@ class PsExecTab(QWidget):
         return has_fresh_tcp445(host)
 
     def start_tcp_precheck(self) -> None:
+        if self._closing:
+            self.tcpPrecheckFinished.emit(False, "")
+            return
         host = self.current_host()
         self._tcp_precheck_generation += 1
         gen = self._tcp_precheck_generation
-        worker = self._tcp_precheck_worker
-        if worker is not None and worker.isRunning():
-            worker.cancel()
-        self._tcp_precheck_worker = _TcpPrecheckWorker(host, self)
-        self._tcp_precheck_worker.result.connect(
+        previous = self._tcp_precheck_worker
+        if previous is not None and previous.isRunning():
+            previous.cancel()
+        worker = _TcpPrecheckWorker(host, self)
+        self._tcp_precheck_worker = worker
+        self._remember_worker(worker)
+        worker.result.connect(
             lambda h, ping, g=gen: self._on_tcp_precheck_result(h, ping, g)
         )
-        self._tcp_precheck_worker.finished.connect(self._on_tcp_precheck_worker_finished)
-        self._tcp_precheck_worker.start()
+        worker.finished.connect(self._on_tcp_precheck_worker_finished)
+        worker.start()
 
     def cancel_tcp_precheck(self) -> None:
         self._tcp_precheck_generation += 1
@@ -1538,18 +1649,30 @@ class PsExecTab(QWidget):
         self.tcpPrecheckFinished.emit(False, psexec_tcp_blocked_message(icmp_ok=icmp_ok))
 
     def _on_tcp_precheck_worker_finished(self) -> None:
-        worker = self._tcp_precheck_worker
-        self._tcp_precheck_worker = None
-        if worker is not None:
-            worker.deleteLater()
+        worker = self.sender()
+        if not isinstance(worker, QThread):
+            return
+        if worker is self._tcp_precheck_worker:
+            self._tcp_precheck_worker = None
+        self._release_worker(worker)
 
-    def _start_host_status_worker(self, host: str) -> None:
-        self._host_status_worker = _HostStatusWorker(host, self)
-        self._host_status_worker.result.connect(self._on_host_status_result)
-        self._host_status_worker.finished.connect(self._on_host_status_worker_finished)
-        self._host_status_worker.start()
+    def _start_host_status_worker(
+        self, host: str, generation: int, *, use_cache: bool
+    ) -> None:
+        if self._closing:
+            return
+        worker = _HostStatusWorker(
+            host, generation, use_cache=use_cache, parent=self
+        )
+        self._host_status_worker = worker
+        self._remember_worker(worker)
+        worker.result.connect(self._on_host_status_result)
+        worker.finished.connect(self._on_host_status_worker_finished)
+        worker.start()
 
-    def _on_host_status_result(self, host: str, reach: object) -> None:
+    def _on_host_status_result(self, generation: int, host: str, reach: object) -> None:
+        if self._closing or generation != self._host_status_generation:
+            return
         wanted = self._host_status_wanted
         current = normalize_host(self.host_edit.text())
         if is_stale_host_result(host, wanted, current):
@@ -1560,17 +1683,23 @@ class PsExecTab(QWidget):
         self._apply_reachability(info)
 
     def _on_host_status_worker_finished(self) -> None:
-        worker = self._host_status_worker
-        finished_host = getattr(worker, "_host", "") if worker is not None else ""
-        self._host_status_worker = None
-        if worker is not None:
-            worker.deleteLater()
-
+        worker = self.sender()
+        if not isinstance(worker, QThread):
+            return
+        if worker is self._host_status_worker:
+            self._host_status_worker = None
+        self._release_worker(worker)
+        if self._closing:
+            self._host_status_pending = None
+            return
+        pending = self._host_status_pending
+        self._host_status_pending = None
+        if pending is None:
+            return
+        host, generation, force = pending
+        if generation != self._host_status_generation:
+            return
         current = normalize_host(self.host_edit.text())
-        if (
-            current
-            and is_valid_host(current)
-            and current.casefold() != (finished_host or "").casefold()
-        ):
-            self._set_host_status("checking", psexec_enabled=False)
-            self._start_host_status_worker(current)
+        if current.casefold() != str(host).casefold() or not is_valid_host(current):
+            return
+        self._start_host_status_worker(current, generation, use_cache=not force)

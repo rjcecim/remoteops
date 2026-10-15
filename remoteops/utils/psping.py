@@ -14,7 +14,7 @@ from typing import Callable, Optional
 
 from remoteops.core.console_codec import decode_console_bytes
 from remoteops.core.process_runner import CapturedProcess, run_argv_captured
-from remoteops.utils.ping import is_valid_host, normalize_host
+from remoteops.utils.ping import is_ipv6_host, is_valid_host, normalize_host
 from remoteops.utils.redaction import redact_command_text
 
 PSPING_NAMES: tuple[str, ...] = ("PsPing64.exe", "PsPing.exe")
@@ -140,6 +140,11 @@ def looks_like_ipv6(host: str) -> bool:
     if h.startswith("[") and "]" in h:
         return True
     return h.count(":") >= 2
+
+
+def family_for_host(host: str) -> IpFamily:
+    """Família usada na verificação quando o chamador não escolhe uma."""
+    return IpFamily.IPV6 if is_ipv6_host(host) else IpFamily.IPV4
 
 
 def snap_attempts(value: int) -> int:

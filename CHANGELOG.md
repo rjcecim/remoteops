@@ -4,12 +4,16 @@ Este arquivo registra as melhorias entregues em cada commit. As versões seguem
 o formato [SemVer](https://semver.org/): `MAJOR.MINOR.PATCH`. A identidade
 exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
-## [1.10.0] (Build 85) - 2026-09-23
+## [1.10.0] (Build 86) - 2026-09-23 a 2026-10-15
 
-Identidade: **RemoteOps 1.10.0 (Build 85)**.
+Identidade: **RemoteOps 1.10.0 (Build 86)**.
 
 - Add a dedicated Instalação em Lote tab for MSI (same title as the EXE batch tab). After the scan it shows the same results table as EXE — computer, app, version, desired version, action, result and reason. Installation runs one computer at a time: Robocopy first, then `msiexec` through PsExec. The MSI tab remains the parameter form.
+- Report PsExec host status as network connectivity. TCP 445 open is no longer labeled as PsExec authorization. ICMP blocked with TCP 445 open stays reachable; a failed check is not shown as offline.
+- Drop stale connectivity results when the host changes, cancel checks when the window closes, and recheck on demand without reusing the short cache.
+- Reject malformed hosts before probing, and pass IPv6 literals to PsExec as a bracketed UNC target.
 
+- 2026-10-15 · Correct PsExec connection status, host checks and worker lifetime.
 - 2026-09-23 · Add MSI batch install with version scan, Robocopy then msiexec, one host at a time.
 
 ## [1.9.0] (Build 84) - 2026-09-17 a 2026-09-22
