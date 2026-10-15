@@ -15,6 +15,13 @@ from remoteops.core.psexec_options import (
     sanitize_psexec_options,
     validate_psexec_options,
 )
+from remoteops.core.robocopy_dest import (
+    build_robocopy_switch_argv,
+    file_belongs_to_folder,
+    remote_local_path,
+    remote_unc_path,
+    validate_robocopy_dest,
+)
 from remoteops.core.win_cmdline import split_extra_args, split_windows_command_line
 from remoteops.services.msi_validate import (
     filter_msiexec_extra_tokens,
@@ -47,10 +54,31 @@ def _extract_flag_value(combo_text: str) -> str:
 
 
 def _normalize_robocopy_dest(dest: str) -> str:
-    dest = (dest or "").strip().replace('"', "").replace("'", "").strip()
-    if dest.lower().startswith("c:"):
-        dest = dest[2:].lstrip("\\/").replace("/", "\\")
-    return "\\".join(part for part in dest.split("\\") if part)
+    """Compat: retorna canônico ou string vazia se inválido."""
+    canonical, err = validate_robocopy_dest(dest)
+    return "" if err else canonical
+
+
+def _robocopy_error_body(message: str) -> str:
+    text = (message or "").strip() or "Erro no Robocopy"
+    if text.startswith("# Erro:"):
+        text = text[len("# Erro:") :].strip()
+    elif text.startswith("# Erro"):
+        text = text[len("# Erro") :].lstrip(": ").strip()
+    elif text.startswith("#"):
+        text = text.lstrip("# ").strip()
+    if text.lower().startswith("erro:"):
+        text = text[5:].strip()
+    return text or "Erro no Robocopy"
+
+
+def _robocopy_error_spec(message: str) -> CommandSpec:
+    err_body = _robocopy_error_body(message)
+    return CommandSpec(
+        executable="robocopy",
+        display_command=f"# Erro: {err_body}",
+        metadata={"kind": "robocopy", "robocopy_errors": [err_body]},
+    )
 
 
 class CommandBuilder:
@@ -163,79 +191,97 @@ class CommandBuilder:
             return self._build_robocopy_folder_spec()
         return self._build_robocopy_file_spec()
 
+    def _robocopy_switch_tokens(self) -> list[str]:
+        params = self.robocopy_params or {}
+        return build_robocopy_switch_argv(
+            params.get("switches"),
+            retries=params.get("retries"),
+            wait_seconds=params.get("wait"),
+        )
+
     def _build_robocopy_file_spec(self) -> Optional[CommandSpec]:
         if not self.robocopy_params or not self.psexec_params:
-            return CommandSpec(
-                executable="robocopy",
-                display_command="# Erro: parâmetros de robocopy ou psexec ausentes",
-            )
+            return _robocopy_error_spec("parâmetros de robocopy ou psexec ausentes")
         if not self.file_path:
-            return CommandSpec(
-                executable="robocopy",
-                display_command="# Erro: arquivo não selecionado",
-            )
-        dest = _normalize_robocopy_dest(self.robocopy_params.get("dest") or "")
-        if not dest:
-            return CommandSpec(
-                executable="robocopy",
-                display_command="# Erro: destino de cópia não especificado",
-            )
-        switches = self.robocopy_params.get(
-            "switches", "/NFL /NDL /NJH /NJS /nc /ns /np"
-        )
+            return _robocopy_error_spec("arquivo não selecionado")
+        dest, dest_err = validate_robocopy_dest(self.robocopy_params.get("dest") or "")
+        if dest_err:
+            return _robocopy_error_spec(dest_err)
         file_path = os.path.normpath(self.file_path.strip()) if self.file_path else ""
         file_path = os.path.abspath(file_path) if file_path else ""
-        src_dir = os.path.dirname(file_path) if file_path else ""
-        file_name = os.path.basename(file_path) if file_path else ""
+        if not file_path or not os.path.isfile(file_path):
+            return _robocopy_error_spec(
+                f"Arquivo de origem não encontrado: {self.file_path or ''}"
+            )
+        src_dir = os.path.dirname(file_path)
+        file_name = os.path.basename(file_path)
         if not src_dir or not os.path.isdir(src_dir):
-            return CommandSpec(
-                executable="robocopy",
-                display_command=f"# Erro: Diretório de origem não encontrado: {src_dir}",
+            return _robocopy_error_spec(
+                f"Diretório de origem não encontrado: {src_dir}"
             )
         host, host_error = _unc_host_or_error(self.psexec_params.get("host") or "")
         if host_error:
-            return CommandSpec(executable="robocopy", display_command=host_error)
-        dest_unc = f"\\\\{host}\\C$\\{dest}"
-        argv = ["robocopy", src_dir, dest_unc, file_name, *split_extra_args(switches)]
-        return CommandSpec.from_argv(argv, metadata={"kind": "robocopy"})
+            return _robocopy_error_spec(host_error)
+        dest_unc = remote_unc_path(host, dest)
+        argv = [
+            "robocopy",
+            src_dir,
+            dest_unc,
+            file_name,
+            *self._robocopy_switch_tokens(),
+        ]
+        return CommandSpec.from_argv(
+            argv,
+            metadata={
+                "kind": "robocopy",
+                "robocopy_dest": dest,
+                "robocopy_unc": dest_unc,
+                "remote_path": remote_local_path(dest, file_name),
+            },
+        )
 
     def _build_robocopy_folder_spec(self) -> Optional[CommandSpec]:
         if not self.robocopy_params or not self.psexec_params:
-            return CommandSpec(
-                executable="robocopy",
-                display_command="# Erro: parâmetros de robocopy ou psexec ausentes",
-            )
+            return _robocopy_error_spec("parâmetros de robocopy ou psexec ausentes")
         if not self.folder_path:
-            return CommandSpec(
-                executable="robocopy",
-                display_command="# Erro: pasta não selecionada",
-            )
-        dest = _normalize_robocopy_dest(self.robocopy_params.get("dest") or "")
-        if not dest:
-            return CommandSpec(
-                executable="robocopy",
-                display_command="# Erro: destino de cópia não especificado",
-            )
-        switches = self.robocopy_params.get(
-            "switches", "/NFL /NDL /NJH /NJS /nc /ns /np"
-        )
-        src_dir = self.folder_path
-        folder_name = (
-            os.path.basename(os.path.normpath(self.folder_path))
-            if self.folder_path
-            else ""
-        )
+            return _robocopy_error_spec("pasta não selecionada")
+        dest, dest_err = validate_robocopy_dest(self.robocopy_params.get("dest") or "")
+        if dest_err:
+            return _robocopy_error_spec(dest_err)
+        src_dir = os.path.abspath(os.path.normpath(self.folder_path))
+        folder_name = os.path.basename(os.path.normpath(src_dir)) if src_dir else ""
         host, host_error = _unc_host_or_error(self.psexec_params.get("host") or "")
         if host_error:
-            return CommandSpec(executable="robocopy", display_command=host_error)
+            return _robocopy_error_spec(host_error)
         if not src_dir or not os.path.isdir(src_dir):
-            return CommandSpec(
-                executable="robocopy",
-                display_command=f"# Erro: Diretório de origem não encontrado: {src_dir}",
+            return _robocopy_error_spec(
+                f"Diretório de origem não encontrado: {src_dir}"
             )
-        dest_unc = f"\\\\{host}\\C$\\{dest}\\{folder_name}"
-        argv = ["robocopy", src_dir, dest_unc, "/E", *split_extra_args(switches)]
-        return CommandSpec.from_argv(argv, metadata={"kind": "robocopy"})
+        if self.file_path and not file_belongs_to_folder(self.file_path, src_dir):
+            return _robocopy_error_spec(
+                "O arquivo selecionado não pertence à pasta de origem."
+            )
+        dest_unc = remote_unc_path(host, dest, folder_name)
+        switch_tokens = self._robocopy_switch_tokens()
+        if "/E" not in {t.upper() for t in switch_tokens}:
+            switch_tokens = ["/E", *switch_tokens]
+        argv = ["robocopy", src_dir, dest_unc, *switch_tokens]
+        relpath = ""
+        if self.file_path:
+            relpath = os.path.relpath(
+                os.path.abspath(self.file_path), src_dir
+            ).replace("/", "\\")
+        return CommandSpec.from_argv(
+            argv,
+            metadata={
+                "kind": "robocopy",
+                "robocopy_dest": dest,
+                "robocopy_unc": dest_unc,
+                "remote_path": remote_local_path(dest, folder_name, relpath)
+                if relpath
+                else remote_local_path(dest, folder_name),
+            },
+        )
 
     # ── PsExec base ─────────────────────────────────────────────────────
 
@@ -286,19 +332,22 @@ class CommandBuilder:
     def _remote_path_after_robocopy(self) -> Optional[str]:
         if not self.robocopy_params:
             return None
-        dest = _normalize_robocopy_dest(self.robocopy_params.get("dest") or "")
-        if not dest:
+        dest, dest_err = validate_robocopy_dest(self.robocopy_params.get("dest") or "")
+        if dest_err or not dest:
             return None
         if self.selection_mode == "folder" and self.folder_path:
-            folder_name = os.path.basename(os.path.normpath(self.folder_path))
+            folder_abs = os.path.abspath(os.path.normpath(self.folder_path))
+            folder_name = os.path.basename(folder_abs)
+            if self.file_path and not file_belongs_to_folder(self.file_path, folder_abs):
+                return None
             relpath = (
-                os.path.relpath(self.file_path, self.folder_path)
-                if self.file_path and self.folder_path
+                os.path.relpath(os.path.abspath(self.file_path), folder_abs)
+                if self.file_path
                 else ""
             )
-            return f"C:\\{dest}\\{folder_name}\\{relpath}".replace("/", "\\")
+            return remote_local_path(dest, folder_name, relpath.replace("/", "\\"))
         file_name = os.path.basename(self.file_path) if self.file_path else ""
-        return f"C:\\{dest}\\{file_name}"
+        return remote_local_path(dest, file_name)
 
     def _append_extra_args(self, argv: List[str]) -> None:
         extra = (self.psexec_params.get("extra_args") or "").strip()
@@ -569,18 +618,23 @@ class CommandBuilder:
             dest_raw = self.robocopy_params.get("dest") if self.robocopy_params else None
             if not dest_raw or not str(dest_raw).strip():
                 return []
-            dest = _normalize_robocopy_dest(str(dest_raw))
+            dest, dest_err = validate_robocopy_dest(str(dest_raw))
+            if dest_err or not dest:
+                return []
             if self.selection_mode == "folder" and self.folder_path:
-                folder_name = os.path.basename(os.path.normpath(self.folder_path))
+                folder_abs = os.path.abspath(os.path.normpath(self.folder_path))
+                folder_name = os.path.basename(folder_abs)
                 relpath = (
-                    os.path.relpath(self.file_path, self.folder_path)
-                    if self.file_path and self.folder_path
+                    os.path.relpath(os.path.abspath(self.file_path), folder_abs)
+                    if self.file_path
                     else os.path.basename(self.file_path or "")
                 )
-                msi_path = f"C:\\{dest}\\{folder_name}\\{relpath}".replace("/", "\\")
+                msi_path = remote_local_path(
+                    dest, folder_name, str(relpath).replace("/", "\\")
+                )
             else:
                 file_name = os.path.basename(self.file_path) if self.file_path else ""
-                msi_path = f"C:\\{dest}\\{file_name}"
+                msi_path = remote_local_path(dest, file_name)
 
         cmd: List[str] = ["msiexec"]
         # Em folder mode sem msi_params.enable, default /i (compat)
@@ -660,15 +714,39 @@ class CommandBuilder:
         Plano de execução estruturado.
 
         Ordem: [robocopy?] + [psexec].
+        Se a cópia for obrigatória e inválida, o plano contém só o erro
+        Robocopy — PsExec não é anexado (fail-closed).
         """
         specs: List[CommandSpec] = []
-        rc = self.build_robocopy_spec()
-        if rc and rc.display_command and not rc.display_command.startswith("#"):
-            specs.append(rc)
-        elif rc and rc.argv and rc.executable == "robocopy" and rc.args:
-            # spec válido
-            if not (rc.display_command or "").startswith("#"):
+        needs_robocopy = self.robocopy_params is not None
+        if needs_robocopy:
+            rc = self.build_robocopy_spec()
+            if rc is None:
+                specs.append(
+                    _robocopy_error_spec("não foi possível montar o comando Robocopy")
+                )
+                return specs
+            display = (rc.display_command or "").strip()
+            meta = dict(rc.metadata or {})
+            errors = meta.get("robocopy_errors") or []
+            if display.startswith("#") or errors or not rc.argv:
+                if not errors:
+                    err_body = display.lstrip("# ").strip() or "Robocopy inválido"
+                    meta["robocopy_errors"] = [err_body]
+                    meta.setdefault("kind", "robocopy")
+                    rc = CommandSpec(
+                        executable=rc.executable or "robocopy",
+                        args=list(rc.args or []),
+                        display_command=display
+                        if display.startswith("#")
+                        else f"# Erro: {err_body}",
+                        metadata=meta,
+                        has_secrets=rc.has_secrets,
+                        prefer_external_console=rc.prefer_external_console,
+                    )
                 specs.append(rc)
+                return specs
+            specs.append(rc)
 
         # Escolha do psexec (mesma lógica de build_full_command legado)
         if self.file_path and self.file_path.lower().endswith(".ps1"):

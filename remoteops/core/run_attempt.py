@@ -51,18 +51,22 @@ def freeze_plan(specs: Sequence[CommandSpec]) -> tuple[CommandSpec, ...]:
 def plan_blocking_errors(specs: Sequence[CommandSpec]) -> list[str]:
     """Erros estruturados do plano (não depende só de ``# Erro`` no display)."""
     errors: list[str] = []
+    meta_keys = (
+        "psexec_errors",
+        "powershell_errors",
+        "cmd_errors",
+        "robocopy_errors",
+    )
     for spec in specs:
         meta = spec.metadata or {}
-        for key in ("psexec_errors", "powershell_errors", "cmd_errors"):
+        for key in meta_keys:
             raw = meta.get(key) or []
             if isinstance(raw, str):
                 errors.append(raw)
             else:
                 errors.extend(str(item) for item in raw if item)
         display = (spec.display_command or "").strip()
-        if display.startswith("# Erro") and not any(
-            meta.get(key) for key in ("psexec_errors", "powershell_errors", "cmd_errors")
-        ):
+        if display.startswith("# Erro") and not any(meta.get(key) for key in meta_keys):
             errors.append(display.lstrip("# ").strip())
     return errors
 

@@ -328,10 +328,12 @@ class Executor(QObject):
             result.stderr = "\n".join(stderr_acc)
 
             if is_robocopy and result.return_code is not None:
-                result.metadata["robocopy_success"] = is_robocopy_success(
-                    result.return_code
-                )
-                if is_robocopy_success(result.return_code):
+                from remoteops.core.models import classify_robocopy_exit
+
+                classified = classify_robocopy_exit(result.return_code)
+                result.metadata["robocopy_success"] = classified["success"]
+                result.metadata["robocopy_classification"] = classified
+                if classified["success"]:
                     result.success = True
                     result.status = OperationStatus.COMPLETED
                     result.finished_at = datetime.now()

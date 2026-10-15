@@ -222,8 +222,15 @@ def build_batch_msi_plan(
 
     if robocopy is None:
         errors.append("Não foi possível montar o comando Robocopy.")
-    elif (robocopy.display_command or "").startswith("#"):
-        errors.append(robocopy.display_command.lstrip("# ").strip())
+    else:
+        rc_meta = robocopy.metadata or {}
+        rc_errors = rc_meta.get("robocopy_errors") or []
+        if isinstance(rc_errors, str) and rc_errors:
+            errors.append(rc_errors)
+        else:
+            errors.extend(str(item) for item in rc_errors if item)
+        if not rc_errors and (robocopy.display_command or "").startswith("#"):
+            errors.append(robocopy.display_command.lstrip("# ").strip())
     if (psexec.display_command or "").startswith("#"):
         errors.append(psexec.display_command.lstrip("# ").strip())
     if not remote_msi:

@@ -4,6 +4,17 @@ Este arquivo registra as melhorias entregues em cada commit. As versões seguem
 o formato [SemVer](https://semver.org/): `MAJOR.MINOR.PATCH`. A identidade
 exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
+## [1.13.0] (Build 93) - 2026-10-15
+
+Identidade: **RemoteOps 1.13.0 (Build 93)**.
+
+- Harden the Robocopy tab: validate the remote C: destination (reject UNC, other drives, `..`, invalid characters and reserved names), show UNC feedback under the field, and keep the two cards Destino and Parâmetros.
+- Add explicit `/R` and `/W` controls (defaults 2 and 3) with the seven quiet switches; reset restores all of them. Build argv from structured params only — never `/MIR`, `/PURGE`, `/MOVE` or link-follow switches.
+- Fail closed when a required Robocopy step is invalid: structured `robocopy_errors` block the frozen plan so PsExec cannot run without a valid copy. Folder selection with an `.exe` enables Robocopy for dependencies; a lone `.exe` still uses PsExec `-c`.
+- Classify Robocopy exit codes (0–7 vs ≥8), log the interpretation, and refuse the PsExec follow-up after cancel or copy failure. MSI batch uses the same destination and error metadata.
+
+- 2026-10-15 · Harden Robocopy destination validation, `/R`/`/W`, fail-closed copy→PsExec plans and folder+EXE transfers.
+
 ## [1.12.0] (Build 92) - 2026-10-15
 
 Identidade: **RemoteOps 1.12.0 (Build 92)**.

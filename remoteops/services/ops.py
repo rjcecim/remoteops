@@ -179,16 +179,27 @@ class CommandExecutionService:
                     self.executor.finished.disconnect(after_robocopy)
                 except Exception:
                     pass
-                from remoteops.core.models import is_robocopy_success
+                from remoteops.core.models import (
+                    classify_robocopy_exit,
+                    is_robocopy_success,
+                )
 
                 if self._plan_cancelled:
                     self._awaiting_followup = False
+                    self._log(
+                        "Robocopy: continuação cancelada; PsExec não será iniciado."
+                    )
                     return
+
+                classified = classify_robocopy_exit(exit_code)
+                self._log(
+                    f"Robocopy (código {exit_code}): {classified['summary']}."
+                )
 
                 if is_robocopy_success(exit_code):
                     mode = "console externo" if _external else "ConPTY"
                     self._log(
-                        f"Robocopy OK (código {exit_code}). Iniciando PsExec ({mode})..."
+                        f"Transferência aceita. Iniciando PsExec ({mode})..."
                     )
                     launch = self._launch_psexec(
                         px, password=password, use_external_console=_external
@@ -204,7 +215,7 @@ class CommandExecutionService:
                     self._awaiting_followup = False
                     self._log(
                         f"Robocopy falhou (código {exit_code}). "
-                        "PsExec nao sera executado."
+                        "PsExec não será executado."
                     )
                     if self._run_enabled_cb:
                         self._run_enabled_cb(True)

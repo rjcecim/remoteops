@@ -267,6 +267,7 @@ class MainWindow(QMainWindow):
         self.msi_tab.repair_spin.textChanged.connect(self.update_command)
         self.msi_tab.update_edit.textChanged.connect(self.update_command)
         # Conexões do Robocopy
+        self.robocopy_tab.paramsChanged.connect(self.update_command)
         self.robocopy_tab.dest_edit.textChanged.connect(self.update_command)
         for cb in self.robocopy_tab.switches:
             cb.stateChanged.connect(self.update_command)
@@ -1833,17 +1834,15 @@ class MainWindow(QMainWindow):
         if not selected_file:
             return False
         ext = selected_file.lower().split('.')[-1] if '.' in selected_file else ''
-        if ext == 'exe':
+        selection_mode = getattr(self.file_selector, "selection_mode", None)
+        # EXE individual: PsExec -c; pasta+EXE: Robocopy para dependências.
+        if ext == "exe" and selection_mode != "folder":
             return False
-        # CORREÇÃO: Só desabilitar robocopy se houver comando remoto manual
-        # Não desabilitar se houver apenas parâmetros da aba CMD ou PowerShell
+        # Só desabilitar robocopy se houver comando remoto manual
         remote_cmd = self.psexec_tab.remote_cmd_edit.text().strip()
         if remote_cmd and remote_cmd != 'Comando gerado automaticamente':
-            # Verificar se é realmente um comando manual ou apenas parâmetros de aba
-            # Se o comando contém apenas parâmetros como cmd, powershell, etc., não desabilitar
             if remote_cmd.lower() in ['cmd', 'cmd.exe', 'powershell', 'powershell.exe']:
                 return True
-            # Se contém outros comandos, desabilitar robocopy
             return False
         return True
 
@@ -2066,6 +2065,9 @@ class MainWindow(QMainWindow):
         else:
             file_selection = None
         robocopy_enabled = self.should_enable_robocopy()
+        host_text = self.psexec_tab.host_edit.text().strip()
+        if hasattr(self.robocopy_tab, "set_preview_host"):
+            self.robocopy_tab.set_preview_host(host_text or "HOST")
         # --- CORREÇÃO: Sempre preservar parâmetros da aba PowerShell se ela existir ---
         if hasattr(self, 'powershell_tab') and self.powershell_tab:
             self.command_builder.set_powershell_params(self.powershell_tab.get_params())

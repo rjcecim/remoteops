@@ -167,3 +167,40 @@ class ExecutionResult:
 def is_robocopy_success(exit_code: int) -> bool:
     """Robocopy: 0-7 = sucesso/avisos; >= 8 = falha."""
     return 0 <= int(exit_code) <= 7
+
+
+def classify_robocopy_exit(exit_code: int) -> dict:
+    """Interpreta o bitmask de saída do Robocopy (sem inventar estatísticas)."""
+    code = int(exit_code)
+    ok = is_robocopy_success(code)
+    bits = {
+        "no_changes": code == 0,
+        "copied": bool(code & 1),
+        "extras": bool(code & 2),
+        "mismatches": bool(code & 4),
+        "failed_copies": bool(code & 8),
+        "fatal": bool(code & 16) or code >= 16,
+    }
+    if code < 0:
+        summary = f"código de saída inválido ({code})"
+    elif code == 0:
+        summary = "nenhuma cópia necessária (origem e destino equivalentes)"
+    elif ok:
+        parts: list[str] = []
+        if bits["copied"]:
+            parts.append("arquivos copiados")
+        if bits["extras"]:
+            parts.append("extras no destino")
+        if bits["mismatches"]:
+            parts.append("divergências")
+        summary = "; ".join(parts) if parts else f"concluído (código {code})"
+    elif bits["failed_copies"] and not bits["fatal"]:
+        summary = "falha em uma ou mais cópias"
+    else:
+        summary = "erro grave na transferência"
+    return {
+        "exit_code": code,
+        "success": ok,
+        "summary": summary,
+        **bits,
+    }
