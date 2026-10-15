@@ -264,39 +264,35 @@ class ExecutionGuardTests(unittest.TestCase):
     def test_blocks_while_running_or_precheck(self) -> None:
         self.assertFalse(
             new_execution_blocked(
-                stop_enabled=False,
+                phase_busy=False,
                 executor_busy=False,
                 awaiting_followup=False,
-                precheck_pending=False,
             )
         )
         self.assertTrue(
             new_execution_blocked(
-                stop_enabled=True,
+                phase_busy=True,
                 executor_busy=False,
                 awaiting_followup=False,
-                precheck_pending=False,
             )
         )
         self.assertTrue(
             new_execution_blocked(
-                stop_enabled=False,
+                phase_busy=False,
                 executor_busy=True,
                 awaiting_followup=False,
-                precheck_pending=False,
             )
         )
         self.assertTrue(
             new_execution_blocked(
-                stop_enabled=False,
+                phase_busy=False,
                 executor_busy=False,
                 awaiting_followup=True,
-                precheck_pending=False,
             )
         )
         self.assertTrue(
             new_execution_blocked(
-                stop_enabled=False,
+                phase_busy=False,
                 executor_busy=False,
                 awaiting_followup=False,
                 precheck_pending=True,

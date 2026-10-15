@@ -13,6 +13,15 @@ from PyQt6.QtWidgets import (
 
 from remoteops.core.builder import CommandBuilder
 from remoteops.core.executor import Executor
+from remoteops.core.run_attempt import (
+    RunAttempt,
+    RunPhase,
+    new_execution_blocked,
+    phase_is_busy,
+    plan_blocking_errors,
+    run_button_tooltip,
+    stop_button_tooltip,
+)
 from remoteops.services.ops import (
     CommandExecutionService,
     CredentialContext,
@@ -53,17 +62,6 @@ from remoteops.utils.pstools import get_pstools_dir
 from remoteops.utils.redaction import redact_command_text
 
 
-def new_execution_blocked(
-    *,
-    stop_enabled: bool,
-    executor_busy: bool,
-    awaiting_followup: bool,
-    precheck_pending: bool,
-) -> bool:
-    """True quando já existe execução ou pré-teste TCP em andamento."""
-    return bool(stop_enabled or executor_busy or awaiting_followup or precheck_pending)
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -75,6 +73,8 @@ class MainWindow(QMainWindow):
         self._hold_rest_size = False
         self._pending_window_restore = 0
         self._session_exit_requested = False
+        self._run_phase = RunPhase.IDLE
+        self._active_attempt: RunAttempt | None = None
         self.setWindowTitle(APP_DISPLAY_NAME)
         icon = app_icon()
         if not icon.isNull():
@@ -129,7 +129,6 @@ class MainWindow(QMainWindow):
         self.hostsearch_tab = None
         self.settings_tab = None
         self.connectivity_tab = None
-        self._run_after_precheck = False
         self.robocopy_tab = RobocopyTab()
         self.msi_tab = MsiTab(
             msi_provider=lambda: getattr(self.file_selector, "selected_file", None) or "",
@@ -193,9 +192,9 @@ class MainWindow(QMainWindow):
             self.executor, log_fn=self.log_output.append_log
         )
         self._execution_service.set_button_callbacks(
-            self._set_run_button_enabled, self.stop_button.setEnabled
+            self._set_run_button_enabled, self._set_stop_button_enabled
         )
-        self.run_button.setEnabled(False)  # só habilita com host Online
+        self._sync_run_controls()
         self._uninstall_service = RemoteUninstallService()
         self._rustdesk_service = RustDeskService()
         self._rustdesk_collecting = False
@@ -296,30 +295,53 @@ class MainWindow(QMainWindow):
         self._update_psinfo_mode_ui()
         self._last_tab_widget = self.tabs.currentWidget()
 
+    def _set_run_phase(self, phase: RunPhase) -> None:
+        self._run_phase = phase
+        self._sync_run_controls()
+
+    def _clear_active_attempt(self) -> None:
+        self._active_attempt = None
+        self._set_run_phase(RunPhase.IDLE)
+
+    def _sync_run_controls(self) -> None:
+        """Botões refletem a fase; a fase não depende do estado visual."""
+        busy = phase_is_busy(self._run_phase)
+        batch_busy = bool(getattr(self.batchmsi_tab, "_is_busy", lambda: False)())
+        can_run = bool(self.psexec_tab.can_run_psexec()) and not batch_busy and not busy
+        self.run_button.setEnabled(can_run)
+        self.stop_button.setEnabled(busy)
+        self.run_button.setToolTip(
+            self.tr(run_button_tooltip(self._run_phase, can_run=can_run))
+        )
+        self.stop_button.setToolTip(self.tr(stop_button_tooltip(self._run_phase)))
+
     def _set_run_button_enabled(self, enabled: bool) -> None:
-        """Habilita Executar só com host Online e PsExec na pasta configurada."""
-        if not enabled:
+        """Compatível com callbacks do serviço; a fase continua sendo a fonte."""
+        if enabled and self._run_phase in {RunPhase.RUNNING, RunPhase.STARTING}:
+            # Robocopy→PsExec externo ou falha de lançamento: volta ao IDLE.
+            self._clear_active_attempt()
+            return
+        if not enabled and self._run_phase == RunPhase.IDLE:
             self.run_button.setEnabled(False)
             return
-        if getattr(self.batchmsi_tab, "_is_busy", lambda: False)():
-            self.run_button.setEnabled(False)
-            return
-        self.run_button.setEnabled(bool(self.psexec_tab.can_run_psexec()))
+        self._sync_run_controls()
+
+    def _set_stop_button_enabled(self, enabled: bool) -> None:
+        """Callback do serviço após Robocopy/PsExec; não redefine a fase sozinho."""
+        if not enabled and self._run_phase != RunPhase.IDLE:
+            if not self.executor.is_busy and not self._execution_service.awaiting_followup:
+                self._clear_active_attempt()
+                return
+        self._sync_run_controls()
 
     def _on_msi_batch_busy(self, busy: bool) -> None:
-        if busy:
-            self._set_run_button_enabled(False)
-            return
-        if self.stop_button.isEnabled():
-            return
-        self._set_run_button_enabled(True)
-
-    def _on_host_online_changed(self, _online: bool) -> None:
-        # Em execução o Parar fica ativo — não reabilitar Executar no meio do processo.
-        if self.stop_button.isEnabled():
+        if busy and self._run_phase == RunPhase.IDLE:
             self.run_button.setEnabled(False)
             return
-        self.run_button.setEnabled(bool(self.psexec_tab.can_run_psexec()))
+        self._sync_run_controls()
+
+    def _on_host_online_changed(self, _online: bool) -> None:
+        self._sync_run_controls()
 
     def _current_creds(self) -> CredentialContext:
         return CredentialContext(
@@ -1104,15 +1126,16 @@ class MainWindow(QMainWindow):
     def _reset_app_to_startup(self) -> None:
         """Zera seleção, formulários, abas extras e console — como na abertura."""
         if (
-            self.stop_button.isEnabled()
+            phase_is_busy(self._run_phase)
             or self.executor.is_busy
             or self._execution_service.awaiting_followup
         ):
+            self.psexec_tab.cancel_tcp_precheck()
             self._execution_service.cancel_plan()
             self.executor.stop()
             self._session_exit_requested = False
             self.log_output.set_interactive(False)
-            self.stop_button.setEnabled(False)
+            self._clear_active_attempt()
 
         self._rustdesk_collecting = False
         self._rustdesk_out_lines = []
@@ -1159,8 +1182,7 @@ class MainWindow(QMainWindow):
         self.command_preview.set_external_command(False)
         self.command_preview.set_collapsed(False)
         self.log_output.set_collapsed(False)
-        self._set_run_button_enabled(True)
-        self.stop_button.setEnabled(False)
+        self._clear_active_attempt()
         self.update_command()
 
     def _close_psinfo_tab(self) -> None:
@@ -2098,6 +2120,46 @@ class MainWindow(QMainWindow):
         passwords = [pwd] if pwd else None
         append_history(text, passwords=passwords)
 
+    def _prepare_run_attempt(self) -> RunAttempt | None:
+        """Valida e congela o plano desta tentativa. Sem senha no snapshot."""
+        self.update_command()
+        errors = self.command_builder.validate_psexec_params()
+        if errors:
+            for err in errors:
+                self.log_output.append_log(self.tr(f"[PSEXEC] {err}"))
+            return None
+        if self._uses_cmd_options():
+            cmd_errors = self.command_builder.validate_cmd_params()
+            if cmd_errors:
+                for err in cmd_errors:
+                    self.log_output.append_log(self.tr(f"[CMD] {err}"))
+                return None
+        if self._uses_powershell_options():
+            ps_errors = self.command_builder.validate_powershell_params()
+            if ps_errors:
+                for err in ps_errors:
+                    self.log_output.append_log(self.tr(f"[POWERSHELL] {err}"))
+                return None
+        plan = self.build_specs_for_execution()
+        blocking = plan_blocking_errors(plan)
+        if blocking:
+            for err in blocking:
+                self.log_output.append_log(self.tr(f"[PSEXEC] {err}"))
+            return None
+        if not plan:
+            self.log_output.append_log(self.tr("Nenhum comando para executar."))
+            return None
+        host = self.psexec_tab.current_host()
+        pwd = self.psexec_tab.auth_password()
+        passwords = [pwd] if pwd else []
+        display = "\n".join(s.sanitized_display(passwords) for s in plan)
+        return RunAttempt.create(
+            host=host,
+            plan=plan,
+            external_console=self.command_preview.is_external_command(),
+            display_command=display,
+        )
+
     def on_run(self):
         if not self.psexec_tab.is_host_online:
             self.log_output.append_log(
@@ -2105,10 +2167,9 @@ class MainWindow(QMainWindow):
             )
             return
         if new_execution_blocked(
-            stop_enabled=self.stop_button.isEnabled(),
+            phase_busy=phase_is_busy(self._run_phase),
             executor_busy=self.executor.is_busy,
             awaiting_followup=self._execution_service.awaiting_followup,
-            precheck_pending=self._run_after_precheck,
         ):
             self.log_output.append_log(
                 self.tr(
@@ -2117,68 +2178,60 @@ class MainWindow(QMainWindow):
                 )
             )
             return
-        self.update_command()
-        errors = self.command_builder.validate_psexec_params()
-        if errors:
-            for err in errors:
-                self.log_output.append_log(self.tr(f"[PSEXEC] {err}"))
+        attempt = self._prepare_run_attempt()
+        if attempt is None:
             return
-        if self._uses_cmd_options():
-            cmd_errors = self.command_builder.validate_cmd_params()
-            if cmd_errors:
-                for err in cmd_errors:
-                    self.log_output.append_log(self.tr(f"[CMD] {err}"))
-                return
-        if self._uses_powershell_options():
-            ps_errors = self.command_builder.validate_powershell_params()
-            if ps_errors:
-                for err in ps_errors:
-                    self.log_output.append_log(self.tr(f"[POWERSHELL] {err}"))
-                return
         if not self.psexec_tab.confirm_realtime_priority():
             self.log_output.append_log(
                 self.tr("[PSEXEC] Execução em tempo real cancelada.")
             )
             return
+        self._active_attempt = attempt
         if self.psexec_tab.has_fresh_tcp445():
-            self._execute_validated_run()
+            self._execute_attempt(attempt)
             return
-        self._run_after_precheck = True
-        self._set_run_button_enabled(False)
-        self.stop_button.setEnabled(True)
+        self._set_run_phase(RunPhase.PRECHECKING)
         self.log_output.append_log(self.tr("[PSPING] Verificando TCP 445..."))
         self.psexec_tab.start_tcp_precheck()
 
     def _on_tcp_precheck_finished(self, ok: bool, message: str) -> None:
-        if not self._run_after_precheck:
+        attempt = self._active_attempt
+        if attempt is None or self._run_phase != RunPhase.PRECHECKING:
             return
-        self._run_after_precheck = False
+        current_host = self.psexec_tab.current_host()
+        if current_host.casefold() != attempt.host.casefold():
+            self.log_output.append_log(
+                self.tr("[PSPING] Host alterado durante o pré-teste. Execução cancelada.")
+            )
+            self._clear_active_attempt()
+            self.log_output.set_session_status("idle")
+            return
         if not ok:
             if message:
                 for line in str(message).splitlines():
                     if line:
                         self.log_output.append_log(line)
                 self.log_output.set_session_status("error")
-            self._set_run_button_enabled(True)
-            self.stop_button.setEnabled(False)
+            self._clear_active_attempt()
             return
-        self._execute_validated_run()
+        self._execute_attempt(attempt)
 
-    def _execute_validated_run(self) -> None:
+    def _execute_attempt(self, attempt: RunAttempt) -> None:
+        """Lança o plano congelado da tentativa — não reconstrói o comando."""
+        if self._active_attempt is None or attempt.attempt_id != self._active_attempt.attempt_id:
+            return
         # Credencial efêmera: coletada só na execução; limpa após o lançamento.
         creds = self._current_creds()
         self._session_exit_requested = False
 
         self.log_output.clear_log()
         self.log_output.set_session_status("connecting")
-        self._set_run_button_enabled(False)
-        self.stop_button.setEnabled(True)
+        self._set_run_phase(RunPhase.STARTING)
 
-        plan = self.build_specs_for_execution()
+        plan = list(attempt.plan)
         if not plan:
             self.log_output.append_log(self.tr("Nenhum comando para executar."))
-            self._set_run_button_enabled(True)
-            self.stop_button.setEnabled(False)
+            self._clear_active_attempt()
             creds.clear()
             return
 
@@ -2187,27 +2240,35 @@ class MainWindow(QMainWindow):
                 plan,
                 passwords=creds.passwords,
                 creds=creds,
-                use_external_console=self.command_preview.is_external_command(),
+                use_external_console=attempt.external_console,
             )
-            # Mensagem de status já vai ao log via log_fn do serviço
             if not result.robocopy_started and not result.ok:
-                self._set_run_button_enabled(True)
-                self.stop_button.setEnabled(False)
+                self._clear_active_attempt()
                 self.log_output.set_session_status("error")
             elif result.ok and not result.remote_monitored and not result.robocopy_started:
-                self._set_run_button_enabled(True)
-                self.stop_button.setEnabled(False)
+                self._clear_active_attempt()
                 self.log_output.set_session_status("idle")
+            elif result.ok:
+                self._set_run_phase(RunPhase.RUNNING)
         finally:
             creds.clear()
+
+    def _execute_validated_run(self) -> None:
+        """Compatibilidade: executa a tentativa ativa ou prepara uma nova."""
+        attempt = self._active_attempt
+        if attempt is None:
+            attempt = self._prepare_run_attempt()
+            if attempt is None:
+                return
+            self._active_attempt = attempt
+        self._execute_attempt(attempt)
 
     def on_process_finished(self, exit_code):
         # Robocopy de um .ps1/.bat termina antes do PsExec: não liberar a UI.
         if self._execution_service.awaiting_followup or self.executor.is_busy:
             return
         self._session_exit_requested = False
-        self.stop_button.setEnabled(False)
-        self._set_run_button_enabled(True)
+        self._clear_active_attempt()
         self.log_output.set_interactive(False)
         result = self.executor.last_result
         detached = bool(
@@ -2272,19 +2333,21 @@ class MainWindow(QMainWindow):
         self._end_execution(prefer_exit=True)
 
     def on_stop(self):
-        if self._run_after_precheck:
-            self._run_after_precheck = False
+        if self._run_phase == RunPhase.PRECHECKING:
             self.psexec_tab.cancel_tcp_precheck()
+            self._clear_active_attempt()
             self.log_output.append_log(self.tr("[PSPING] Teste cancelado"))
-            self._set_run_button_enabled(True)
-            self.stop_button.setEnabled(False)
             self.log_output.set_session_status("idle")
+            return
+        if self._run_phase == RunPhase.STOPPING:
+            self._kill_local_process()
             return
         self._end_execution(prefer_exit=True)
 
     def _end_execution(self, *, prefer_exit: bool) -> None:
         """Padrão: enviar ``exit`` à sessão ConPTY. Só mata o processo local
         se não houver sessão ou se o usuário pedir de novo."""
+        self._set_run_phase(RunPhase.STOPPING)
         self._execution_service.cancel_plan()
         if prefer_exit and not self._session_exit_requested:
             if self.executor.send_input("exit"):
@@ -2299,8 +2362,7 @@ class MainWindow(QMainWindow):
         self.executor.stop()
         self.log_output.set_interactive(False)
         self.log_output.set_session_status("exited")
-        self._set_run_button_enabled(True)
-        self.stop_button.setEnabled(False)
+        self._clear_active_attempt()
         self.log_output.append_log(
             self.tr(
                 "Parada forçada: processo local encerrado. "

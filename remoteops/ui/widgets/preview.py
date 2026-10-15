@@ -28,7 +28,7 @@ class CommandPreviewWidget(CardWidget):
 
         # Mesmo padrão visual do checkbox "Usar faixa de IP" (Origem dos hosts).
         g = grid_in_card(self)
-        self.external_cmd_check = QCheckBox(self.tr("Executar como comando externo"))
+        self.external_cmd_check = QCheckBox(self.tr("Abrir em console externo"))
         self.external_cmd_check.setChecked(False)
         self.external_cmd_check.setToolTip(
             self.tr(
