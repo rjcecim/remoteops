@@ -284,6 +284,8 @@ class CardWidget(QWidget):
     """
 
     collapsedChanged = pyqtSignal(bool)
+    # True quando o card vai recolher. Disparado antes da altura mudar.
+    collapseGestureStarted = pyqtSignal(bool)
     downloadRequested = pyqtSignal()
     copyRequested = pyqtSignal()
     resetRequested = pyqtSignal()
@@ -628,6 +630,13 @@ class CardWidget(QWidget):
             return
 
         collapsed = bool(collapsed)
+        current = (
+            self._collapse_target
+            if self._collapse_anim is not None and self._collapse_target is not None
+            else self._is_collapsed
+        )
+        if collapsed != current and self.isVisible():
+            self.collapseGestureStarted.emit(collapsed)
         self._toggle_btn.setText("\uE70E" if collapsed else "\uE70D")
         self._toggle_btn.setToolTip("Expandir" if collapsed else "Ocultar")
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -70,6 +70,10 @@ class MainWindow(QMainWindow):
         self._updating_remote_cmd = False
         self._last_tab_widget = None
         self._keep_window_size = None
+        # Tamanho antes de Autenticação/Desempenho esticarem a janela.
+        self._rest_window_size: QSize | None = None
+        self._hold_rest_size = False
+        self._pending_window_restore = 0
         self._session_exit_requested = False
         self.setWindowTitle(APP_DISPLAY_NAME)
         icon = app_icon()
@@ -222,6 +226,7 @@ class MainWindow(QMainWindow):
         self.psexec_tab.openConnectivityRequested.connect(self.open_connectivity_tab)
         self.psexec_tab.hostOnlineChanged.connect(self._on_host_online_changed)
         self.psexec_tab.tcpPrecheckFinished.connect(self._on_tcp_precheck_finished)
+        self.psexec_tab.formCollapseGestureStarted.connect(self._on_form_collapse_gesture)
         self.psexec_tab.formLayoutChanged.connect(self._on_form_layout_changed)
         self.powershell_tab.formLayoutChanged.connect(self._on_form_layout_changed)
         self.cmd_tab.formLayoutChanged.connect(self._on_form_layout_changed)
@@ -1606,7 +1611,27 @@ class MainWindow(QMainWindow):
         # Após o layout dos cards estabilizar (inclui cards que nascem minimizados).
         QTimer.singleShot(0, self._apply_form_layout_change)
 
+    def _on_form_collapse_gesture(self, collapsing: bool) -> None:
+        """Guarda o tamanho ao abrir um card e pede a volta ao recolher."""
+        if not self.isVisible() or self.isMaximized() or self.isFullScreen():
+            return
+        if collapsing:
+            self._pending_window_restore += 1
+            return
+        if not self._hold_rest_size:
+            self._rest_window_size = QSize(self.size())
+        self._hold_rest_size = True
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if event.spontaneous() and not self._hold_rest_size and not self.isMaximized():
+            self._rest_window_size = QSize(event.size())
+
     def _apply_form_layout_change(self) -> None:
+        restore = None
+        if self._pending_window_restore > 0:
+            self._pending_window_restore -= 1
+            restore = self._rest_window_size
         frozen = self._keep_window_size if self._keep_window_size is not None else self.size()
         self.tabs.sync_content_height()
         if self._main_layout is not None:
@@ -1614,8 +1639,20 @@ class MainWindow(QMainWindow):
         if self.centralWidget() is not None:
             self.centralWidget().updateGeometry()
         self._redistribute_expandable_space()
-        if self.size() != frozen:
-            self.resize(frozen)
+        target = frozen
+        if (
+            restore is not None
+            and not self.isMaximized()
+            and not self.isFullScreen()
+        ):
+            hint = self.minimumSizeHint()
+            target = QSize(
+                max(restore.width(), hint.width()),
+                max(restore.height(), hint.height()),
+            )
+            self._hold_rest_size = target.height() > restore.height() + 2
+        if self.size() != target:
+            self.resize(target)
 
     def _redistribute_expandable_space(self, _collapsed: bool = False) -> None:
         """
@@ -1729,6 +1766,7 @@ class MainWindow(QMainWindow):
         w = max(400, w)
         h = max(400, h)
         self.resize(w, h)
+        self._rest_window_size = QSize(self.size())
         x = avail.x() + (avail.width() - w) // 2
         y = avail.y() + (avail.height() - h) // 2
         self.move(x, y)

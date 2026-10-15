@@ -679,6 +679,7 @@ class PsExecTab(QWidget):
     openPrintersRequested = pyqtSignal()
     openConnectivityRequested = pyqtSignal()
     formLayoutChanged = pyqtSignal()
+    formCollapseGestureStarted = pyqtSignal(bool)
     hostOnlineChanged = pyqtSignal(bool)
     tcpPrecheckFinished = pyqtSignal(bool, str)
     authChanged = pyqtSignal()
@@ -1154,6 +1155,7 @@ class PsExecTab(QWidget):
             card.set_collapsible(True, collapsed=start_collapsed)
             card.set_resettable(True, self.tr("Restaurar padrões deste card"))
             card.resetRequested.connect(on_reset)
+            card.collapseGestureStarted.connect(self._on_form_collapse_gesture)
             card.collapsedChanged.connect(self._on_form_card_collapsed)
         bind_card_stack(vbox, self._form_cards)
         self._cpu_context = self._cpu_context_key()
@@ -1226,6 +1228,9 @@ class PsExecTab(QWidget):
         defaults = (False, True, False, True, False)
         for card, collapsed in zip(self._form_cards, defaults):
             card.set_collapsed(collapsed)
+
+    def _on_form_collapse_gesture(self, collapsing: bool) -> None:
+        self.formCollapseGestureStarted.emit(bool(collapsing))
 
     def _on_form_card_collapsed(self, _collapsed: bool = False) -> None:
         lay = self.layout()

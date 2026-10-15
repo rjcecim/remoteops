@@ -11,7 +11,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from PyQt6.QtCore import QEventLoop, Qt, QTimer
+from PyQt6.QtCore import QEventLoop, QSize, Qt, QTimer
 from PyQt6.QtGui import QValidator
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
@@ -811,5 +811,62 @@ class RealtimeRunTests(unittest.TestCase):
                     window.on_run()
                 precheck.assert_called_once()
             finally:
+                window.close()
+                QApplication.processEvents()
+
+    def test_collapsing_auth_and_performance_restores_the_window(self) -> None:
+        from remoteops.ui.main_window import MainWindow
+
+        with (
+            patch(
+                "remoteops.ui.tabs.psexec.lookup_host_userdomain",
+                return_value=HostUserDomain(),
+            ),
+            patch(
+                "remoteops.ui.tabs.psexec.local_logon_domain",
+                return_value=HostUserDomain(),
+            ),
+            patch(
+                "remoteops.ui.tabs.psexec.probe_host_reachability",
+                side_effect=_quiet_probe,
+            ),
+            patch(
+                "remoteops.ui.tabs.psexec.query_remote_cpu_topology",
+                return_value=(None, "Falha ao consultar os processadores."),
+            ),
+            patch("remoteops.ui.widgets.card.animations_enabled", return_value=False),
+        ):
+            window = MainWindow()
+            window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            try:
+                window.show()
+                QApplication.processEvents()
+                tab = window.psexec_tab
+                tab._host_status_timer.stop()
+                tab._cpu_refresh_timer.stop()
+                tab._session_refresh_timer.stop()
+                base = QSize(window.size())
+                auth = tab._form_cards[1]
+                performance = tab._form_cards[3]
+                self.assertTrue(auth.is_collapsed)
+                self.assertTrue(performance.is_collapsed)
+                auth.set_collapsed(False)
+                performance.set_collapsed(False)
+                QApplication.processEvents()
+                self.assertEqual(window._rest_window_size, base)
+                window.resize(base.width(), base.height() + 280)
+                QApplication.processEvents()
+                self.assertEqual(window.height(), base.height() + 280)
+                performance.set_collapsed(True)
+                auth.set_collapsed(True)
+                QApplication.processEvents()
+                self.assertEqual(window.width(), base.width())
+                self.assertEqual(
+                    window.height(),
+                    max(base.height(), window.minimumSizeHint().height()),
+                )
+                self.assertLess(window.height(), base.height() + 280)
+            finally:
+                window.psexec_tab.shutdown(wait_ms=200)
                 window.close()
                 QApplication.processEvents()
