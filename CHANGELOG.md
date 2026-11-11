@@ -4,15 +4,19 @@ Este arquivo registra as melhorias entregues em cada commit. As versões seguem
 o formato [SemVer](https://semver.org/): `MAJOR.MINOR.PATCH`. A identidade
 exibida no produto é `RemoteOps <versão> (Build <número>)`.
 
-## [1.13.0] (Build 93) - 2026-10-15
+## [1.13.0] (Build 94) - 2026-10-15 a 2026-11-11
 
-Identidade: **RemoteOps 1.13.0 (Build 93)**.
+Identidade: **RemoteOps 1.13.0 (Build 94)**.
+
+- Open the remote administrative share from the Conexão card. A folder icon runs `explorer.exe \\host\c$` for the typed host after the network check reports it reachable. IPv6 literals use the bracketed UNC form. An invalid host leaves the button off. If Explorer does not start, the warning shows the UNC and the error.
+- Show the numeric values stored in `settings.ini` on the Configurações cards. The spin box editor collapsed to 1px under the app stylesheet, so the printer query time, the simultaneous Remote Registry queries and the Remote Registry timeout looked empty.
 
 - Harden the Robocopy tab: validate the remote C: destination (reject UNC, other drives, `..`, invalid characters and reserved names), show UNC feedback under the field, and keep the two cards Destino and Parâmetros.
 - Add explicit `/R` and `/W` controls (defaults 2 and 3) with the seven quiet switches; reset restores all of them. Build argv from structured params only — never `/MIR`, `/PURGE`, `/MOVE` or link-follow switches.
 - Fail closed when a required Robocopy step is invalid: structured `robocopy_errors` block the frozen plan so PsExec cannot run without a valid copy. Folder selection with an `.exe` enables Robocopy for dependencies; a lone `.exe` still uses PsExec `-c`.
 - Classify Robocopy exit codes (0–7 vs ≥8), log the interpretation, and refuse the PsExec follow-up after cancel or copy failure. MSI batch uses the same destination and error metadata.
 
+- 2026-11-11 · Open the remote C$ share from the Conexão card and show settings spin-box values.
 - 2026-10-15 · Harden Robocopy destination validation, `/R`/`/W`, fail-closed copy→PsExec plans and folder+EXE transfers.
 
 ## [1.12.0] (Build 92) - 2026-10-15

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from typing import Optional
 
 from PyQt6.QtCore import QEvent, Qt, QThread, QTimer, pyqtSignal
@@ -79,7 +80,7 @@ from remoteops.utils.host_reachability import (
     probe_tcp_445,
     psexec_tcp_blocked_message,
 )
-from remoteops.utils.ping import is_valid_host, normalize_host
+from remoteops.utils.ping import format_unc_host, is_valid_host, normalize_host
 from remoteops.utils.printer_settings import get_print_server
 from remoteops.utils.printers import print_server_unc
 from remoteops.utils.psping import PsPingState
@@ -834,6 +835,12 @@ class PsExecTab(QWidget):
         )
         self.energia_button.clicked.connect(self.openEnergiaRequested.emit)
         card1.add_header_button(self.energia_button)
+
+        self.explorer_button = card1.make_header_button(
+            "\uE8B7", self.tr("Abrir \\\\host\\c$ no Explorer")
+        )
+        self.explorer_button.clicked.connect(self._open_remote_c_share)
+        card1.add_header_button(self.explorer_button)
 
         # Status (legenda com bolinha abaixo do host)
         status_row = QHBoxLayout()
@@ -2743,6 +2750,42 @@ class PsExecTab(QWidget):
             ok_tip=self.tr("Gerenciamento de energia remoto (PsShutdown)"),
             missing_tip=missing_in_pstools.format("PsShutdown"),
         )
+        share = self._remote_c_share_unc()
+        self.explorer_button.setEnabled(is_online and bool(share))
+        if is_online and share:
+            self.explorer_button.setToolTip(
+                self.tr("Abrir {0} no Explorer").format(share)
+            )
+        else:
+            self.explorer_button.setToolTip(self.tr("Abrir \\\\host\\c$ no Explorer"))
+
+    def _remote_c_share_unc(self) -> str:
+        """UNC local do C$ administrativo. Vazio se o host não for válido."""
+        host = normalize_host(self.host_edit.text())
+        if not is_valid_host(host):
+            return ""
+        token = format_unc_host(host)
+        if not token:
+            return ""
+        return f"\\\\{token}\\c$"
+
+    def _open_remote_c_share(self) -> None:
+        """Abre o Explorer neste computador em \\\\host\\c$. Não usa PsExec."""
+        if not self.explorer_button.isEnabled():
+            return
+        unc = self._remote_c_share_unc()
+        if not unc:
+            return
+        try:
+            subprocess.Popen(["explorer.exe", unc])
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                self.tr("Conexão"),
+                self.tr("Não foi possível abrir {0} no Explorer.\n\n{1}").format(
+                    unc, exc
+                ),
+            )
 
     def refresh_host_action_buttons(self, online: bool | None = None) -> None:
         self._update_host_action_buttons(online)

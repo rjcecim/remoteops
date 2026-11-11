@@ -245,6 +245,46 @@ class PsExecConnectionUiTests(unittest.TestCase):
             self.assertTrue(_wait_until(lambda: False in flags))
         self.assertIn(False, flags)
 
+    def test_explorer_opens_admin_share_only_when_reachable(self) -> None:
+        self.assertFalse(self.tab.explorer_button.isEnabled())
+        self.tab.host_edit.setText("PC 01")
+        self.assertEqual(self.tab.host_status_label.text(), "Host inválido")
+        self.assertFalse(self.tab.explorer_button.isEnabled())
+        self.assertEqual(self.tab._remote_c_share_unc(), "")
+
+        with patch(
+            "remoteops.ui.tabs.psexec.probe_host_reachability",
+            side_effect=lambda host, **_kwargs: _ready(host),
+        ):
+            self.tab.host_edit.setText("PC01")
+            self.assertTrue(
+                _wait_until(
+                    lambda: self.tab.host_status_label.text() == "Rede acessível"
+                )
+            )
+            self.assertTrue(self.tab.explorer_button.isEnabled())
+            self.assertEqual(self.tab._remote_c_share_unc(), r"\\PC01\c$")
+            self.assertEqual(
+                self.tab.explorer_button.toolTip(),
+                r"Abrir \\PC01\c$ no Explorer",
+            )
+            with patch("remoteops.ui.tabs.psexec.subprocess.Popen") as popen:
+                self.tab.explorer_button.click()
+            popen.assert_called_once_with(["explorer.exe", r"\\PC01\c$"])
+
+            self.tab.host_edit.setText("2001:db8::1")
+            self.assertTrue(
+                _wait_until(
+                    lambda: self.tab.host_status_label.text() == "Rede acessível"
+                )
+            )
+            self.assertEqual(self.tab._remote_c_share_unc(), r"\\[2001:db8::1]\c$")
+            with patch("remoteops.ui.tabs.psexec.subprocess.Popen") as popen:
+                self.tab.explorer_button.click()
+            popen.assert_called_once_with(
+                ["explorer.exe", r"\\[2001:db8::1]\c$"]
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
